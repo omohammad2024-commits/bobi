@@ -28,10 +28,22 @@ import type { ProposalAction, ProposalKind } from "./curator";
 import type { MemoryProvider } from "../memory/provider";
 import { ProposalStore } from "./proposals";
 import type { StoredProposal } from "./proposals";
+import { SummarizerService } from "./summarize";
+import type { SummarizerOptions } from "./summarize";
+import {
+  EventStore,
+  eventWhenFa,
+  nextOccurrence,
+  parsePersianDate,
+  type EventKind,
+} from "../memory/events";
 import type { Tool, ToolContext } from "../tools/types";
 
 export const CURATE_MEMORIES_PERMISSION = "tools:curate_memories";
 export const CURATOR_DECIDE_PERMISSION = "tools:curator_decide";
+export const SUMMARIZE_MEMORIES_PERMISSION = "tools:summarize_memories";
+export const NOTE_EVENT_PERMISSION = "tools:note_event";
+export const LIST_EVENTS_PERMISSION = "tools:list_events";
 
 export interface CuratorToolDeps {
   provider: MemoryProvider;
@@ -165,12 +177,234 @@ export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDeci
   };
 }
 
-/** Build both curator tools. */
+/** Build the curator tools plus the Phase-3 memory tools. All owner-only. */
 export function createCuratorTools(deps: CuratorToolDeps): readonly Tool<unknown, unknown>[] {
   return [
     createCurateMemoriesTool(deps),
     createCuratorDecideTool(deps),
+    createSummarizeMemoriesTool(deps),
+    createNoteEventTool(deps),
+    createListEventsTool(deps),
   ] as unknown as readonly Tool<unknown, unknown>[];
+}
+
+// ---------- summarize_memories ----------
+
+export interface SummarizeMemoriesInput {
+  olderThanDays?: number;
+  maxEntries?: number;
+}
+
+export interface SummarizeMemoriesOutput {
+  archived: boolean;
+  archiveKey?: string;
+  count?: number;
+  /** Stored proposal id for the originals' deletion — decide via curator_decide. */
+  proposalId?: string;
+  summaryFa: string;
+}
+
+/**
+ * Phase-3: opt-in periodic auto-summarization. Consolidates old memories
+ * into one additive archive entry and stores a deletion proposal for the
+ * originals through the EXISTING curator flow — nothing is deleted without
+ * the owner's explicit curator_decide approval. Owner-only.
+ */
+export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<SummarizeMemoriesInput, SummarizeMemoriesOutput> {
+  return {
+    name: "summarize_memories",
+    description:
+      "بایگانی خودکار حافظه‌های قدیمی (فقط مالک): حافظه‌های به‌روزرسانی‌نشدهٔ قدیمی را در یک ورودی «بایگانی» خلاصه می‌کند و حذف نسخه‌های اصلی را به‌صورت پیشنهاد ثبت می‌کند — حذف فقط با تأیید مالک در curator_decide. پیش‌فرض: قدیمی‌تر از ۹۰ روز.",
+    enabled: true,
+    ownerOnly: true,
+    permission: { requires: [SUMMARIZE_MEMORIES_PERMISSION] },
+    toolset: "memory",
+    input: {
+      fields: {
+        olderThanDays: {
+          type: "number",
+          required: false,
+          description: "آستانهٔ قدمت به روز (پیش‌فرض ۹۰).",
+          minimum: 7,
+          maximum: 365,
+        },
+        maxEntries: {
+          type: "number",
+          required: false,
+          description: "سقف تعداد حافظه در هر اجرا (پیش‌فرض ۲۰).",
+          minimum: 1,
+          maximum: 50,
+        },
+      },
+    },
+
+    async run(input: SummarizeMemoriesInput, ctx: ToolContext): Promise<SummarizeMemoriesOutput> {
+      const userId = ownerOf(ctx, deps);
+      const service = new SummarizerService({ provider: deps.provider });
+      const summarizeOpts: SummarizerOptions = {};
+      if (input.olderThanDays !== undefined) summarizeOpts.olderThanDays = input.olderThanDays;
+      if (input.maxEntries !== undefined) summarizeOpts.maxEntries = input.maxEntries;
+      const report = await service.review(userId, summarizeOpts);
+      if (!report.archived || report.proposal === undefined) {
+        return { archived: false, summaryFa: report.reason ?? "چیزی بایگانی نشد." };
+      }
+      // The deletion proposal goes through the standard store, so the owner
+      // approves it in curator_decide like any other proposal.
+      const [stored] = deps.store.saveProposals(userId, [report.proposal]);
+      const out: SummarizeMemoriesOutput = {
+        archived: true,
+        summaryFa: report.proposal.summaryFa,
+      };
+      if (report.archiveKey !== undefined) out.archiveKey = report.archiveKey;
+      if (report.count !== undefined) out.count = report.count;
+      if (stored !== undefined) out.proposalId = stored.id;
+      return out;
+    },
+  };
+}
+
+// ---------- note_event / list_events ----------
+
+const EVENT_KINDS: readonly EventKind[] = ["birthday", "anniversary", "monthly", "once"];
+
+export interface NoteEventInput {
+  /** e.g. «علی» */
+  name: string;
+  kind: EventKind;
+  /** Persian date: «۱۵ مرداد» or «۲۰ شهریور ۱۴۰۳» (year forces kind "once"). */
+  date: string;
+  note?: string;
+}
+
+export interface NoteEventOutput {
+  key: string;
+  name: string;
+  kind: EventKind;
+  labelFa: string;
+  summaryFa: string;
+}
+
+/**
+ * Phase-3: store a dated event (birthday, anniversary, monthly commitment,
+ * one-off). The morning digest lists upcoming events and the event sweep
+ * sends proactive reminders ahead of them. Owner-only.
+ */
+export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput, NoteEventOutput> {
+  return {
+    name: "note_event",
+    description:
+      "ثبت رویداد تاریخ‌دار در حافظه (فقط مالک): تولد، سالگرد، تعهد ماهانه یا رویداد یک‌باره. تاریخ فارسی مثل «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳»؛ رویدادهای پیش رو در خلاصهٔ صبحگاهی می‌آیند و پیشاپیش یادآوری می‌شوند.",
+    enabled: true,
+    ownerOnly: true,
+    permission: { requires: [NOTE_EVENT_PERMISSION] },
+    toolset: "memory",
+    input: {
+      fields: {
+        name: {
+          type: "string",
+          required: true,
+          description: "نام رویداد، مثلاً «علی» یا «قسط وام».",
+          minLength: 1,
+          maxLength: 120,
+        },
+        kind: {
+          type: "enum",
+          required: true,
+          description: "نوع رویداد.",
+          choices: ["birthday", "anniversary", "monthly", "once"] as const,
+        },
+        date: {
+          type: "string",
+          required: true,
+          description: "تاریخ فارسی: «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳».",
+          minLength: 1,
+          maxLength: 40,
+        },
+        note: {
+          type: "string",
+          required: false,
+          description: "یادداشت اختیاری.",
+          maxLength: 200,
+        },
+      },
+    },
+
+    async run(input: NoteEventInput, ctx: ToolContext): Promise<NoteEventOutput> {
+      const userId = ownerOf(ctx, deps);
+      if (!EVENT_KINDS.includes(input.kind)) {
+        throw new ToolError("invalid_input", "نوع رویداد نامعتبر است.");
+      }
+      const parsed = parsePersianDate(input.date);
+      if (parsed === null) {
+        throw new ToolError(
+          "invalid_input",
+          "تاریخ را نفهمیدم؛ مثل «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳» بنویس.",
+        );
+      }
+      const store = new EventStore(deps.provider);
+      const key = await store.add(userId, {
+        name: input.name,
+        // A named Jalali year is a one-off occurrence, whatever kind was passed.
+        kind: parsed.jYear !== undefined ? "once" : input.kind,
+        jMonth: parsed.jMonth,
+        jDay: parsed.jDay,
+        ...(parsed.jYear !== undefined ? { jYear: parsed.jYear } : {}),
+        labelFa: parsed.labelFa,
+        ...(input.note !== undefined ? { note: input.note } : {}),
+      });
+      return {
+        key,
+        name: input.name.trim(),
+        kind: parsed.jYear !== undefined ? "once" : input.kind,
+        labelFa: parsed.labelFa,
+        summaryFa: `رویداد «${input.name.trim()}» در ${parsed.labelFa} ثبت شد.`,
+      };
+    },
+  };
+}
+
+export interface ListEventsOutput {
+  events: Array<{
+    key: string;
+    name: string;
+    kind: EventKind;
+    labelFa: string;
+    daysUntil: number | null;
+    whenFa: string | null;
+  }>;
+  count: number;
+}
+
+/** Phase-3: list the owner's dated events with days-until for each. Owner-only. */
+export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string, never>, ListEventsOutput> {
+  return {
+    name: "list_events",
+    description: "فهرست رویدادهای تاریخ‌دار ثبت‌شده با فاصلهٔ روز تا وقوع بعدی (فقط مالک).",
+    enabled: true,
+    ownerOnly: true,
+    permission: { requires: [LIST_EVENTS_PERMISSION] },
+    toolset: "memory",
+    input: { fields: {} },
+
+    async run(_input: Record<string, never>, ctx: ToolContext): Promise<ListEventsOutput> {
+      const userId = ownerOf(ctx, deps);
+      const store = new EventStore(deps.provider);
+      const nowMs = Date.now();
+      const rows = await store.list(userId);
+      const events = rows.map(({ key, event }) => {
+        const occ = nextOccurrence(event, nowMs);
+        return {
+          key,
+          name: event.name,
+          kind: event.kind,
+          labelFa: event.labelFa,
+          daysUntil: occ?.daysUntil ?? null,
+          whenFa: occ ? eventWhenFa(occ.daysUntil) : null,
+        };
+      });
+      return { events, count: events.length };
+    },
+  };
 }
 
 // ---------- helpers ----------

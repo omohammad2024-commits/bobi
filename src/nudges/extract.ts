@@ -23,6 +23,15 @@
 import { DEFAULT_NUDGE_TIMEZONE, normalizeFa, parsePersianWhen } from "./time_fa";
 import { MAX_NUDGE_TEXT_LENGTH } from "./tracker";
 
+/**
+ * Dated-event extraction (birthdays, anniversaries, recurring commitments)
+ * lives in src/memory/events.ts — it shares the Persian-date machinery with
+ * the event store rather than duplicating it here. Re-exported so the
+ * per-turn extraction surface stays in one discoverable place.
+ */
+export { extractEvents } from "../memory/events";
+export type { EventCandidate } from "../memory/events";
+
 export interface ExtractedNudge {
   /** The thing to follow up on, cleaned of the trigger phrase. */
   text: string;

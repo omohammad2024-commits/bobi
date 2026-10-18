@@ -23,10 +23,16 @@
  *   it up again.
  */
 import type { NudgeRecord, NudgeTracker } from "./tracker";
+import {
+  sweepEvents,
+  type EventStore,
+  type SweepEventsOptions,
+} from "../memory/events";
 
 /** One reminder ready for delivery. The caller routes `message` to `userId`. */
 export interface NudgeDelivery {
   userId: string;
+  /** Nudge row id, or -1 for an event reminder (events are not ackable). */
   nudgeId: number;
   message: string;
 }
@@ -37,6 +43,20 @@ export interface SweepNudgesDeps {
   nowMs?: number;
   /** Max reminders per sweep. Defaults to 5. */
   max?: number;
+  /**
+   * Optional event-reminder dep (Phase-3 proactive memory). When present,
+   * upcoming dated events for `events.userId` are swept too and their
+   * reminders appended AFTER the nudge reminders. Omitted by default, so
+   * the existing sweep behavior is unchanged. NOTE: wiring the production
+   * EventStore here is a follow-up item (src/index.ts is owned by another
+   * work package); until then, event reminders reach the owner through the
+   * morning digest's upcoming-events section and the sweepEvents() helper.
+   */
+  events?: {
+    store: EventStore;
+    /** Whose events to sweep — the owner only; public users get nothing new. */
+    userId: string;
+  } & SweepEventsOptions;
 }
 
 const DEFAULT_SWEEP_MAX = 5;
@@ -69,6 +89,22 @@ export async function sweepNudges(deps: SweepNudgesDeps): Promise<NudgeDelivery[
       continue;
     }
   }
+
+  // Phase-3: proactive reminders ahead of dated events (optional dep).
+  // Event reminders are appended after nudge reminders and use nudgeId -1
+  // (events are not ackable through the nudge tools); the caller routes each
+  // message to its own userId exactly like nudge deliveries.
+  if (deps.events !== undefined) {
+    const { store, userId, horizonDays, remindCooldownMs } = deps.events;
+    const eventDeliveries = await sweepEvents(store, userId, nowMs, {
+      ...(horizonDays !== undefined ? { horizonDays } : {}),
+      ...(remindCooldownMs !== undefined ? { remindCooldownMs } : {}),
+    });
+    for (const d of eventDeliveries.slice(0, Math.max(0, max - out.length))) {
+      out.push({ userId: d.userId, nudgeId: -1, message: d.message });
+    }
+  }
+
   return out;
 }
 

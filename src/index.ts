@@ -5,7 +5,7 @@ import { publicMenuCommands, ownerMenuCommands } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
 import { resolveLang } from "./i18n";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
-import type { Bot } from "grammy";
+import type { Bot, Context } from "grammy";
 import type { BotCommandScope, LanguageCode } from "@grammyjs/types";
 import { FakeProvider } from "./ai/fake";
 import { ConversationEngine } from "./conversation/engine";
@@ -56,6 +56,30 @@ import {
 } from "./bot/cmd_auto";
 import type { HermesCommandDef, HermesCommandDeps } from "./bot/cmd_context";
 import { Database } from "bun:sqlite";
+// Phase-3: group assistant mode (opt-in per group).
+import {
+  createGroupHistory,
+  handleGassistantCommand,
+  handleGsummaryCommand,
+  handleGpollCommand,
+  type GroupAssistantEnv,
+} from "./groups/assistant";
+// Phase-3: scheduled benchmarks + quality alerts.
+import { BenchHistory } from "./bench/history";
+import { createRunBenchTool, defaultLiveStackBuilder } from "./bench/tool";
+import {
+  registerBenchCommands,
+  COMMAND_DEFS as BENCH_COMMAND_DEFS,
+} from "./bot/cmd_phase3_bench";
+// Phase-3: installable skills from chat.
+import {
+  registerPhase3SkillsCommands,
+  COMMAND_DEFS as SKILLS_COMMAND_DEFS,
+} from "./bot/cmd_phase3_skills";
+// Phase-3: proactive event memory -> nudge sweep wiring.
+import { EventStore } from "./memory/events";
+import { requireOwnerTier } from "./bot/access";
+import { gateGroup, gateUser, senderLang } from "./bot/bot";
 import { createGoalTools } from "./tools/goals";
 import { HeartbeatService } from "./autonomy/heartbeat";
 import { ReminderScheduler, TaskScheduler } from "./scheduler/scheduler";
@@ -173,6 +197,24 @@ async function main(): Promise<void> {
     }
   }
 
+  // Phase-3 benchmarks: history store on its own SQLite connection (like
+  // ProposalStore) and the run_bench tool. notifyOwner is wired lazily —
+  // the bot API only exists after createBot below.
+  const benchHistory = new BenchHistory(new Database(config.dbPath));
+  let benchNotifyApi:
+    | { sendMessage(chatId: number | string, text: string): Promise<unknown> }
+    | undefined;
+  const runBenchTool = createRunBenchTool({
+    history: benchHistory,
+    isOwner: (userId) => identity.isOwner(Number(userId)),
+    notifyOwner: async (text) => {
+      const api = benchNotifyApi;
+      if (api === undefined || identity.ownerId === undefined) return;
+      await api.sendMessage(identity.ownerId, text).catch(() => undefined);
+    },
+    buildLive: defaultLiveStackBuilder(config.dbPath),
+  });
+
   const extraTools: Tool<unknown, unknown>[] = [
     // Phase D2: the memory tools run against the configured MemoryProvider
     // (BOBI_MEMORY_PROVIDER, default "sqlite"), not Storage directly.
@@ -209,6 +251,12 @@ async function main(): Promise<void> {
       storage,
       isOwner: (userId) => identity.isOwner(Number(userId)),
     }) as Tool<unknown, unknown>,
+    // Phase-3: scheduled benchmarks + quality alerts. Owner-only; runs the
+    // bench suite (offline always, live only when a provider is configured)
+    // and alerts the owner on quality regression. The notifyOwner channel is
+    // resolved lazily because the bot API is not available until createBot
+    // runs below (benchNotifyApi is assigned right after).
+    runBenchTool as Tool<unknown, unknown>,
     // Stage 3: proactive Persian morning digest. Owner-only; composed from
     // the owner's own data (tasks, reminders, memories, usage) + external
     // headlines (labelled as such). Called by the morning_digest blueprint's
@@ -537,6 +585,10 @@ async function main(): Promise<void> {
     (await Bun.file(new URL("../package.json", import.meta.url)).json().catch(() => undefined) as
       | { version?: string }
       | undefined)?.version ?? "dev";
+
+  // Phase-3 group assistant: in-process message buffer for /gsummary.
+  // Deliberately NOT persisted (privacy); the mode itself is opt-in per group.
+  const groupHistory = createGroupHistory();
   // One options object for the system commands AND the command palette's
   // tap-to-run runners, so defaults (snapshot dir, clock, MCP…) stay in one
   // place. Passed to createBot for the palette and reused below for
@@ -598,6 +650,11 @@ async function main(): Promise<void> {
     // Stage-3 group moderation: owner's numeric id for the mod gate.
     // Absent = moderation inert (default-off).
     ...(identity.ownerId !== undefined ? { moderationOwnerId: String(identity.ownerId) } : {}),
+    // Phase-3 group assistant mode: opt-in per group, owner-managed.
+    // Absent = the assistant hook stays inert (default-off).
+    ...(identity.ownerId !== undefined
+      ? { groupAssistant: { ownerId: String(identity.ownerId), history: groupHistory } }
+      : {}),
   });
   botApi = bot.api;
 
@@ -632,6 +689,82 @@ async function main(): Promise<void> {
     registerSessionCommands(bot, hermesDeps);
     registerSystemCommands(bot, hermesDeps, systemOpts);
     registerAutoCommands(bot, hermesDeps);
+    // ---- Phase-3 commands ----
+    // Group assistant mode (/gassistant owner-only, /gsummary group-visible
+    // when the mode is on, /gpoll owner-only). The message-path hook lives in
+    // createBot; registration here keeps index.ts as the single wiring point.
+    if (identity.ownerId !== undefined) {
+      const botUsername =
+        (await bot.api.getMe().catch(() => undefined))?.username ?? "";
+      const gaEnv: GroupAssistantEnv = {
+        storage,
+        ownerId: String(identity.ownerId),
+        botUsername,
+        history: groupHistory,
+      };
+      const gaGate = async (
+        ctx: Context,
+        lang: "fa" | "en",
+        ownerOnly: boolean,
+      ): Promise<boolean> => {
+        if (!(await gateGroup(ctx, groups, lang))) return false;
+        if (!(await gateUser(ctx, { users, auth, userPanel }))) return false;
+        if (ownerOnly && !(await requireOwnerTier(ctx, { auth }, lang))) return false;
+        return true;
+      };
+      bot.command("gassistant", async (ctx) => {
+        const lang = senderLang(ctx, storage);
+        if (!(await gaGate(ctx, lang, true))) return;
+        await handleGassistantCommand(ctx, gaEnv, lang);
+      });
+      bot.command("gsummary", async (ctx) => {
+        const lang = senderLang(ctx, storage);
+        if (!(await gaGate(ctx, lang, false))) return;
+        await handleGsummaryCommand(ctx, gaEnv, lang);
+      });
+      bot.command("gpoll", async (ctx) => {
+        const lang = senderLang(ctx, storage);
+        if (!(await gaGate(ctx, lang, true))) return;
+        await handleGpollCommand(ctx, gaEnv, lang);
+      });
+    }
+    // Phase-3 benchmarks: /bench (owner-only). The run_bench tool is
+    // registered in extraTools above; the command needs the shared history
+    // and a direct runner for /bench run.
+    registerBenchCommands(bot, {
+      ...hermesDeps,
+      history: benchHistory,
+      ...(identity.ownerId === undefined
+        ? {}
+        : (() => {
+            const ownerNumericId: number = identity.ownerId;
+            return {
+              runBenchNow: async (opts: { mode: "offline" | "live"; taskIds?: string[] }) => {
+                const actor = toToolActor(
+                  authorizeToolUse(auth, { id: ownerNumericId }, tools.registry.list()),
+                );
+                return runBenchTool.run(
+                  {
+                    mode: opts.mode,
+                    ...(opts.taskIds !== undefined ? { tasks: opts.taskIds } : {}),
+                  },
+                  {
+                    clock: () => new Date(),
+                    actor,
+                    signal: AbortSignal.timeout(600_000),
+                  },
+                );
+              },
+            };
+          })()),
+    });
+    // The benchmark alert channel can now deliver to the owner's DM.
+    benchNotifyApi = bot.api;
+    // Phase-3 installable skills: /skill (owner-only).
+    registerPhase3SkillsCommands(bot, hermesDeps, {
+      skills,
+      botToken: token,
+    });
     setHeartbeatInfoProvider(() => ({
       enabled: config.heartbeatIntervalMs > 0,
       interval: formatIntervalMs(config.heartbeatIntervalMs),
@@ -651,6 +784,13 @@ async function main(): Promise<void> {
       ...SESSION_COMMAND_DEFS,
       ...SYSTEM_COMMAND_DEFS,
       ...AUTO_COMMAND_DEFS,
+      // Phase-3: owner-only commands (invisible to the public via ownerOnly).
+      ...SKILLS_COMMAND_DEFS,
+      ...BENCH_COMMAND_DEFS,
+      // Phase-3 group assistant (owner-gated; /gsummary usable in enabled groups).
+      { command: "gassistant", descriptionFa: "حالت دستیار گروه", descriptionEn: "Group assistant mode", ownerOnly: true },
+      { command: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", descriptionEn: "Summarize group discussion", ownerOnly: true },
+      { command: "gpoll", descriptionFa: "نظرسنجی در گروه", descriptionEn: "Create a group poll", ownerOnly: true },
     ];
     const publicDefs = publicMenuCommands(hermesDefs);
     const ownerDefs = ownerMenuCommands(hermesDefs);
@@ -712,10 +852,22 @@ async function main(): Promise<void> {
   // reminders, and each message goes ONLY to the nudge's own userId
   // (chat_id = user id is the DM convention, per mayDeliverTo) — never a
   // group, never another user's DM.
+  //
+  // Phase-3: the sweep also carries the owner's dated-event reminders
+  // (birthdays, recurring commitments) via the optional events dep — the
+  // EventStore rides on the same MemoryProvider, so per-user scoping is
+  // free and public users get nothing new.
+  const eventStore = new EventStore(resolveMemoryProvider(storage));
   const nudgeSweepTimer = setInterval(() => {
     void (async () => {
       try {
-        const deliveries = await sweepNudges({ tracker: nudgeTracker, max: 5 });
+        const deliveries = await sweepNudges({
+          tracker: nudgeTracker,
+          max: 5,
+          ...(identity.ownerId !== undefined
+            ? { events: { store: eventStore, userId: String(identity.ownerId) } }
+            : {}),
+        });
         for (const d of deliveries) {
           if (!mayDeliverTo(d.userId, d.userId)) {
             log.info("nudge suppressed: recipient no longer approved", { userId: d.userId });

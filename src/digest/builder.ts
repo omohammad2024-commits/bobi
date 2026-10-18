@@ -47,6 +47,12 @@
 import { Storage } from "../storage/storage";
 import { UsageTracker } from "../ai/usage";
 import { t, type Lang } from "../i18n";
+import {
+  EVENT_KEY_PREFIX,
+  ARCHIVE_KEY_PREFIX,
+  nextOccurrence,
+  type MemoryEvent,
+} from "../memory/events";
 
 /** One rendered digest block (legacy Persian API): Persian title + Persian body. */
 export interface DigestSection {
@@ -103,6 +109,7 @@ export type DigestSectionKind =
   | "date"
   | "tasks"
   | "reminders"
+  | "events"
   | "proposals"
   | "usage"
   | "headlines"
@@ -135,11 +142,20 @@ export interface DigestMemoryItem {
   content: string;
 }
 
+/** One upcoming dated event (Phase-3 proactive memory). */
+export interface DigestEventItem {
+  name: string;
+  kindLabel: string;
+  labelFa: string;
+  daysUntil: number;
+}
+
 /** Language-neutral digest section data. Rendering is per-language. */
 export type DigestSectionData =
   | { kind: "date"; nowMs: number }
   | { kind: "tasks"; items: DigestTaskItem[] }
   | { kind: "reminders"; items: DigestReminderItem[] }
+  | { kind: "events"; items: DigestEventItem[] }
   | { kind: "proposals"; count: number }
   | {
       kind: "usage";
@@ -315,9 +331,9 @@ function fmtCost(usd: number, lang: Lang): string {
 /**
  * Compose the digest sections as language-neutral data.
  *
- * Order: date header (always), tasks, reminders, curator proposals, usage,
- * headlines, memories. Each section builder is guarded so a failing source
- * is skipped with a log line instead of killing the digest.
+ * Order: date header (always), tasks, reminders, upcoming events, curator
+ * proposals, usage, headlines, memories. Each section builder is guarded so a
+ * failing source is skipped with a log line instead of killing the digest.
  */
 export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionData[]> {
   const nowMs = deps.now !== undefined ? deps.now() : Date.now();
@@ -340,6 +356,14 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: reminders section skipped (${shortErr(err)})`);
+  }
+
+  // --- Upcoming dated events (Phase-3 proactive memory) ----------------------
+  try {
+    const s = eventsData(deps, nowMs);
+    if (s) sections.push(s);
+  } catch (err) {
+    log(`digest: events section skipped (${shortErr(err)})`);
   }
 
   // --- Pending curator proposals ---------------------------------------------
@@ -400,6 +424,39 @@ function reminderData(deps: DigestDeps, nowMs: number): DigestSectionData | unde
   return { kind: "reminders", items };
 }
 
+/** Dated events in the next 7 days (Phase-3 proactive memory). Skipped when none.
+ *
+ * Events are stored as memories under the `event:` key prefix (see
+ * src/memory/events.ts), so the digest reads them through the same
+ * storage.listMemories call as the memory highlights — no new deps needed.
+ * Malformed payloads are skipped; event content is rendered as plain text,
+ * never interpreted.
+ */
+function eventsData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+  const items: DigestEventItem[] = [];
+  for (const m of deps.storage.listMemories(deps.userId, 200)) {
+    if (!m.key.startsWith(EVENT_KEY_PREFIX)) continue;
+    let event: MemoryEvent;
+    try {
+      event = JSON.parse(m.content) as MemoryEvent;
+    } catch {
+      continue;
+    }
+    if (typeof event?.name !== "string" || typeof event?.labelFa !== "string") continue;
+    const occ = nextOccurrence(event, nowMs);
+    if (occ === undefined || occ.daysUntil > 7) continue;
+    items.push({
+      name: oneLine(event.name).slice(0, 60),
+      kindLabel: event.kind,
+      labelFa: oneLine(event.labelFa).slice(0, 40),
+      daysUntil: occ.daysUntil,
+    });
+  }
+  if (items.length === 0) return undefined;
+  items.sort((a, b) => a.daysUntil - b.daysUntil);
+  return { kind: "events", items: items.slice(0, 5) };
+}
+
 /** Pending curator proposals awaiting the owner's decision. Skipped when none. */
 function proposalData(deps: DigestDeps): DigestSectionData | undefined {
   const count = deps.proposalStore.countPending(deps.userId);
@@ -450,10 +507,14 @@ async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undef
   return { kind: "headlines", items };
 }
 
-/** Newest 3 memories, as a gentle "on your mind" closer. Skipped when none. */
+/** Newest 3 memories, as a gentle "on your mind" closer. Skipped when none.
+ *  Structured keys (events, archives) are excluded — they have their own
+ *  sections and their JSON payloads are not readable highlights. */
 function memoryData(deps: DigestDeps): DigestSectionData | undefined {
   const items = deps.storage
-    .listMemories(deps.userId, 3)
+    .listMemories(deps.userId, 10)
+    .filter((m) => !m.key.startsWith(EVENT_KEY_PREFIX) && !m.key.startsWith(ARCHIVE_KEY_PREFIX))
+    .slice(0, 3)
     .map((m) => ({ key: m.key, content: m.content }));
   if (items.length === 0) return undefined;
   return { kind: "memories", items };
@@ -508,6 +569,26 @@ export function renderDigestSection(
           count: fmtNum(section.items.length, lang),
         })}\n${lines.join("\n")}`,
       };
+    }
+    case "events": {
+      const lines = section.items.map((item) =>
+        t("digest.events.line", lang, {
+          kind: t(`events.kind.${item.kindLabel}`, lang),
+          name: clip(item.name, 60),
+          label: item.labelFa,
+          when:
+            item.daysUntil <= 0
+              ? t("events.when.today", lang)
+              : item.daysUntil === 1
+                ? t("events.when.tomorrow", lang)
+                : t("events.when.days", lang, { count: fmtNum(item.daysUntil, lang) }),
+        }),
+      );
+      const head =
+        section.items.length === 1
+          ? t("digest.events.one", lang)
+          : t("digest.events.many", lang, { count: fmtNum(section.items.length, lang) });
+      return { title: t("digest.sec.events", lang), body: `${head}\n${lines.join("\n")}` };
     }
     case "proposals": {
       const body =

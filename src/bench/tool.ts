@@ -1,0 +1,340 @@
+/**
+ * run_bench — owner-only tool that executes the benchmark suite headlessly,
+ * persists the run to the benchmark history, and raises a quality alert to
+ * the owner on regression.
+ *
+ * This is the tool the scheduled benchmark job dispatches: the owner creates
+ * one scheduled task with action {type:"tool", tool:"run_bench", input:{mode}}
+ * (see /bench schedule) and the TaskScheduler runs it on cron. Default OFF —
+ * nothing is scheduled unless the owner asks.
+ *
+ * Modes:
+ * - offline (default): FakeProvider + mocked web, same plumbing the CLI uses.
+ *   Fast (seconds), always allowed, and safe to run on any schedule.
+ * - live: the owner's real provider. Builds the stack exactly like
+ *   `bun bench/run.ts --live` (AiGateway over the config DB, :memory: state).
+ *   When NO provider is configured the build THROWS (the runner's
+ *   refuse-to-fake rule) — the tool catches that and SKIPS LOUDLY: the owner
+ *   gets a Persian notification, nothing is recorded, and nothing is faked.
+ *
+ * SANDBOXED EXECUTION (attack-surface review):
+ * - The benchmark stack is built ONLY by buildOfflineStack()/buildLive()
+ *   from bench/run.ts. ALL tool state lives in a fresh Storage.open(":memory:")
+ *   that is discarded after the run: a bench turn can never read or write
+ *   the owner's real conversations, memories, reminders, or scheduled tasks.
+ * - Web access is mocked: BenchToolService serves the task's canned data for
+ *   web_search/fetch_url instead of the network. A scheduled run makes no
+ *   network calls of its own (except the configured live provider).
+ * - The bench actor's permissions come from the bench registry alone —
+ *   never from the bot's live ToolService. Nothing destructive from the
+ *   live registry is reachable.
+ * - The provider-secret store is read-only for selection, same as the CLI.
+ *
+ * OWNER-ONLY (twice, like the other admin tools): the `ownerOnly` flag keeps
+ * the authorization bridge from granting the permission key to anyone else,
+ * and run() re-checks ownership against the server-supplied isOwner
+ * predicate, so a hand-built actor cannot slip through either. Benchmark
+ * results are the owner's private data — run history must not leak across
+ * users, so both the tool and /bench stay owner-only.
+ *
+ * NOTE on live scheduled runs: a full 24-task live run takes several
+ * minutes, longer than the scheduler's per-action budget (30s default). The
+ * run still completes in the background and persists + notifies, but the
+ * scheduled task shows "failed" for that slot. Prefer offline on a schedule
+ * and live on demand (`bun bench/run.ts --live` or /bench run --live);
+ * documented in docs/PHASE3_BENCH.md.
+ */
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { ToolError } from "../tools/errors";
+import type { Tool, ToolContext } from "../tools/types";
+import {
+  buildOfflineStack,
+  buildLiveStack,
+  buildReport,
+  runTask,
+  stampName,
+  type BenchReport,
+  type BenchStack,
+  type TaskResult,
+} from "../../bench/run";
+import { loadTasks } from "../../bench/schema";
+import { BenchHistory } from "./history";
+import {
+  compareToBaseline,
+  decideAlert,
+  formatRegressionAlert,
+  formatRunSummary,
+  formatSkipAlert,
+  type BaselineOptions,
+  type BaselineComparison,
+} from "./baseline";
+
+export const RUN_BENCH_PERMISSION = "tools:run_bench";
+
+/** How many task ids one input may name (the suite has 24). */
+const MAX_TASKS_PER_RUN = 32;
+/** Task ids look like the YAML filenames: lowercase snake_case. */
+const TASK_ID_RE = /^[a-z0-9][a-z0-9_]{0,63}$/;
+
+export interface RunBenchInput {
+  /** "offline" (default) or "live". */
+  mode?: "offline" | "live";
+  /** Optional subset of task ids (from bench/tasks). Defaults to the full suite. */
+  tasks?: string[];
+}
+
+export interface RunBenchOutput {
+  status: "ok" | "skipped";
+  /** Stored history id (ok only). */
+  runId?: number;
+  mode: "offline" | "live";
+  model?: string;
+  taskCount?: number;
+  passed?: number;
+  failed?: number;
+  avgScorePct?: number;
+  /** True when a regression alert was sent to the owner. */
+  alerted: boolean;
+  /** skipped only: why. */
+  reason?: string;
+  /** Short Persian summary. */
+  summary: string;
+}
+
+export interface RunBenchToolDeps {
+  /**
+   * Server-supplied owner check. The userId comes from the trusted actor, so
+   * this predicate — not anything in the request — decides ownership.
+   */
+  isOwner: (userId: string) => boolean;
+  /** Benchmark history (bot's second SQLite connection, like ProposalStore). */
+  history: BenchHistory;
+  /**
+   * Proactive channel to the owner. The coordinator wires this to the same
+   * delivery path as the nudge sweep (bot.api.sendMessage to the owner's DM
+   * with the access re-check) — never a group, never another user.
+   */
+  notifyOwner: (text: string) => Promise<void>;
+  /**
+   * Live stack builder. Throws (Persian) when no provider is configured —
+   * reuse the runner's refuse-to-fake rule. The coordinator wires
+   * defaultLiveStackBuilder(config.dbPath). Omit to allow offline only.
+   */
+  buildLive?: () => BenchStack;
+  /** Task YAML dir; defaults to the repo's bench/tasks. */
+  tasksDir?: string;
+  /** Injectable suite executor, for deterministic tests. */
+  executeSuite?: (
+    stack: BenchStack,
+    runId: string,
+    taskIds?: string[],
+  ) => Promise<BenchReport>;
+  /** Baseline thresholds; see baseline.ts. */
+  baseline?: BaselineOptions;
+  /** Injectable clock, ms. */
+  now?: () => number;
+  /** Diagnostic log for notify failures etc. */
+  log?: (message: string) => void;
+}
+
+/** Default tasks dir, relative to this file: <repo>/bench/tasks. */
+export function defaultTasksDir(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bench", "tasks");
+}
+
+/**
+ * Coordinator wiring helper: a live-stack builder over the bot's config DB,
+ * with the runner's refuse-when-unconfigured semantics.
+ */
+export function defaultLiveStackBuilder(dbPath: string): () => BenchStack {
+  return () => buildLiveStack(dbPath).stack;
+}
+
+async function defaultExecuteSuite(
+  stack: BenchStack,
+  runId: string,
+  tasksDir: string,
+  mode: "offline" | "live",
+  taskIds?: string[],
+): Promise<BenchReport> {
+  let tasks = await loadTasks(tasksDir);
+  if (taskIds !== undefined) {
+    const want = new Set(taskIds);
+    tasks = tasks.filter((t) => want.has(t.id));
+  }
+  const results: TaskResult[] = [];
+  for (const task of tasks) {
+    results.push(await runTask(stack, task, runId));
+  }
+  return buildReport(results, {
+    mode,
+    provider: stack.providerName,
+    model: stack.model,
+  });
+}
+
+export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, RunBenchOutput> {
+  const tasksDir = deps.tasksDir ?? defaultTasksDir();
+  const now = deps.now ?? Date.now;
+
+  return {
+    name: "run_bench",
+    description:
+      "اجرای بنچ‌مارک بابی (آفلاین یا زنده)، ذخیرهٔ نتیجه در تاریخچه و هشدار افت کیفیت به مالک. زمان‌بندی‌شده: آفلاین همیشه، زنده فقط وقتی ارائه‌دهنده پیکربندی شده باشد (فقط مالک).",
+    enabled: true,
+    ownerOnly: true,
+    permission: { requires: [RUN_BENCH_PERMISSION] },
+    toolset: "system",
+    input: {
+      fields: {
+        mode: {
+          type: "enum",
+          required: false,
+          description: "حالت اجرا: offline (پیش‌فرض، سریع و امن) یا live (مدل واقعی مالک).",
+          choices: ["offline", "live"] as const,
+        },
+        tasks: {
+          type: "array",
+          required: false,
+          description: "زیرمجموعه‌ای از شناسه‌های تسک‌ها؛ خالی یعنی کل مجموعه.",
+        },
+      },
+    },
+
+    async run(input: RunBenchInput, ctx: ToolContext): Promise<RunBenchOutput> {
+      const userId = ownerOf(ctx, deps);
+      void userId;
+
+      const mode = input.mode ?? "offline";
+      if (mode !== "offline" && mode !== "live") {
+        throw new ToolError("invalid_input", "حالت باید offline یا live باشد.");
+      }
+      const taskIds = validateTaskIds(input.tasks);
+
+      // Build the sandboxed stack. The builders throw (Persian) when a live
+      // run is requested but no provider is configured — that is the loud
+      // skip, not a silent fake.
+      let stack: BenchStack;
+      if (mode === "live") {
+        if (!deps.buildLive) {
+          throw new ToolError(
+            "not_found",
+            "اجرای زنده در این نمونه پیکربندی نشده است؛ فقط حالت آفلاین.",
+          );
+        }
+        try {
+          stack = deps.buildLive();
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          await safeNotify(deps, formatSkipAlert(reason));
+          return {
+            status: "skipped",
+            mode,
+            alerted: false,
+            reason,
+            summary: "بنچ‌مارک زنده رد شد: ارائه‌دهنده پیکربندی نشده است.",
+          };
+        }
+      } else {
+        stack = buildOfflineStack();
+      }
+
+      const runId = stampName();
+      const executeSuite =
+        deps.executeSuite ??
+        ((stack: BenchStack, execRunId: string, execTaskIds?: string[]) =>
+          defaultExecuteSuite(stack, execRunId, tasksDir, mode, execTaskIds));
+      const report = await executeSuite(stack, runId, taskIds);
+      const storedId = deps.history.recordRun(report);
+
+      // Regression check against the rolling baseline, with cooldown+dedupe.
+      let alerted = false;
+      let comparison: BaselineComparison | undefined;
+      try {
+        const decision = decideAlert(deps.history, report, {
+          ...deps.baseline,
+          now,
+        });
+        comparison = decision.comparison;
+        if (decision.fire) {
+          await safeNotify(deps, formatRegressionAlert(decision.comparison, report));
+          deps.history.markAlertSent(decision.key, now());
+          alerted = true;
+        }
+      } catch (err) {
+        // A baseline failure must never fail the run: the scores are stored,
+        // and the owner is told the comparison did not happen.
+        deps.log?.(`bench baseline failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+
+      return {
+        status: "ok",
+        runId: storedId,
+        mode,
+        model: report.model,
+        taskCount: report.taskCount,
+        passed: report.totals.passed,
+        failed: report.totals.failed,
+        avgScorePct: report.totals.avgScorePct,
+        alerted,
+        summary:
+          formatRunSummary(report, storedId) +
+          (comparison !== undefined && comparison.reason === "insufficient_baseline"
+            ? "\n(خط‌مبنا هنوز کافی نیست؛ بعد از چند اجرای دیگر هشدار افت کیفیت فعال می‌شود.)"
+            : ""),
+      };
+    },
+  };
+}
+
+/** Re-exported so the coordinator can compose buildLive with its own config. */
+export { compareToBaseline };
+
+function validateTaskIds(tasks: unknown): string[] | undefined {
+  if (tasks === undefined) return undefined;
+  if (!Array.isArray(tasks)) {
+    throw new ToolError("invalid_input", "tasks باید آرایه‌ای از شناسه‌ها باشد.");
+  }
+  if (tasks.length > MAX_TASKS_PER_RUN) {
+    throw new ToolError("invalid_input", `حداکثر ${MAX_TASKS_PER_RUN} تسک در هر اجرا.`);
+  }
+  const ids: string[] = [];
+  for (const t of tasks) {
+    if (typeof t !== "string" || !TASK_ID_RE.test(t)) {
+      throw new ToolError("invalid_input", "شناسهٔ تسک نامعتبر است.");
+    }
+    ids.push(t);
+  }
+  return ids;
+}
+
+/**
+ * The owner id for this call, taken from the server-supplied actor — and then
+ * checked against the server-supplied owner predicate. Same double-check as
+ * the scheduled-task and curator tools: the permission key alone does not
+ * prove ownership.
+ */
+function ownerOf(ctx: ToolContext, deps: RunBenchToolDeps): string {
+  const id = ctx.actor.userId;
+  if (typeof id !== "string" || id.length === 0 || id === "unknown") {
+    throw new ToolError("not_allowed", "هویت مشخص نیست.");
+  }
+  if (!deps.isOwner(id)) {
+    throw new ToolError("not_allowed", "اجرای بنچ‌مارک فقط برای مالک است.");
+  }
+  return id;
+}
+
+/**
+ * A notify failure must never fail the benchmark run: the run is stored, and
+ * the failure is logged for diagnostics. The scheduler marks the task from
+ * the tool's own return, not from the side channel.
+ */
+async function safeNotify(deps: RunBenchToolDeps, text: string): Promise<void> {
+  try {
+    await deps.notifyOwner(text);
+  } catch (err) {
+    deps.log?.(`bench notify failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}

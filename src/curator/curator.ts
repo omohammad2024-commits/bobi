@@ -28,8 +28,10 @@ import type { MemoryProvider, StoredMemory } from "../memory/provider";
  */
 export const CURATOR_TASK_ACTION = "curate";
 
-/** Kinds of proposals the curator can raise. */
-export type ProposalKind = "duplicate" | "stale" | "split";
+/** Kinds of proposals the curator can raise. "archive" comes from the
+ *  Phase-3 summarizer: old memories consolidated into an archive entry,
+ *  with the originals proposed for deletion (owner-approved, never silent). */
+export type ProposalKind = "duplicate" | "stale" | "split" | "archive";
 
 /** What applying a proposal would do, as structured data (never code). */
 export type ProposalAction =
@@ -65,6 +67,8 @@ export function kindLabelFa(kind: ProposalKind): string {
       return "قدیمی/متناقض";
     case "split":
       return "تقسیم";
+    case "archive":
+      return "بایگانی";
   }
 }
 

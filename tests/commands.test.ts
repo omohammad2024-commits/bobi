@@ -35,7 +35,10 @@ describe("/help visibility", () => {
     expect(names).toContain("ai");
     expect(names).toContain("ban");
     expect(names).toContain("digest");
-    expect(names).toHaveLength(69);
+    expect(names).toContain("skill");
+    expect(names).toContain("bench");
+    expect(names).toContain("gassistant");
+    expect(names).toHaveLength(74);
   });
 
   test("every entry has a Persian one-line description", () => {
@@ -87,7 +90,7 @@ describe("/help visibility", () => {
         expect(["start", "help", "commands", "voice", "lang"]).toContain(c.name);
       }
     }
-    expect(COMMAND_HELP.length).toBe(69);
+    expect(COMMAND_HELP.length).toBe(74);
     expect(visibleCommandHelp(false).map((c) => c.name)).toEqual([
       "start",
       "help",

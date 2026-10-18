@@ -28,6 +28,7 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { APP_VERSION } from "../core/app";
+import { handleDashboardRequest, isDashboardEnabled } from "./dashboard";
 import type { ConversationEngine } from "../conversation/engine";
 import type { ToolActor } from "../tools/types";
 import type { Storage } from "../storage/storage";
@@ -117,6 +118,17 @@ export function createApiServer(
     }
     if (path === "/api/v1/turn") {
       return handleTurn(req, { ip: clientIp(req) });
+    }
+    // Phase 3, item 3: owner-only web dashboard. Opt-in via BOBI_DASHBOARD=1;
+    // the sub-router returns undefined for non-dashboard paths so the 404
+    // below still answers everything else. No second listener: the dashboard
+    // shares this server's socket, token, and rate-limit posture.
+    if (isDashboardEnabled()) {
+      const dashboardRes = handleDashboardRequest(req, {
+        storage: deps.storage,
+        token,
+      });
+      if (dashboardRes !== undefined) return dashboardRes;
     }
     // Unknown routes get a bare 404 with no hint about what does exist.
     return json(404, { error: "یافت نشد." });

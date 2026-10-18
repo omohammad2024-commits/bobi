@@ -57,6 +57,12 @@ import type { GroupAccessService } from "../groups/service";
 import type { PanelController } from "../groups/controller";
 import type { AiAdminController } from "../groups/ai_controller";
 import { checkGroupAccess, denialNote } from "../groups/enforcement";
+import {
+  getAssistantConfig,
+  recordGroupMessage,
+  shouldReplyAssistant,
+  type GroupHistory,
+} from "../groups/assistant";
 import type { UserAccessService } from "../auth/user_service";
 import type { UserPanelController } from "../auth/user_controller";
 import { checkUserAccess, userDenialNote } from "../auth/user_enforcement";
@@ -165,6 +171,15 @@ export interface BotDeps {
    * Set at the call site from OwnerIdentity — never from message content.
    */
   moderationOwnerId?: string;
+  /**
+   * Phase-3 group assistant mode (opt-in per group, owner-managed).
+   * When absent, the assistant hook in the message path stays inert
+   * (all groups behave as before). Set at the call site from OwnerIdentity.
+   */
+  groupAssistant?: {
+    ownerId: string;
+    history: GroupHistory;
+  };
   /**
    * Bot version string, shown by /version (and its palette tap). Read from
    * package.json once at startup by the coordinator.
@@ -953,6 +968,12 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
   { name: "unban", descriptionFa: "رفع مسدودیت کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
   { name: "mute", descriptionFa: "نادیده گرفتن پیام‌های کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
   { name: "unmute", descriptionFa: "رفع نادیده گرفتن کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
+  // ---- phase-3 ----
+  { name: "skill", descriptionFa: "نصب و مدیریت مهارت‌ها", ownerOnly: true, group: "owner" },
+  { name: "bench", descriptionFa: "بنچ‌مارک و روند کیفیت", ownerOnly: true, group: "owner" },
+  { name: "gassistant", descriptionFa: "حالت دستیار گروه", ownerOnly: true, group: "owner" },
+  { name: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", ownerOnly: true, group: "owner" },
+  { name: "gpoll", descriptionFa: "نظرسنجی در گروه", ownerOnly: true, group: "owner" },
 ];
 
 /**
@@ -2089,6 +2110,53 @@ export function createBot(token: string, deps: BotDeps): Bot {
         }
       }
       if (decision.handled) return; // moderated — never reaches the engine
+    }
+
+    // ---- Phase-3 group assistant (opt-in per group, owner-managed) ----
+    // Records group chatter for /gsummary and enforces reply-only-when-called
+    // silence. Inert unless the owner enabled the mode for this group.
+    // Commands ("/...") always fall through to their handlers below.
+    if (
+      (ctx.chat.type === "group" || ctx.chat.type === "supergroup") &&
+      deps.groupAssistant !== undefined
+    ) {
+      const ga = deps.groupAssistant;
+      const gaChatId = String(ctx.chat.id);
+      recordGroupMessage(
+        {
+          ...(deps.storage !== undefined ? { storage: deps.storage } : {}),
+          ownerId: ga.ownerId,
+          history: ga.history,
+        },
+        {
+          chatId: gaChatId,
+          userId: ctx.from ? String(ctx.from.id) : "",
+          name:
+            ctx.from !== undefined
+              ? [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ")
+              : "",
+          text: ctx.message.text,
+          tsMs: Date.now(),
+        },
+      );
+      if (!ctx.message.text.startsWith("/")) {
+        const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
+        if (gaCfg.enabled) {
+          const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+          const botUsername = ctx.me.username ?? "";
+          if (
+            !shouldReplyAssistant({
+              text: ctx.message.text,
+              botUsername,
+              replyToBot,
+              enabled: true,
+              replyOnlyWhenCalled: gaCfg.replyOnlyWhenCalled,
+            })
+          ) {
+            return; // assistant mode: silent unless called
+          }
+        }
+      }
     }
 
     const text = ctx.message.text;

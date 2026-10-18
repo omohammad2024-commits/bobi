@@ -44,6 +44,8 @@ import {
 import { COMMAND_DEFS as SESSION_COMMAND_DEFS } from "../src/bot/cmd_session";
 import { COMMAND_DEFS as SYSTEM_COMMAND_DEFS } from "../src/bot/cmd_system";
 import { COMMAND_DEFS as AUTO_COMMAND_DEFS } from "../src/bot/cmd_auto";
+import { COMMAND_DEFS as BENCH_COMMAND_DEFS } from "../src/bot/cmd_phase3_bench";
+import { COMMAND_DEFS as SKILLS_COMMAND_DEFS } from "../src/bot/cmd_phase3_skills";
 import {
   runPaletteCommand,
   handlePaletteCallback,
@@ -69,6 +71,12 @@ const HERMES_DEFS = [
   ...SESSION_COMMAND_DEFS,
   ...SYSTEM_COMMAND_DEFS,
   ...AUTO_COMMAND_DEFS,
+  // Phase-3: owner-only commands (invisible to the public via ownerOnly).
+  ...SKILLS_COMMAND_DEFS,
+  ...BENCH_COMMAND_DEFS,
+  { command: "gassistant", descriptionFa: "حالت دستیار گروه", descriptionEn: "Group assistant mode", ownerOnly: true },
+  { command: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", descriptionEn: "Summarize group discussion", ownerOnly: true },
+  { command: "gpoll", descriptionFa: "نظرسنجی در گروه", descriptionEn: "Create a group poll", ownerOnly: true },
 ];
 
 function authForOwner() {
@@ -218,8 +226,8 @@ describe("requireOwnerTier", () => {
 describe("forged palette callbacks across all owner-only commands", () => {
   const ownerOnly = COMMAND_HELP.filter((c) => c.ownerOnly).map((c) => c.name);
 
-  test("all 64 owner-only commands are refused for a stranger via pal:cmd:", async () => {
-    expect(ownerOnly.length).toBe(64);
+  test("all 69 owner-only commands are refused for a stranger via pal:cmd:", async () => {
+    expect(ownerOnly.length).toBe(69);
     for (const name of ownerOnly) {
       const f = fakeCbCtx(STRANGER, false);
       await handlePaletteCallback(f.ctx, f.env, `pal:cmd:${name}`, "fa");
@@ -257,7 +265,7 @@ describe("menu invisibility", () => {
     expect(pub.length).toBe(5);
     expect(pub.every((d) => !d.ownerOnly)).toBe(true);
     const own = ownerMenuCommands(HERMES_DEFS);
-    expect(own.length).toBe(69);
+    expect(own.length).toBe(74);
   });
 
   test("the public palette render contains no owner group or command", () => {

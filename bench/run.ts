@@ -576,23 +576,32 @@ function parseArgs(argv: string[]): {
   scoreOnly?: string;
   toolMap?: string;
 } {
-  const opts = {
+  const opts: {
+    tasks?: string[];
+    live: boolean;
+    out: string;
+    db?: string;
+    scoreOnly?: string;
+    toolMap?: string;
+  } = {
     live: false,
     out: DEFAULT_OUT,
-    tasks: undefined as string[] | undefined,
-    db: undefined as string | undefined,
-    scoreOnly: undefined as string | undefined,
-    toolMap: undefined as string | undefined,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--live") opts.live = true;
     else if (a === "--tasks") opts.tasks = (argv[++i] ?? "").split(",").filter(Boolean);
     else if (a === "--out") opts.out = argv[++i] ?? DEFAULT_OUT;
-    else if (a === "--db") opts.db = argv[++i];
-    else if (a === "--score-only") opts.scoreOnly = argv[++i];
-    else if (a === "--tool-map") opts.toolMap = argv[++i];
-    else if (a === "--help" || a === "-h") {
+    else if (a === "--db") {
+      const v = argv[++i];
+      if (v !== undefined) opts.db = v;
+    } else if (a === "--score-only") {
+      const v = argv[++i];
+      if (v !== undefined) opts.scoreOnly = v;
+    } else if (a === "--tool-map") {
+      const v = argv[++i];
+      if (v !== undefined) opts.toolMap = v;
+    } else if (a === "--help" || a === "-h") {
       console.log(
         "bun bench/run.ts [--tasks id,...] [--live] [--out dir] [--db path]\n" +
           "bun bench/run.ts --score-only <external-results.json> [--out dir] [--tool-map <map.json>]",
