@@ -59,6 +59,25 @@ const PERM_REVIEW: Permission = "groups.review";
 const PERM_MANAGE: Permission = "groups.manage";
 const PERM_VIEW: Permission = "admin.view";
 
+/**
+ * The actions this controller owns.
+ *
+ * Listed explicitly rather than inferred, so a new action added to the codec
+ * cannot be silently claimed by the wrong panel. Every entry here has a case in
+ * `dispatch`; anything else belongs to another controller and must be left for
+ * it.
+ */
+const GROUP_ACTION_KINDS: ReadonlySet<PanelAction["kind"]> = new Set([
+  "menu",
+  "status",
+  "pending",
+  "approved",
+  "revoke_menu",
+  "approve",
+  "reject",
+  "revoke",
+] as const);
+
 export class PanelController {
   private readonly auth: AuthorizationService;
   private readonly admin: AdminBoundary;
@@ -102,9 +121,9 @@ export class PanelController {
   /**
    * Any click that may be a panel button.
    *
-   * Returns true when the data belonged to the panel and was handled here, so
-   * the caller can stop routing. Unknown data also returns true after a
-   * generic denial — probing the callback space reveals nothing either way.
+   * Returns true only for the actions THIS controller owns, so the other panels
+   * still receive their own callbacks. Anything unrecognised is left for the
+   * caller to route rather than being claimed and dropped.
    */
   async handleCallback(ctx: Context, data: string): Promise<boolean> {
     const action = decode(data);
@@ -112,6 +131,16 @@ export class PanelController {
       // Not panel data at all: let the caller route it normally.
       return false;
     }
+
+    // Only the group actions may be claimed here.
+    //
+    // This guard is load-bearing. An earlier version returned true for ANY
+    // decodable action, and because the router asks this controller first, an
+    // `ai_menu` callback was claimed here, matched no case in dispatch, and
+    // returned true — so the AI controller was never reached and EVERY button
+    // in /ai silently did nothing.
+    if (!GROUP_ACTION_KINDS.has(action.kind)) return false;
+
     await this.dispatch(ctx, action);
     return true;
   }

@@ -21,7 +21,7 @@ import type { ProviderSecretStore } from "../ai/secret_store";
 import type { AdapterRegistry } from "../ai/adapter_registry";
 import { ModelService, ProviderService, type ProviderView } from "../ai/provider_service";
 import type { RemoteModel } from "../ai/adapter";
-import { ADAPTER_TEMPLATES } from "../ai/adapter";
+import { ADAPTER_TEMPLATES, providerPreset } from "../ai/adapter";
 import { isAdapterType } from "../ai/adapter";
 import type { Storage } from "../storage/storage";
 import { decode, encode, type PanelAction } from "./callbacks";
@@ -29,6 +29,7 @@ import { PANEL_DENIED, PANEL_STALE, backKeyboard } from "./panel";
 import {
   adapterKeyboard,
   addFormText,
+  presetFormText,
   aiMenuKeyboard,
   aiMenuText,
   attemptsKeyboard,
@@ -71,6 +72,8 @@ interface PendingInput {
   providerId?: number;
   /** When set, the add flow preselects this adapter. */
   adapter?: string;
+  /** When set, the add flow came from a named service preset. */
+  presetId?: string;
 }
 
 export interface AiAdminOptions {
@@ -568,6 +571,28 @@ export class AiAdminController {
             // interpreted as a provider, not as a chat message.
             this.setPending(ctx, { kind: "add_provider", adapter });
             return { text: addFormText(adapter), keyboard: backKeyboard() };
+          },
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "ai_add_preset": {
+        const preset = providerPreset(action.preset);
+        if (!preset) return void (await this.deny(ctx));
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.add.preset", permission: PERM_MANAGE, targetId: preset.id },
+          () => {
+            // The preset supplies the endpoint; the owner still supplies the
+            // label and key. It is remembered so the form parser can pre-fill
+            // the URL the owner saw.
+            this.setPending(ctx, {
+              kind: "add_provider",
+              adapter: "openai_compatible",
+              presetId: preset.id,
+            });
+            return { text: presetFormText(preset), keyboard: backKeyboard() };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -1136,13 +1161,32 @@ export class AiAdminController {
       }
       this.pending.delete(id);
 
+      // A preset supplies its endpoint, so the owner may leave the URL line out
+      // of the form entirely. An explicitly typed URL still wins, which is how
+      // the Cloudflare placeholder gets filled in.
+      const preset = flow.presetId !== undefined ? providerPreset(flow.presetId) : undefined;
+      const baseUrl =
+        parsed.baseUrl.trim().length > 0 ? parsed.baseUrl : (preset?.baseUrl ?? "");
+
+      // A placeholder that was never substituted would be sent verbatim and
+      // fail with a confusing error, so it is refused here with a clear one.
+      if (preset?.requiredPlaceholder !== undefined &&
+          baseUrl.includes(`{${preset.requiredPlaceholder}}`)) {
+        await this.render(
+          ctx,
+          `آدرس هنوز شامل {${preset.requiredPlaceholder}} است؛ آن را با مقدار واقعی عوض کن.`,
+          backKeyboard(),
+        );
+        return true;
+      }
+
       const r = await this.admin.runAdmin(
         { actor, operation: "ai.add", permission: PERM_MANAGE },
         () => {
           const res = this.providers.create({
             label: parsed.label,
             adapter: flow.adapter ?? "openai_compatible",
-            baseUrl: parsed.baseUrl,
+            baseUrl,
             apiKey: parsed.apiKey,
           });
           // One shape for both outcomes so the caller never sees a partial type.
@@ -1260,7 +1304,14 @@ function withAddButton(kb: InlineKeyboard, providerId: number): InlineKeyboard {
   return kb;
 }
 
-/** The add-provider form's expected lines. */
+/**
+ * The add-provider form's expected lines.
+ *
+ * `baseUrl` may be EMPTY when the flow came from a preset, because the preset
+ * already supplies one — the owner only has to fill in what is genuinely
+ * theirs. It is returned as an empty string rather than undefined so the caller
+ * can tell "left blank on purpose" from "the field was missing".
+ */
 function parseSubmission(
   lines: readonly string[],
 ): { label: string; baseUrl: string; apiKey: string } | undefined {
@@ -1274,11 +1325,16 @@ function parseSubmission(
   }
 
   const label = byKey.get("نام نمایشی") ?? byKey.get("label") ?? lines[0];
-  const baseUrl = byKey.get("آدرس سرویس") ?? byKey.get("base url") ?? lines[1];
+  // A labelled but empty URL line is honoured as "empty", not treated as absent.
+  const baseUrl = byKey.has("آدرس سرویس")
+    ? (byKey.get("آدرس سرویس") ?? "")
+    : byKey.has("base url")
+      ? (byKey.get("base url") ?? "")
+      : (lines[1] ?? "");
   const apiKey = byKey.get("کلید api") ?? byKey.get("api key") ?? lines[2];
 
-  if (label === undefined || baseUrl === undefined || apiKey === undefined) return undefined;
-  if (label.length === 0 || baseUrl.length === 0 || apiKey.length === 0) return undefined;
+  if (label === undefined || apiKey === undefined) return undefined;
+  if (label.length === 0 || apiKey.length === 0) return undefined;
   return { label, baseUrl, apiKey };
 }
 
@@ -1376,6 +1432,7 @@ const AI_ACTION_KINDS: ReadonlySet<string> = new Set([
   "ai_provider",
   "ai_add_form",
   "ai_add_adapter",
+  "ai_add_preset",
   "ai_edit",
   "ai_toggle",
   "ai_test",

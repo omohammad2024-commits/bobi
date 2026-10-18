@@ -13,7 +13,7 @@
  * and is still refused for a non-owner.
  */
 
-import { isAdapterType } from "../ai/adapter";
+import { isAdapterType, isProviderPreset } from "../ai/adapter";
 import { isSearchProviderType } from "../search/provider";
 
 /** Hard cap, one byte under Telegram's limit. */
@@ -34,6 +34,8 @@ export type PanelAction =
   | { kind: "ai_provider"; providerId: number }
   | { kind: "ai_add_form" }
   | { kind: "ai_add_adapter"; adapter: string }
+  /** Add a provider from a known preset, so the owner does not retype its URL. */
+  | { kind: "ai_add_preset"; preset: string }
   | { kind: "ai_edit"; providerId: number }
   | { kind: "ai_toggle"; providerId: number }
   | { kind: "ai_test"; providerId: number }
@@ -121,6 +123,8 @@ export function encode(action: PanelAction): string {
       return `${CALLBACK_PREFIX}:aia`;
     case "ai_add_adapter":
       return `${CALLBACK_PREFIX}:ait:${action.adapter}`;
+    case "ai_add_preset":
+      return `${CALLBACK_PREFIX}:aipr:${action.preset}`;
     case "ai_edit":
       return `${CALLBACK_PREFIX}:aie:${action.providerId}`;
     case "ai_toggle":
@@ -259,6 +263,8 @@ export function decode(data: string): PanelAction | undefined {
       return parts.length === 2 ? { kind: "ai_add_form" } : undefined;
     case "ait":
       return parseAdapter(arg, parts.length);
+    case "aipr":
+      return parsePreset(arg, parts.length);
     case "aie":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_edit", providerId }));
     case "ais":
@@ -431,6 +437,13 @@ function parseAdapter(
   if (length !== 3 || arg === undefined) return undefined;
   if (!isAdapterType(arg)) return undefined;
   return { kind: "ai_add_adapter", adapter: arg };
+}
+
+/** Parse a provider-preset slug, which must be one BOBI ships. */
+function parsePreset(arg: string | undefined, length: number): PanelAction | undefined {
+  if (length !== 3 || arg === undefined) return undefined;
+  if (!isProviderPreset(arg)) return undefined;
+  return { kind: "ai_add_preset", preset: arg };
 }
 
 function parseOffset(

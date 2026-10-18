@@ -123,6 +123,67 @@ export function pinnedLookup(addresses: readonly string[]): (...args: unknown[])
 }
 
 /**
+ * The pinned lookup, preferring the `all` form.
+ *
+ * This exists because of a REAL failure observed in production: a DNS answer set
+ * routinely contains addresses that accept a TCP connection and then never
+ * respond — Google's `generativelanguage.googleapis.com` resolved to eight A
+ * records, the first of which black-holed every request while the second
+ * answered fine. Handing Node a SINGLE address made the request die on a
+ * timeout, even though working addresses were in the same answer set.
+ *
+ * Node's `net.connect` treats a list from the `all` form as a fallback chain:
+ * it advances to the next address when a connection attempt fails. That is
+ * exactly the behaviour needed here, and it does NOT widen the security
+ * boundary — every address in the list was resolved and classified by
+ * `dns_guard`, so the socket still cannot reach anything that was not approved.
+ *
+ * The single-address form remains as the fallback for a runtime that calls the
+ * lookup without `all`, since dropping it would break those runtimes.
+ */
+export function pinnedLookupAll(addresses: readonly string[]): (...args: unknown[]) => void {
+  const scalar = pinnedLookup(addresses);
+
+  return (...args: unknown[]): void => {
+    const options = args.find(
+      (a): a is { all?: boolean; family?: number } => typeof a === "object" && a !== null,
+    );
+    // Only the `all` shape is handled here; anything else defers to the scalar
+    // implementation so both call conventions keep working.
+    if (options?.all !== true) {
+      scalar(...args);
+      return;
+    }
+
+    const cb = args[args.length - 1];
+    if (typeof cb !== "function") {
+      throw new Error("unsupported lookup callback shape");
+    }
+
+    const family = typeof options.family === "number" ? options.family : 0;
+    const eligible = addresses.filter((address) => {
+      const isV6 = address.includes(":");
+      if (family === 4) return !isV6;
+      if (family === 6) return isV6;
+      return true;
+    });
+
+    if (eligible.length === 0) {
+      (cb as Function)(new Error("no pinned address for requested family"));
+      return;
+    }
+
+    (cb as Function)(
+      null,
+      eligible.map((address) => ({
+        address,
+        family: address.includes(":") ? 6 : 4,
+      })),
+    );
+  };
+}
+
+/**
  * Send one request, bound to a validated address set.
  *
  * @throws AiError: `invalid_response` for an unusable URL, `timeout` when the
@@ -158,13 +219,91 @@ export async function pinnedFetch(req: PinnedRequest): Promise<PinnedResponse> {
   // rather than trusted. No socket exists yet when this throws.
   for (const address of req.addresses) {
     if (!classifyAddress(address, req.allowLocalTargets === true).allowed) {
-      throw new AiError(
-        "invalid_response",
-        "آدرس اتصال پروایدر مجاز نیست.",
-      );
+      throw new AiError("invalid_response", "آدرس اتصال پروایدر مجاز نیست.");
     }
   }
 
+  return attemptAddresses(req, url);
+}
+
+/**
+ * Try each validated address in turn until one answers.
+ *
+ * WHY THIS LOOPS RATHER THAN LETTING NODE FALL THROUGH:
+ *
+ * A DNS answer set routinely contains addresses that accept a TCP connection and
+ * then never reply — a black hole. This was observed against
+ * `generativelanguage.googleapis.com`, where the first of eight A records
+ * swallowed every request while later ones answered in under a second.
+ *
+ * Node's `lookup` supports returning a list, and for a connection attempt it
+ * will advance to the next entry — but only for the CONNECT phase. Once a
+ * request body has been written to a black-holed socket, Node will not re-send
+ * it elsewhere, because it cannot know how much of it the peer received. A
+ * `GET` therefore recovers on its own and a `POST` does not, which is exactly
+ * what was measured: GET succeeded against the full set while POST timed out.
+ *
+ * So the retry has to happen up here, at the request level, where a fresh
+ * attempt sends a fresh body. Every address tried was already classified by the
+ * DNS guard, so the security boundary is unchanged: the socket still cannot
+ * reach anything that was not approved.
+ */
+async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedResponse> {
+  const deadline = Date.now() + Math.max(1, req.timeoutMs);
+  let lastError: AiError | undefined;
+
+  for (const [index, address] of req.addresses.entries()) {
+    // Stop when the caller's deadline has passed. A timeout is reported as
+    // such rather than as a network fault, because that is what it is.
+    if (Date.now() >= deadline) {
+      throw lastError ?? new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
+    }
+    if (req.signal.aborted) throw new AiError("aborted", "درخواست لغو شد.");
+
+    // Each attempt gets a share of what is left, so no single dead address can
+    // consume the whole budget. The last address gets the remainder.
+    const remaining = deadline - Date.now();
+    const share = Math.max(
+      MIN_ATTEMPT_MS,
+      Math.floor(remaining / (req.addresses.length - index)),
+    );
+
+    try {
+      return await attemptOne(req, url, [address], Math.min(share, remaining));
+    } catch (err) {
+      const mapped = err instanceof AiError ? err : new AiError("network", "ارتباط با سرویس برقرار نشد.");
+      // A cancellation or a caller-imposed expiry ends the whole attempt: the
+      // remaining addresses cannot fix either.
+      if (mapped.kind === "aborted") throw mapped;
+      lastError = mapped;
+    }
+  }
+
+  throw lastError ?? new AiError("network", "ارتباط با سرویس برقرار نشد.");
+}
+
+/**
+ * Floor for one address attempt.
+ *
+ * Below this a slow-but-working address would be abandoned before it could
+ * answer, turning a healthy service into a failure.
+ */
+const MIN_ATTEMPT_MS = 2_000;
+
+/**
+ * Send one request, bound to the given addresses.
+ *
+ * @throws AiError: `invalid_response` for an unusable URL, `timeout` when the
+ * deadline passes, `aborted` when the caller cancels, `network` on a transport
+ * failure. Messages never contain the pinned address or headers.
+ */
+function attemptOne(
+  req: PinnedRequest,
+  url: URL,
+  addresses: readonly string[],
+  timeoutMs: number,
+): Promise<PinnedResponse> {
+  const secure = url.protocol === "https:";
   const requestFn = secure ? httpsRequest : httpRequest;
   const port = url.port ? Number(url.port) : secure ? 443 : 80;
 
@@ -196,7 +335,7 @@ export async function pinnedFetch(req: PinnedRequest): Promise<PinnedResponse> {
       reject(new AiError("timeout", "پاسخ سرویس به‌موقع نرسید."));
     };
 
-    deadline = setTimeout(deadlineFn, Math.max(1, req.timeoutMs));
+    deadline = setTimeout(deadlineFn, Math.max(1, timeoutMs));
     // An already-aborted signal never fires its "abort" listener (the DOM
     // rule), so the aborted state has to be read directly. Without this the
     // cancelled request would still open a socket and wait for the timeout.
@@ -216,7 +355,7 @@ export async function pinnedFetch(req: PinnedRequest): Promise<PinnedResponse> {
         method: req.method,
         headers: req.headers,
         // The connection target comes from here and nowhere else.
-        lookup: pinnedLookup(req.addresses),
+        lookup: pinnedLookup(addresses),
         // Keep SNI/cert verification on the configured hostname. `servername`
         // must equal the original name or the certificate check would compare
         // against the IP instead.

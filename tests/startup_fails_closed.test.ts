@@ -10,21 +10,44 @@ import { describe, expect, test } from "bun:test";
 
 const ENTRY = ["src/index.ts"] as const;
 
-/** Run the entry point with the mandatory security variables removed. */
+/** Every variable name the config layer reads. */
+const CONFIG_VARS = [
+  "TELEGRAM_BOT_TOKEN",
+  "OWNER_TELEGRAM_ID",
+  "BOBI_AI_KEY_MASTER_KEY",
+  "SOL_AI_KEY_MASTER_KEY",
+  "BOBI_ENV",
+  "SOL_ENV",
+  "BOBI_LOG_LEVEL",
+  "SOL_LOG_LEVEL",
+  "BOBI_DB_PATH",
+  "SOL_DB_PATH",
+  "PORT",
+  "BOBI_HEALTH_PORT",
+] as const;
+
+/**
+ * Run the entry point with the mandatory security variables removed.
+ *
+ * Bun loads a `.env` from the working directory automatically, which would make
+ * these tests pass against whatever the developer happens to have configured —
+ * they would stop testing the gate at all. `--no-env-file` is therefore passed
+ * explicitly, and every config variable is cleared from the inherited
+ * environment too, so the child sees no configuration from any source.
+ */
 async function runStart(extraEnv: Record<string, string> = {}): Promise<{
   code: number;
   output: string;
   elapsedMs: number;
 }> {
   const env: Record<string, string> = { ...process.env } as Record<string, string>;
-  delete env["TELEGRAM_BOT_TOKEN"];
-  delete env["OWNER_TELEGRAM_ID"];
-  delete env["SOL_AI_KEY_MASTER_KEY"];
+  for (const key of CONFIG_VARS) delete env[key];
   for (const [k, v] of Object.entries(extraEnv)) env[k] = v;
 
   const started = Date.now();
   const proc = Bun.spawn({
-    cmd: ["bun", "run", ...ENTRY],
+    // `--no-env-file` keeps an on-disk .env out of the child entirely.
+    cmd: ["bun", "--no-env-file", "run", ...ENTRY],
     cwd: process.cwd(),
     env,
     stdout: "pipe",

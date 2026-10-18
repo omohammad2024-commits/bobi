@@ -115,6 +115,104 @@ export interface AdapterTemplate {
   /** True when the URL is pre-filled and should be the default. */
   prefilled: boolean;
   capabilities: AdapterCapabilities;
+  /**
+   * A well-known model id for this service, offered as a starting point.
+   *
+   * A suggestion, never applied automatically: the owner still adds the model
+   * explicitly, because a service may have retired this id (which is exactly
+   * what happened when Gemini closed `gemini-2.5-flash` to new users).
+   */
+  suggestedModel?: string;
+  /**
+   * A placeholder the owner must replace, when the URL is not usable as-is.
+   *
+   * Cloudflare's endpoint embeds an account id, so the template cannot be
+   * complete. Naming the placeholder lets the panel say what to substitute
+   * rather than leaving the owner to decode the URL.
+   */
+  requiredPlaceholder?: string;
+}
+
+/**
+ * Named OpenAI-compatible services the owner can add in one step.
+ *
+ * They share the `openai_compatible` adapter — the wire format is the same — so
+ * this is purely a convenience list that pre-fills the endpoint. Each entry was
+ * checked against the live service where that was possible; the notes say what
+ * was actually verified.
+ */
+export interface ProviderPreset {
+  /** Stable slug, used as the provider label seed. */
+  id: string;
+  label: string;
+  baseUrl: string;
+  /** A starting model id. A suggestion, never applied automatically. */
+  suggestedModel?: string;
+  /** Placeholder the owner must replace before the URL works. */
+  requiredPlaceholder?: string;
+  /** What was actually verified, stated plainly. */
+  note: string;
+}
+
+export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
+  {
+    id: "cloudflare",
+    label: "Cloudflare Workers AI",
+    // The account id is part of the path, so this URL is a template the owner
+    // completes. Nothing contacts it until they save and test.
+    baseUrl: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1",
+    suggestedModel: "@cf/meta/llama-3.1-8b-instruct",
+    requiredPlaceholder: "ACCOUNT_ID",
+    note: "آدرس شامل شناسهٔ حساب است؛ آن را جایگزین {ACCOUNT_ID} کن. کلید API از پنل Cloudflare.",
+  },
+  {
+    id: "openrouter",
+    label: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model، مثل anthropic/claude-sonnet-5-5.",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    suggestedModel: "deepseek-chat",
+    note: "آدرس بررسی شد.",
+  },
+  {
+    id: "groq",
+    label: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    note: "آدرس بررسی شد. سرعت بالا، مدل‌های open-weight.",
+  },
+  {
+    id: "mistral",
+    label: "Mistral",
+    baseUrl: "https://api.mistral.ai/v1",
+    note: "آدرس بررسی شد.",
+  },
+  {
+    id: "xai",
+    label: "xAI (Grok)",
+    baseUrl: "https://api.x.ai/v1",
+    suggestedModel: "grok-4",
+    note: "آدرس بررسی شد.",
+  },
+  {
+    id: "together",
+    label: "Together",
+    baseUrl: "https://api.together.xyz/v1",
+    note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model.",
+  },
+];
+
+/** True when a string names a preset BOBI ships. */
+export function isProviderPreset(value: string): boolean {
+  return PROVIDER_PRESETS.some((p) => p.id === value);
+}
+
+/** Look up a preset by its slug. */
+export function providerPreset(id: string): ProviderPreset | undefined {
+  return PROVIDER_PRESETS.find((p) => p.id === id);
 }
 
 export const ADAPTER_TEMPLATES: readonly AdapterTemplate[] = [
