@@ -1475,7 +1475,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   });
 
   // ---- text messages → conversation engine ----
-  bot.on("message:text", async (ctx) => {
+  bot.on("message:text", async (ctx, next) => {
     // Group gate runs first: an unapproved group never reaches reasoning.
     if (!(await gateGroup(ctx, groups, senderLang(ctx, deps.prefs)))) return;
 
@@ -1522,7 +1522,11 @@ export function createBot(token: string, deps: BotDeps): Bot {
       if (consumed) return;
     }
 
-    if (text.startsWith("/")) return; // unknown command — stay silent
+    // A "/" message may target a command whose handler was registered AFTER
+    // this middleware (e.g. the Hermes parity commands in index.ts). Hand off
+    // via next() so those handlers run; a truly unknown command matches
+    // nothing downstream and stays silent.
+    if (text.startsWith("/")) return await next();
     await runTurn(ctx, deps, { text });
   });
 
