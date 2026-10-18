@@ -32,6 +32,7 @@ import { loadMcpConfig, describeIssues } from "./mcp/config";
 import { RateLimiter } from "./core/rate_limit";
 import { UsageService, formatCost } from "./core/usage";
 import { Logger } from "./core/logger";
+import { startHealthServer } from "./core/health";
 import type { Tool } from "./tools/types";
 
 async function main(): Promise<void> {
@@ -305,12 +306,29 @@ async function main(): Promise<void> {
     return users.isApproved(userId);
   }
 
+  // Health endpoint. Started only when a port is configured, so a local run
+  // opens no socket at all. A hosting platform polls this to decide whether the
+  // deploy is alive, and a long-polling bot has no other socket to offer.
+  const health =
+    config.healthPort > 0
+      ? await startHealthServer({
+          port: config.healthPort,
+          detail: () => ({
+            tools: tools.listActiveNames().length,
+            scheduler: scheduler.isRunning,
+          }),
+          onError: (message) => log.error("health server failed to start", { error: message }),
+        })
+      : undefined;
+  if (health !== undefined) log.info("health endpoint listening", { port: health.port });
+
   // Graceful shutdown
   const stop = (): void => {
     log.info("shutting down");
     // Stop the scheduler before the database closes: a pass in flight would
     // otherwise write to a closed handle.
     scheduler.stop();
+    void health?.close();
     // Close MCP servers so their child processes are reaped rather than left
     // orphaned when the bot exits.
     void mcp.closeAll();

@@ -1,0 +1,18 @@
+# Never bake local state or secrets into the image.
+node_modules
+data
+.env
+.env.local
+mcp.json
+.git
+.gitignore
+
+# Tests are not needed at runtime; excluding them keeps the image small.
+tests
+
+# Local editor and tooling state.
+.claude
+*.log
+*.db
+*.db-wal
+*.db-shm

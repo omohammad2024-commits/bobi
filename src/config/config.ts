@@ -55,6 +55,17 @@ export interface SolConfig {
    * see `src/mcp/config.ts` for the validation rules.
    */
   mcpConfigPath: string;
+  /**
+   * Port for the health endpoint.
+   *
+   * A hosting platform decides whether a deploy succeeded by polling a URL, and
+   * a long-polling bot has no socket for it to reach. Zero disables the server,
+   * which is right for a local run.
+   *
+   * The platform's own PORT variable wins when present, because that is the one
+   * it will actually check.
+   */
+  healthPort: number;
 }
 
 const VALID_ENVS: ReadonlySet<string> = new Set(["development", "production", "test"]);
@@ -98,6 +109,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
     // without web access cannot answer anything past its training data.
     enableWebSearch: pickBool(envVar(env, "ENABLE_WEB_SEARCH"), true),
     mcpConfigPath: envVar(env, "MCP_CONFIG")?.trim() || "mcp.json",
+    // The platform's PORT wins: it is what the healthcheck will actually call.
+    // Otherwise BOBI_HEALTH_PORT, then off (0) for a local run.
+    healthPort: clampInt(
+      env.PORT ?? envVar(env, "HEALTH_PORT"),
+      0,
+      65_535,
+      0,
+    ),
   };
 }
 
