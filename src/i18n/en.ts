@@ -313,4 +313,81 @@ export const en: LanguagePack = {
   "digest.memory_card.title": "💭 Memory",
   "digest.memory_card.key": "Key: {key}",
   "digest.memory_card.saved": "Saved: {date}",
+
+  // ---- phase 4: skill sharing (export/import packages) ----
+  "ph4_skill_share.export.not_found": "❌ No skill named “{name}” found.",
+  "ph4_skill_share.export.too_large": "❌ The package for skill “{name}” exceeds the size cap and cannot be exported.",
+  "ph4_skill_share.export.failed": "❌ Exporting the package failed.",
+  "ph4_skill_share.export.done":
+    "📦 Skill package “{name}” is ready (version {version}).\nKeep this `.bobiskill` file or send it to another BOBI instance; install it with “/skill import”.",
+  "ph4_skill_share.export.no_version": "no version",
+  "ph4_skill_share.import.not_package": "❌ Only `.bobiskill` files can be imported.",
+  "ph4_skill_share.import.too_large": "❌ Package size ({bytes}) exceeds the {max} cap.",
+  "ph4_skill_share.import.bad_envelope": "❌ This is not a valid skill package: {reason}",
+  "ph4_skill_share.import.checksum_mismatch":
+    "❌ The package was tampered with (invalid checksum) — not imported.\nOnly take packages from sources you trust.",
+  "ph4_skill_share.import.no_source":
+    "❌ No URL and no file. Pass a URL: /skill import <url>, send the `.bobiskill` file, or reply to a message holding the package.",
+  "ph4_skill_share.import.fetch_failed": "❌ Fetching the package failed: {reason}",
+  "ph4_skill_share.import.review_title": "📦 Review skill package (import)",
+  "ph4_skill_share.import.checksum_ok": "🔒 Package integrity verified.",
+  "ph4_skill_share.import.new_skill": "✨ New skill — nothing installed under this name.",
+  "ph4_skill_share.import.upgrade": "⬆️ Upgrade: version {old} → {new}",
+  "ph4_skill_share.import.downgrade":
+    "⚠️ Explicit warning: the package version ({new}) is OLDER than the installed one ({old})!",
+  "ph4_skill_share.import.same_version":
+    "ℹ️ The package version matches the installed one ({version}); this reinstalls the same version.",
+  "ph4_skill_share.import.unknown_version": "ℹ️ Version unknown; review it like a fresh install.",
+  "ph4_skill_share.import.source": "Package source: {source}",
+  "ph4_skill_share.import.source_file": "uploaded file",
+  "ph4_skill_share.import.source_replied": "replied message",
+  "ph4_skill_share.import.exported_at": "Exported: {when} from {instance}",
+  "ph4_skill_share.import.capabilities": "Declared capabilities: {caps}",
+  "ph4_skill_share.import.disabled_note":
+    "⏸️ This skill will be installed DISABLED; enable it after approval with “/skill enable {name}”.",
+  "ph4_skill_share.import.done_disabled":
+    "✅ Skill “{name}” imported and disabled.\nTo enable: /skill enable {name}",
+  "ph4_skill_share.import.rejected": "🚫 Import of “{name}” cancelled.",
+
+  // ---- phase 5: skill package signing (ed25519) + trusted publishers ----
+  "ph5_skill_signing.keygen.done":
+    "🔑 Skill signing keypair created.\n\nPublisher id (public-key fingerprint):\n`{keyId}`\n\nPublic key (safe to share):\n`{pubkey}`\n\n⚠️ The private key is stored only on this instance and is never sent automatically. For backup: /skill keyexport",
+  "ph5_skill_signing.keygen.exists":
+    "ℹ️ A signing key already exists (id: `{keyId}`).\nTo generate a fresh one: /skill keygen --force",
+  "ph5_skill_signing.keygen.regenerated":
+    "🔑 Fresh key generated and replaced.\nNew id: `{keyId}`\nPackages you signed before still verify via the public key inside them.",
+  "ph5_skill_signing.keyexport.missing":
+    "❌ No signing key exists yet. First: /skill keygen",
+  "ph5_skill_signing.keyexport.caption":
+    "🔑 Skill signing PRIVATE key — strictly confidential!\nKeep this file safe; anyone holding it can sign packages in your name.",
+  "ph5_skill_signing.export.signed_note": "🔏 Signed with key `{keyId}`.",
+  "ph5_skill_signing.export.sign_no_key":
+    "❌ “--sign” was requested but no signing key exists yet. First: /skill keygen",
+  "ph5_skill_signing.export.signer_invalid":
+    "❌ The stored signing key is corrupt, so the package was not signed. Generate a fresh key with “/skill keygen --force”.",
+  "ph5_skill_signing.import.sig_trusted": "✅ Signature: “{label}” — trusted publisher",
+  "ph5_skill_signing.import.sig_unknown":
+    "✏️ Signed with unknown key `{keyId}` — not in your trust list.",
+  "ph5_skill_signing.import.sig_unsigned": "⚠️ Unsigned — approve only if you trust the package source.",
+  "ph5_skill_signing.import.bad_signature": "❌ Bad package signature (tampered package or forged key) — not imported.",
+  "ph5_skill_signing.trust.no_input": "❌ Give a publisher id: /skill trust <key-id|public-key> [label]",
+  "ph5_skill_signing.trust.invalid":
+    "❌ Invalid input; give the 64-hex key fingerprint or the public key itself (base64).",
+  "ph5_skill_signing.trust.added": "✅ Publisher “{label}” with id `{keyId}` added to the trust list.",
+  "ph5_skill_signing.trust.updated": "ℹ️ This publisher was already trusted; label updated: “{label}”",
+  "ph5_skill_signing.untrust.no_input": "❌ Give a publisher id: /skill untrust <key-id>",
+  "ph5_skill_signing.untrust.removed":
+    "🗑️ Publisher “{label}” (`{keyId}`) removed from the trust list.\nInstalled skills from this publisher are flagged in “/skill list”.",
+  "ph5_skill_signing.untrust.missing": "❌ This id is not in the trust list.",
+  "ph5_skill_signing.trusted.title": "🤝 Trusted publishers ({count})",
+  "ph5_skill_signing.trusted.empty": "Trust list is empty.\nAdd a publisher with “/skill trust <id> [label]”.",
+  "ph5_skill_signing.trusted.item": "• “{label}” — `{keyId}`",
+  "ph5_skill_signing.list.title": "📦 Installed skills ({count})",
+  "ph5_skill_signing.list.empty": "No skills installed yet.",
+  "ph5_skill_signing.list.item": "• {name} — {status} — {sig}",
+  "ph5_skill_signing.list.enabled": "enabled",
+  "ph5_skill_signing.list.disabled": "disabled",
+  "ph5_skill_signing.list.sig_trusted": "✅ “{label}”",
+  "ph5_skill_signing.list.sig_revoked": "⚠️ valid signature, publisher not trusted",
+  "ph5_skill_signing.list.sig_unsigned": "unsigned",
 };

@@ -47,8 +47,8 @@ export const ASSISTANT_STRINGS: Record<string, Record<AssistantLang, string>> = 
     en: "Group assistant mode disabled.",
   },
   "gassistant.bad_arg": {
-    fa: "کاربرد: /gassistant on | /gassistant off | /gassistant status",
-    en: "Usage: /gassistant on | /gassistant off | /gassistant status",
+    fa: "کاربرد:\n/gassistant on | /gassistant off | /gassistant status\n/gassistant digest on | off | status | time HH:MM\n/gassistant smart on | off | status",
+    en: "Usage:\n/gassistant on | /gassistant off | /gassistant status\n/gassistant digest on | off | status | time HH:MM\n/gassistant smart on | off | status",
   },
   "gassistant.status": {
     fa: "🤖 دستیار گروهی\n• وضعیت: {state}\n• پاسخ فقط با منشن یا ریپلای: {silent}\n• حداکثر پیام خلاصه: {n}\n• نظرسنجی: {polls}",
@@ -96,6 +96,92 @@ export const ASSISTANT_STRINGS: Record<string, Record<AssistantLang, string>> = 
   "gassistant.summary.topics": {
     fa: "💬 واژه‌های پرتکرار: {list}",
     en: "💬 Top words: {list}",
+  },
+
+  // ---------- /gassistant digest (Phase-4 scheduled digests) ----------
+
+  "gassistant.digest.usage": {
+    fa: "کاربرد:\n/gassistant digest on — فعال‌سازی خلاصهٔ روزانه (به چت خصوصی مالک)\n/gassistant digest off — غیرفعال‌سازی\n/gassistant digest time HH:MM — ساعت ارسال (مثلاً 08:00)\n/gassistant.digest status — نمایش وضعیت",
+    en: "Usage:\n/gassistant digest on — enable the daily digest (to the owner's DM)\n/gassistant digest off — disable it\n/gassistant digest time HH:MM — delivery time (e.g. 08:00)\n/gassistant digest status — show status",
+  },
+  "gassistant.digest.need_mode": {
+    fa: "اول حالت دستیار گروهی را با /gassistant on فعال کن؛ خلاصهٔ روزانه بدون آن چیزی برای خلاصه کردن ندارد.",
+    en: "Enable group assistant mode first with /gassistant on — the daily digest has nothing to summarize without it.",
+  },
+  "gassistant.digest.unavailable": {
+    fa: "زمان‌بندی خلاصه در این نسخه فعال نیست؛ وضعیت ذخیره شد ولی وظیفه‌ای ساخته نشد.",
+    en: "Digest scheduling is unavailable in this build; the setting was saved but no task was created.",
+  },
+  "gassistant.digest.schedule_failed": {
+    fa: "ساخت وظیفهٔ زمان‌بندی‌شده ناموفق بود؛ لطفاً دوباره تلاش کن.",
+    en: "Could not create the scheduled task; please try again.",
+  },
+  "gassistant.digest.on": {
+    fa: "✅ خلاصهٔ روزانهٔ گروه فعال شد.\nهر روز ساعت {time} (تهران) خلاصهٔ بحث به چت خصوصی تو ارسال می‌شود؛ در خود گروه چیزی پست نمی‌شود.",
+    en: "✅ Daily group digest enabled.\nEvery day at {time} (Tehran) the discussion summary is sent to your private chat; nothing is posted into the group.",
+  },
+  "gassistant.digest.off": {
+    fa: "خلاصهٔ روزانهٔ گروه غیرفعال شد.",
+    en: "Daily group digest disabled.",
+  },
+  "gassistant.digest.time_set": {
+    fa: "ساعت ارسال خلاصهٔ روزانه روی {time} (تهران) تنظیم شد.",
+    en: "Daily digest delivery time set to {time} (Tehran).",
+  },
+  "gassistant.digest.bad_time": {
+    fa: "ساعت نامعتبر است؛ قالب «HH:MM» با ساعت ۲۴ساعته، مثلاً 08:00 یا 21:30.",
+    en: 'Invalid time; use "HH:MM" 24-hour format, e.g. 08:00 or 21:30.',
+  },
+  "gassistant.digest.status_on": {
+    fa: "روشن (روزانه ساعت {time} تهران)",
+    en: "On (daily at {time} Tehran)",
+  },
+  "gassistant.digest.status_off": {
+    fa: "خاموش",
+    en: "Off",
+  },
+  "gassistant.digest.status_line": {
+    fa: "• خلاصهٔ روزانه (به چت مالک): {digest}",
+    en: "• Daily digest (to owner DM): {digest}",
+  },
+  "gassistant.digest.header": {
+    fa: "🗞 خلاصهٔ روزانهٔ گروه {chat}",
+    en: "🗞 Daily digest of group {chat}",
+  },
+
+  // ---------- /gassistant smart (Phase-5 opt-in LLM summaries) ----------
+
+  "gassistant.smart.usage": {
+    fa: "کاربرد:\n/gassistant smart on — فعال‌سازی خلاصهٔ هوشمند (نیاز به ارائه‌دهندهٔ هوش مصنوعی)\n/gassistant smart off — غیرفعال‌سازی\n/gassistant smart status — نمایش وضعیت",
+    en: "Usage:\n/gassistant smart on — enable the smart summary (needs a configured AI provider)\n/gassistant smart off — disable it\n/gassistant smart status — show status",
+  },
+  "gassistant.smart.need_mode": {
+    fa: "اول حالت دستیار گروهی را با /gassistant on فعال کن؛ خلاصهٔ هوشمند بدون آن چیزی برای خلاصه کردن ندارد.",
+    en: "Enable group assistant mode first with /gassistant on — the smart summary has nothing to summarize without it.",
+  },
+  "gassistant.smart.unavailable": {
+    fa: "خلاصهٔ هوشمند در دسترس نیست؛ برای بابی ارائه‌دهندهٔ هوش مصنوعی تنظیم نشده است (در تلگرام: /ai).",
+    en: "The smart summary is unavailable; no AI provider is configured for Bobi (in Telegram: /ai).",
+  },
+  "gassistant.smart.on": {
+    fa: "✅ خلاصهٔ هوشمند فعال شد.\nاز این به بعد /gsummaryِ تو (مالک) یک بخش هوشمند هم دارد و خلاصهٔ روزانه هم هوشمند می‌شود؛ برای بقیهٔ اعضا همان خلاصهٔ آماری نمایش داده می‌شود.",
+    en: "✅ Smart summary enabled.\nFrom now on your (owner) /gsummary also gets a smart section, and the daily digest becomes smart too; other members still see only the stats summary.",
+  },
+  "gassistant.smart.off": {
+    fa: "خلاصهٔ هوشمند غیرفعال شد.",
+    en: "Smart summary disabled.",
+  },
+  "gassistant.smart.status_line": {
+    fa: "• خلاصهٔ هوشمند: {smart}",
+    en: "• Smart summary: {smart}",
+  },
+  "gassistant.smart.header": {
+    fa: "🤖 خلاصهٔ هوشمند",
+    en: "🤖 Smart summary",
+  },
+  "gassistant.smart.fallback": {
+    fa: "⚠️ خلاصهٔ هوشمند این‌بار در دسترس نبود؛ خلاصهٔ آماری نمایش داده شد.",
+    en: "⚠️ The smart summary was unavailable this time; showing the stats summary instead.",
   },
 
   // ---------- /gpoll ----------

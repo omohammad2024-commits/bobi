@@ -15,6 +15,14 @@
  * content, provider labels, bench markdown) goes through escapeHtml first.
  * renderSafeMarkdown escapes BEFORE applying markdown transforms, so raw
  * HTML in a bench report or a memory can never become live markup.
+ *
+ * buildLineChartSvg is pure and dependency-free like the other two, so the
+ * dashboard page embeds it verbatim via `.toString()` (see CLIENT_LIB in
+ * src/http/dashboard_pages.ts) — the unit-tested code IS the browser code.
+ * It references the module-level escapeHtml, which is embedded just before
+ * it in the page (function declarations hoist, so order is safe). No
+ * backticks or ${} in its source: it nests inside the page's <script> built
+ * by string concatenation.
  */
 
 export function escapeHtml(input: string): string {
@@ -165,4 +173,206 @@ export function renderSafeMarkdown(md: string): string {
     out.push("<pre><code>" + code.map((l) => escapeHtml(l)).join("\n") + "</code></pre>");
   }
   return out.join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Trend line chart (Phase 4, item 3): benchmark score trends on the dashboard.
+// ---------------------------------------------------------------------------
+
+/** One plotted point: unix-ms timestamp and a score percent. */
+export interface TrendChartPoint {
+  ts: number;
+  value: number;
+}
+
+/** One line on the chart: aggregate average or a single task's scores. */
+export interface TrendChartSeries {
+  label: string;
+  color: string;
+  points: TrendChartPoint[];
+}
+
+export interface TrendChartOptions {
+  series: TrendChartSeries[];
+  width?: number;
+  height?: number;
+  /**
+   * Right-to-left time axis (Persian): oldest on the right, newest on the
+   * left. Default false (left-to-right).
+   */
+  rtl?: boolean;
+  /** Y-axis bounds. Defaults 0..100 (score percent). */
+  yMin?: number;
+  yMax?: number;
+  /** Label text for an x-axis tick (unix ms). */
+  formatTick: (ts: number) => string;
+  /** Label text for a y-axis tick. Default: rounded number. */
+  formatValue?: (v: number) => string;
+  /** Message rendered when there is nothing to plot. */
+  emptyText: string;
+}
+
+/**
+ * Hand-rolled SVG line chart — no external JS, no CDN (privacy + offline).
+ *
+ * Pure and dependency-free (escapeHtml aside, see the header note), so the
+ * dashboard page embeds it verbatim via `.toString()` — the unit-tested code
+ * IS the browser code.
+ *
+ * SECURITY: every label and tick string is escapeHtml'd before it reaches
+ * the markup; numeric coordinates are validated finite and clamped, so a
+ * hostile task title (or a corrupt row) can never break out of an attribute
+ * or inject markup.
+ */
+export function buildLineChartSvg(opts: TrendChartOptions): string {
+  // Nested (not module-level): this function is embedded in the browser via
+  // `.toString()`, so everything it touches must travel with it — except
+  // escapeHtml, which the page embeds separately just before it.
+  function numOr(v: unknown, fallback: number): number {
+    return typeof v === "number" && Number.isFinite(v) ? v : fallback;
+  }
+  function clampNum(v: unknown, min: number, max: number, fallback: number): number {
+    const n = numOr(v, fallback);
+    if (n < min) return min;
+    if (n > max) return max;
+    return n;
+  }
+
+  const W = clampNum(opts.width, 280, 1100, 640);
+  const H = clampNum(opts.height, 140, 520, 260);
+  const rtl = opts.rtl === true;
+  const yMin = numOr(opts.yMin, 0);
+  const yMax = numOr(opts.yMax, 100);
+  const lo = yMax > yMin ? yMin : 0;
+  const hi = yMax > yMin ? yMax : 100;
+  const fmtV =
+    opts.formatValue ??
+    ((v: number) => String(Math.round(v)));
+
+  const padL = 46;
+  const padR = 14;
+  const padT = 30;
+  const padB = 32;
+  const plotW = Math.max(10, W - padL - padR);
+  const plotH = Math.max(10, H - padT - padB);
+
+  interface Pt {
+    x: number;
+    y: number;
+  }
+  interface Line {
+    label: string;
+    color: string;
+    pts: Pt[];
+  }
+
+  // Sanitize: finite numbers only, values clamped to the y bounds.
+  const clean: Line[] = [];
+  let tMin = Infinity;
+  let tMax = -Infinity;
+  for (const s of opts.series) {
+    const pts: Pt[] = [];
+    const points = Array.isArray(s.points) ? s.points : [];
+    for (const p of points) {
+      const ts = numOr(p.ts, NaN);
+      const v = numOr(p.value, NaN);
+      if (!Number.isFinite(ts) || !Number.isFinite(v)) continue;
+      const cv = Math.min(hi, Math.max(lo, v));
+      pts.push({ x: ts, y: cv });
+      if (ts < tMin) tMin = ts;
+      if (ts > tMax) tMax = ts;
+    }
+    pts.sort((a, b) => a.x - b.x);
+    if (pts.length > 0) {
+      clean.push({ label: String(s.label ?? ""), color: String(s.color ?? "#4da3ff"), pts });
+    }
+  }
+
+  const open = '<svg viewBox="0 0 ' + W + " " + H + '" width="100%" role="img" xmlns="http://www.w3.org/2000/svg">';
+  const title = "<title>" + escapeHtml("benchmark trend") + "</title>";
+
+  if (clean.length === 0) {
+    return (
+      open +
+      title +
+      '<text x="' +
+      W / 2 +
+      '" y="' +
+      H / 2 +
+      '" text-anchor="middle" fill="#93a0b8" font-size="13">' +
+      escapeHtml(opts.emptyText) +
+      "</text></svg>"
+    );
+  }
+
+  if (!(tMax > tMin)) {
+    tMin -= 86400000;
+    tMax += 86400000;
+  }
+
+  function xPos(ts: number): number {
+    const frac = (ts - tMin) / (tMax - tMin);
+    return rtl ? padL + plotW - frac * plotW : padL + frac * plotW;
+  }
+  function yPos(v: number): number {
+    const frac = (v - lo) / (hi - lo);
+    return padT + plotH - frac * plotH;
+  }
+  function f2(n: number): string {
+    return String(Math.round(n * 100) / 100);
+  }
+
+  let svg = open + title;
+
+  // Y gridlines + labels (5 ticks).
+  for (let i = 0; i <= 4; i++) {
+    const v = lo + ((hi - lo) * i) / 4;
+    const y = yPos(v);
+    svg +=
+      '<line x1="' + padL + '" y1="' + f2(y) + '" x2="' + (padL + plotW) + '" y2="' + f2(y) + '" stroke="#26314a" stroke-width="1"/>';
+    svg +=
+      '<text x="' + (padL - 6) + '" y="' + f2(y + 4) + '" text-anchor="end" fill="#93a0b8" font-size="11">' +
+      escapeHtml(fmtV(v)) +
+      "</text>";
+  }
+
+  // X ticks: up to 5 evenly spaced across the time range.
+  const tickCount = Math.min(5, Math.max(2, clean[0]?.pts.length ?? 2));
+  for (let i = 0; i < tickCount; i++) {
+    const ts = tMin + ((tMax - tMin) * i) / (tickCount - 1);
+    const x = xPos(ts);
+    svg +=
+      '<text x="' + f2(x) + '" y="' + (padT + plotH + 20) + '" text-anchor="middle" fill="#93a0b8" font-size="11">' +
+      escapeHtml(String(opts.formatTick(ts))) +
+      "</text>";
+  }
+
+  // Series lines + dots.
+  for (const line of clean) {
+    const d = line.pts
+      .map((p, i) => (i === 0 ? "M" : "L") + f2(xPos(p.x)) + " " + f2(yPos(p.y)))
+      .join(" ");
+    svg +=
+      '<path d="' + d + '" fill="none" stroke="' + escapeHtml(line.color) + '" stroke-width="2"/>';
+    for (const p of line.pts) {
+      svg +=
+        '<circle cx="' + f2(xPos(p.x)) + '" cy="' + f2(yPos(p.y)) + '" r="3" fill="' +
+        escapeHtml(line.color) + '"/>';
+    }
+  }
+
+  // Legend.
+  let lx = rtl ? W - padR : padL;
+  const anchor = rtl ? "end" : "start";
+  for (const line of clean) {
+    const sw = rtl ? lx - 64 : lx;
+    svg += '<rect x="' + sw + '" y="8" width="12" height="12" rx="2" fill="' + escapeHtml(line.color) + '"/>';
+    svg +=
+      '<text x="' + (rtl ? lx - 70 : lx + 18) + '" y="18" text-anchor="' + anchor + '" fill="#e8ecf4" font-size="12">' +
+      escapeHtml(line.label) +
+      "</text>";
+    lx += rtl ? -180 : 180;
+  }
+
+  return svg + "</svg>";
 }

@@ -19,7 +19,7 @@ const fa: Record<string, string> = {
   "cmd_phase3_bench.no_history": "هنوز هیچ بنچ‌مارکی ثبت نشده است. با «/bench run» یکی اجرا کن.",
 
   "cmd_phase3_bench.help":
-    "استفاده:\n/bench history [n] — آخرین اجراها\n/bench trend [task_id] — روند امتیاز (کلی یا یک تسک)\n/bench run [--live] [task_id ...] — اجرای دستی بنچ‌مارک\n/bench schedule <cron|off> [--live] — زمان‌بندی اجرای دوره‌ای (پیش‌فرض: خاموش)\n/bench status — وضعیت زمان‌بندی و آخرین اجرا",
+    "استفاده:\n/bench history [n] — آخرین اجراها\n/bench trend [task_id] — روند امتیاز (کلی یا یک تسک)\n/bench run [--live] [--bg] [task_id ...] — اجرای دستی بنچ‌مارک (--bg: در پس‌زمینه)\n/bench schedule <cron|off> [--live] — زمان‌بندی اجرای دوره‌ای (پیش‌فرض: خاموش)\n/bench status — وضعیت زمان‌بندی، ورکر و آخرین اجرا\n/bench cancel — لغو اجرای پس‌زمینهٔ در حال انجام/در صف",
 
   "cmd_phase3_bench.history.title": "تاریخچهٔ بنچ‌مارک (آخرین {n}):",
   "cmd_phase3_bench.history.item":
@@ -38,6 +38,8 @@ const fa: Record<string, string> = {
     "اجرای زنده چند دقیقه طول می‌کشد؛ نتیجه همین‌جا اعلام می‌شود.",
   "cmd_phase3_bench.run.unavailable":
     "اجرای دستی بنچ‌مارک در این نمونه وصل نیست؛ از CLI استفاده کن: bun bench/run.ts{live}",
+  "cmd_phase3_bench.run.queued":
+    "بنچ‌مارک در صف پس‌زمینه قرار گرفت (جایگاه {position})؛ نتیجه همین‌جا اعلام می‌شود.",
 
   "cmd_phase3_bench.schedule.created":
     "زمان‌بندی بنچ‌مارک فعال شد: {cron} ({mode}) — شناسهٔ وظیفه: {id}",
@@ -51,12 +53,29 @@ const fa: Record<string, string> = {
     "استفاده: /bench schedule <cron|off> [--live]\nمثال: /bench schedule 0 3 * * 0 --live",
   "cmd_phase3_bench.schedule.mode.offline": "آفلاین",
   "cmd_phase3_bench.schedule.mode.live": "زنده",
+  "cmd_phase3_bench.schedule.live_worker_note":
+    "اجرای زنده در ورکر پس‌زمینه انجام می‌شود (خارج از محدودیت ۳۰ ثانیه‌ای زمان‌بند)؛ نتیجه و هشدار افت کیفیت به همین‌جا می‌آید.",
 
   "cmd_phase3_bench.status.scheduled": "زمان‌بندی: فعال — {cron} ({mode})، اجرای بعدی: {next}",
   "cmd_phase3_bench.status.unscheduled": "زمان‌بندی: خاموش (پیش‌فرض).",
   "cmd_phase3_bench.status.last":
     "آخرین اجرا: #{id} — {date} — میانگین {avg}٪ ({passed}/{tasks} موفق)",
   "cmd_phase3_bench.status.no_last": "هنوز اجرایی ثبت نشده است.",
+
+  "cmd_phase3_bench.status.worker.idle": "ورکر بنچ‌مارک: بیکار.",
+  "cmd_phase3_bench.status.worker.running":
+    "ورکر بنچ‌مارک: در حال اجرا ({mode}) از {started}.",
+  "cmd_phase3_bench.status.worker.progress":
+    "پیشرفت: {done} از {total} تسک — تسک جاری: {task} — {elapsed} ثانیه گذشته.",
+  "cmd_phase3_bench.status.worker.pending": "در صف ورکر: {n} اجرا.",
+  "cmd_phase3_bench.status.worker.unavailable": "ورکر بنچ‌مارک در این نمونه فعال نیست.",
+
+  "cmd_phase3_bench.history.note": "یادداشت: {note}",
+
+  "cmd_phase3_bench.cancel.done":
+    "لغو شد: {pending} اجرای در صف و {running} اجرای در حال انجام.",
+  "cmd_phase3_bench.cancel.nothing": "اجرای فعال یا در صفی در ورکر بنچ‌مارک نیست.",
+  "cmd_phase3_bench.cancel.unavailable": "ورکر بنچ‌مارک در این نمونه فعال نیست.",
 };
 
 const en: Record<string, string> = {
@@ -66,7 +85,7 @@ const en: Record<string, string> = {
   "cmd_phase3_bench.no_history": "No benchmark runs recorded yet. Run one with /bench run.",
 
   "cmd_phase3_bench.help":
-    "Usage:\n/bench history [n] — recent runs\n/bench trend [task_id] — score trend (overall or one task)\n/bench run [--live] [task_id ...] — run the benchmark now\n/bench schedule <cron|off> [--live] — schedule periodic runs (default: off)\n/bench status — schedule state and latest run",
+    "Usage:\n/bench history [n] — recent runs\n/bench trend [task_id] — score trend (overall or one task)\n/bench run [--live] [--bg] [task_id ...] — run the benchmark now (--bg: in background)\n/bench schedule <cron|off> [--live] — schedule periodic runs (default: off)\n/bench status — schedule, worker and latest run\n/bench cancel — cancel the running/queued background run",
 
   "cmd_phase3_bench.history.title": "Benchmark history (last {n}):",
   "cmd_phase3_bench.history.item":
@@ -85,6 +104,8 @@ const en: Record<string, string> = {
     "A live run takes several minutes; the result lands here.",
   "cmd_phase3_bench.run.unavailable":
     "Manual benchmark runs are not wired in this build; use the CLI: bun bench/run.ts{live}",
+  "cmd_phase3_bench.run.queued":
+    "Benchmark queued in the background worker (position {position}); the result lands here.",
 
   "cmd_phase3_bench.schedule.created":
     "Benchmark schedule enabled: {cron} ({mode}) — task id: {id}",
@@ -98,12 +119,29 @@ const en: Record<string, string> = {
     "Usage: /bench schedule <cron|off> [--live]\nExample: /bench schedule 0 3 * * 0 --live",
   "cmd_phase3_bench.schedule.mode.offline": "offline",
   "cmd_phase3_bench.schedule.mode.live": "live",
+  "cmd_phase3_bench.schedule.live_worker_note":
+    "Live runs execute in the background worker (outside the scheduler's 30-second budget); the result and any quality alert land here.",
 
   "cmd_phase3_bench.status.scheduled": "Schedule: on — {cron} ({mode}), next: {next}",
   "cmd_phase3_bench.status.unscheduled": "Schedule: off (default).",
   "cmd_phase3_bench.status.last":
     "Latest run: #{id} — {date} — avg {avg}% ({passed}/{tasks} passed)",
   "cmd_phase3_bench.status.no_last": "No runs recorded yet.",
+
+  "cmd_phase3_bench.status.worker.idle": "Bench worker: idle.",
+  "cmd_phase3_bench.status.worker.running":
+    "Bench worker: running ({mode}) since {started}.",
+  "cmd_phase3_bench.status.worker.progress":
+    "Progress: {done} of {total} tasks — current task: {task} — {elapsed}s elapsed.",
+  "cmd_phase3_bench.status.worker.pending": "Worker queue: {n} run(s).",
+  "cmd_phase3_bench.status.worker.unavailable": "Bench worker not active in this build.",
+
+  "cmd_phase3_bench.history.note": "Note: {note}",
+
+  "cmd_phase3_bench.cancel.done":
+    "Cancelled: {pending} queued and {running} running run(s).",
+  "cmd_phase3_bench.cancel.nothing": "No active or queued runs in the bench worker.",
+  "cmd_phase3_bench.cancel.unavailable": "Bench worker not active in this build.",
 };
 
 const DICTS: Record<BenchLang, Record<string, string>> = { fa, en };

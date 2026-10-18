@@ -23,8 +23,33 @@ export interface AdapterCapabilities {
   audioInput?: boolean;
   /** The adapter serialises document ContentParts natively (no local extraction needed). */
   documentInput?: boolean;
+  /**
+   * The adapter can produce text embeddings (Phase 4, semantic memory).
+   * Declared, never assumed: only an adapter that implements embed() sets it.
+   */
+  embeddings?: boolean;
   /** A short note about what this adapter supports, for the panel. */
   notes?: string;
+}
+
+/** One embeddings request: a batch of texts to vectorise. */
+export interface EmbedRequest {
+  /** Texts to embed, in order. The caller keeps batches small. */
+  texts: string[];
+  /** Embedding model id, as the service expects it. */
+  model: string;
+  /** Hard timeout for this request, ms. */
+  timeoutMs: number;
+  /** Cancellation signal. */
+  signal: AbortSignal;
+}
+
+/** One embeddings response: one vector per input text, in order. */
+export interface EmbedResponse {
+  /** Unit-length is NOT guaranteed; the caller normalises before comparing. */
+  embeddings: number[][];
+  /** Provider-reported model id (may differ from requested). */
+  model: string;
 }
 
 /** A validated connection target. Untrusted input is rejected upstream. */
@@ -76,6 +101,22 @@ export interface AIProviderAdapter extends AiProvider {
    * Throws AiError with a user-safe message on failure.
    */
   listModels?(req: ListModelsRequest): Promise<readonly RemoteModel[]>;
+
+  /**
+   * Produce embeddings for the given texts, when {@link capabilities.embeddings}.
+   *
+   * Phase 4 (semantic memory): long-term memories are vectorised with the
+   * owner's configured provider so recall can rank by meaning, not just by
+   * keyword. Declared optional so adapters without an embeddings endpoint
+   * (Gemini, Anthropic) simply do not offer it and the memory layer falls
+   * back to text search — no error, no user-visible change.
+   *
+   * SECURITY: the input texts are memory content, i.e. owner data. Calling
+   * this sends that data to the provider's service. The memory layer only
+   * calls it for the owner-selected provider, and docs/PHASE4_MEMORY.md
+   * carries the privacy note for the owner.
+   */
+  embed?(req: EmbedRequest): Promise<EmbedResponse>;
 }
 
 export interface ListModelsRequest {
@@ -211,6 +252,18 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: "https://api.together.xyz/v1",
     suggestedModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model.",
+  },
+  {
+    id: "opencode",
+    label: "OpenCode Zen",
+    baseUrl: "https://opencode.ai/zen/v1",
+    suggestedModel: "nemotron-3-lightning-free",
+    // OpenAI-compatible. Free key from opencode.ai/auth (email only, no card).
+    // Free models: nemotron-3-ultra-free, nemotron-3-lightning-free, mimo-free,
+    // ling-flash-free, big-pickle, muse-spark-free. Note: the free tier may
+    // reject requests from outside the OpenCode client (403 FreeTierError) —
+    // a paid key removes that restriction.
+    note: "سازگار با OpenAI. کلید رایگان از opencode.ai/auth (فقط ایمیل، بدون کارت). مدل‌های رایگان: nemotron-3-ultra-free، nemotron-3-lightning-free، mimo-free، ling-flash-free، big-pickle، muse-spark-free. نکته: نسخهٔ رایگان ممکن است از بیرون کلاینت OpenCode خطای 403 بدهد؛ با کلید پولی این محدودیت نیست.",
   },
 ];
 

@@ -40,6 +40,8 @@ export interface BenchRunSummary {
   outputTokens: number;
   costUsd: number;
   status: string;
+  /** Phase-5: optional short reason (e.g. why a run was marked failed). */
+  note: string | null;
 }
 
 export interface BenchTaskScore {
@@ -67,6 +69,7 @@ interface BenchRunRow {
   output_tokens: number;
   cost_usd: number;
   status: string;
+  note: string | null;
 }
 
 interface BenchScoreRow {
@@ -109,9 +112,19 @@ export class BenchHistory {
         input_tokens INTEGER NOT NULL,
         output_tokens INTEGER NOT NULL,
         cost_usd REAL NOT NULL,
-        status TEXT NOT NULL DEFAULT 'ok'
+        status TEXT NOT NULL DEFAULT 'ok',
+        note TEXT
       )
     `);
+    // Phase-5: databases created before the note column existed get it via a
+    // guarded ALTER (additive; existing rows read back as NULL).
+    const cols = this.db
+      .query<{ name: string }, []>(`PRAGMA table_info(bench_runs)`)
+      .all()
+      .map((c) => c.name);
+    if (!cols.includes("note")) {
+      this.db.run(`ALTER TABLE bench_runs ADD COLUMN note TEXT`);
+    }
     this.db.run(`
       CREATE INDEX IF NOT EXISTS idx_bench_runs_mode_model_ts
       ON bench_runs(mode, model, ts_ms)
@@ -141,8 +154,20 @@ export class BenchHistory {
    * Persist a finished run: one summary row + one row per task score.
    * Returns the stored run id. Oldest runs beyond MAX_BENCH_RUNS are pruned
    * (their score rows cascade).
+   *
+   * Statuses: "ok" (a real measurement — the ONLY status the regression
+   * baseline reads), "skipped" (loud skip, e.g. live with no provider),
+   * "failed" (the background worker records these — provider errors,
+   * timeouts, crashes, daemon restarts mid-run — so a failure is never lost),
+   * "cancelled" (owner-cancelled mid-run). Non-ok rows never pollute the
+   * baseline. Phase-5: an optional short `note` records WHY (e.g. the
+   * crash-recovery reason); it is display-only, never read by the baseline.
    */
-  recordRun(report: BenchReport, status: "ok" | "skipped" = "ok"): number {
+  recordRun(
+    report: BenchReport,
+    status: "ok" | "skipped" | "failed" | "cancelled" = "ok",
+    note?: string,
+  ): number {
     this.init();
     const stamp = report.generatedAt;
     const tsMs = Date.parse(stamp);
@@ -150,8 +175,8 @@ export class BenchHistory {
       .query(
         `INSERT INTO bench_runs
            (run_stamp, ts_ms, mode, provider, model, task_count, passed, failed,
-            avg_score_pct, total_latency_ms, input_tokens, output_tokens, cost_usd, status)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            avg_score_pct, total_latency_ms, input_tokens, output_tokens, cost_usd, status, note)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         stamp,
@@ -168,6 +193,7 @@ export class BenchHistory {
         report.totals.outputTokens,
         report.totals.costUsd,
         status,
+        note ?? null,
       );
     const runId = Number(res.lastInsertRowid);
     const insertScore = this.db.query(
@@ -331,6 +357,7 @@ function toSummary(row: BenchRunRow): BenchRunSummary {
     outputTokens: row.output_tokens,
     costUsd: row.cost_usd,
     status: row.status,
+    note: row.note ?? null,
   };
 }
 

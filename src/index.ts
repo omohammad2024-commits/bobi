@@ -37,6 +37,11 @@ import { createVideoGenTool, videoGenConfigured, videoGenDepsFromEnv } from "./t
 import { createMemoryTools } from "./tools/memory";
 import { createHistoryTools } from "./tools/history";
 import { resolveMemoryProvider } from "./memory/factory";
+import {
+  MemoryVectorStore,
+  ProviderEmbedder,
+  SemanticMemorySearch,
+} from "./memory";
 import { createReminderTools } from "./tools/reminders";
 import { createNudgeTools } from "./tools/nudge_tool";
 import { NudgeTracker } from "./nudges/tracker";
@@ -62,11 +67,27 @@ import {
   handleGassistantCommand,
   handleGsummaryCommand,
   handleGpollCommand,
+  type DigestSchedulePort,
   type GroupAssistantEnv,
 } from "./groups/assistant";
+// Phase-4: scheduled group digests (owner's DM, zero LLM).
+import {
+  createGroupDigestTool,
+  digestTaskName,
+  digestTimeToCron,
+  GROUP_DIGEST_TOOL_NAME,
+  type GroupDigestToolDeps,
+} from "./groups/group_digest";
+// Phase-5: opt-in LLM smart summaries for group discussions (owner-only).
+import type { SmartSummaryPort } from "./groups/smart_summary";
 // Phase-3: scheduled benchmarks + quality alerts.
 import { BenchHistory } from "./bench/history";
 import { createRunBenchTool, defaultLiveStackBuilder } from "./bench/tool";
+// Phase-4: daemon-side background worker for LIVE benchmark runs (outside
+// the scheduler's 30s action budget).
+import { BenchWorker } from "./bench/worker";
+// Phase-5: durable bench job queue (queued/running jobs survive restarts).
+import { BenchJobStore } from "./bench/queue_store";
 import {
   registerBenchCommands,
   COMMAND_DEFS as BENCH_COMMAND_DEFS,
@@ -76,6 +97,12 @@ import {
   registerPhase3SkillsCommands,
   COMMAND_DEFS as SKILLS_COMMAND_DEFS,
 } from "./bot/cmd_phase3_skills";
+// Phase-5: memory auto event extraction + memory export/import.
+import {
+  registerPhase5MemoryCommands,
+  COMMAND_DEFS as PHASE5_MEMORY_COMMAND_DEFS,
+} from "./bot/cmd_phase5_memory";
+import { scanForEventCandidates } from "./memory/auto_extract";
 // Phase-3: proactive event memory -> nudge sweep wiring.
 import { EventStore } from "./memory/events";
 import { requireOwnerTier } from "./bot/access";
@@ -204,6 +231,40 @@ async function main(): Promise<void> {
   let benchNotifyApi:
     | { sendMessage(chatId: number | string, text: string): Promise<unknown> }
     | undefined;
+  // Phase-4 group digests: same lazy pattern — the bot API only exists after
+  // createBot below. The digest tool DMs the owner the deterministic summary.
+  let groupDigestNotifyApi:
+    | { sendMessage(chatId: number | string, text: string): Promise<unknown> }
+    | undefined;
+  // Phase-4: daemon-side background worker for benchmark runs. The
+  // scheduler's per-action budget (~30s) cannot fit a multi-minute LIVE
+  // suite, so scheduled live actions only ENQUEUE into this worker
+  // (milliseconds, no LLM calls in the action path); the worker runs the
+  // full suite outside that budget, records history, and drives the
+  // regression alert path. Started with the other schedulers below.
+  // See src/bench/worker.ts and docs/PHASE4_BENCH_WORKER.md.
+  // Phase-5: durable bench job queue — same lazy-table pattern as
+  // BenchHistory (own connection to the SQLite file, storage.ts untouched).
+  // Queued jobs survive daemon restarts; runs that die mid-flight are
+  // recorded as interrupted failures on the next start (never silently
+  // re-executed). See docs/PHASE5_BENCH_DURABLE.md.
+  const benchJobStore = new BenchJobStore(new Database(config.dbPath));
+  const benchWorker = new BenchWorker({
+    history: benchHistory,
+    jobStore: benchJobStore,
+    notifyOwner: async (text) => {
+      const api = benchNotifyApi;
+      if (api === undefined || identity.ownerId === undefined) return;
+      await api.sendMessage(identity.ownerId, text).catch(() => undefined);
+    },
+    buildLive: defaultLiveStackBuilder(config.dbPath),
+    // The worker's owner DMs follow the owner's /lang, like the rest of
+    // the bot's proactive messages.
+    lang: resolveLang(String(identity.ownerId ?? 0), (uid, key) =>
+      storage.getUserPref(uid, key),
+    ),
+    log: (message) => log.warn(message),
+  });
   const runBenchTool = createRunBenchTool({
     history: benchHistory,
     isOwner: (userId) => identity.isOwner(Number(userId)),
@@ -213,12 +274,57 @@ async function main(): Promise<void> {
       await api.sendMessage(identity.ownerId, text).catch(() => undefined);
     },
     buildLive: defaultLiveStackBuilder(config.dbPath),
+    enqueueJob: (spec) => benchWorker.enqueue(spec),
   });
+
+  // Phase-3 group assistant: in-process message buffer for /gsummary (and the
+  // Phase-4 scheduled group digests). Deliberately NOT persisted (privacy);
+  // the mode itself is opt-in per group. Created here because the Phase-4
+  // group_digest tool (registered in extraTools below) reads from it.
+  const groupHistory = createGroupHistory();
+
+  // Phase 4: semantic memory search. Memories are vectorised with the
+  // OWNER'S configured provider (embeddings leave the box to that provider's
+  // service — see docs/PHASE4_MEMORY.md) and recall ranks by cosine
+  // similarity, falling back to text search whenever embeddings are
+  // unavailable. The vector table lives on the same SQLite file via its own
+  // handle (curator/bench lazy pattern); storage.ts is untouched.
+  // AdapterRegistry is built here — earlier than before — because the
+  // provider embedder needs it; the later construction site was removed.
+  // Phase 5: recall fuses the text and vector rankings with Reciprocal Rank
+  // Fusion (searchMode "hybrid"); each vector records its embedding model
+  // id, so a model/provider change marks old rows stale (never mixed into
+  // cosine ranking) and the bounded backfill re-embeds them.
+  const adapters = new AdapterRegistry();
+  const memoryProvider = resolveMemoryProvider(storage);
+  const memoryEmbedder = new ProviderEmbedder({ storage, secrets, adapters });
+  const memoryVectors = new MemoryVectorStore(new Database(config.dbPath));
+  const semanticMemory = new SemanticMemorySearch({
+    provider: memoryProvider,
+    vectors: memoryVectors,
+    embedder: memoryEmbedder,
+  });
+  // Phase 5: report the vector-index health at startup (owner-visible,
+  // log-only — no user-facing strings). Never throws: indexState degrades
+  // to raw counts when embeddings are unavailable.
+  const memIndexState = await semanticMemory.indexState(
+    identity.ownerId === undefined ? "" : String(identity.ownerId),
+  );
+  log.info(
+    `semantic memory search: ${
+      memIndexState.enabled
+        ? `enabled (hybrid FTS+vector ranking via active provider, model ${
+            memIndexState.model || "?"
+          }, index ${memIndexState.fresh} fresh / ${memIndexState.stale} stale / ${memIndexState.missing} missing)`
+        : "disabled — text search only (no embedding-capable provider, or BOBI_SEMANTIC_MEMORY=0)"
+    }`,
+  );
 
   const extraTools: Tool<unknown, unknown>[] = [
     // Phase D2: the memory tools run against the configured MemoryProvider
     // (BOBI_MEMORY_PROVIDER, default "sqlite"), not Storage directly.
-    ...createMemoryTools({ provider: resolveMemoryProvider(storage) }),
+    // Phase 4: + semantic ranking through the provider embedder.
+    ...createMemoryTools({ provider: memoryProvider, semantic: semanticMemory }),
     // Phase D1: full-text search over the caller's own conversation history.
     ...createHistoryTools({ storage }),
     ...createReminderTools({ storage }),
@@ -282,6 +388,36 @@ async function main(): Promise<void> {
     }),
     ...mcpTools(mcp),
   ];
+  // Phase-4: scheduled group digests. Owner-only tool run by the digest
+  // scheduled tasks (action {type:"tool", tool:"group_digest"}): builds the
+  // deterministic statistical summary and DMs it to the owner — no LLM,
+  // never posted into the group. Registered only when an owner is
+  // configured; without an owner the digest subcommands have no schedule
+  // port and report unavailability.
+  //
+  // Phase-5: the smart-summary port is assigned below, after the AI gateway
+  // exists; the digest tool reads deps.smart at run time, so the assignment
+  // lands before any scheduled run. Declared outside the owner check so the
+  // later wiring can reach it.
+  let groupDigestToolDeps: GroupDigestToolDeps | undefined;
+  if (identity.ownerId !== undefined) {
+    const digestOwnerId = String(identity.ownerId);
+    groupDigestToolDeps = {
+      storage,
+      ownerId: digestOwnerId,
+      isOwner: (userId) => identity.isOwner(Number(userId)),
+      history: groupHistory,
+      notifyOwner: async (text) => {
+        const api = groupDigestNotifyApi;
+        if (api === undefined) return;
+        await api.sendMessage(identity.ownerId as number, text).catch(() => undefined);
+      },
+      ownerLang: () =>
+        resolveLang(digestOwnerId, (uid, key) => storage.getUserPref(uid, key)),
+      log: (message) => log.error(message),
+    };
+    extraTools.push(createGroupDigestTool(groupDigestToolDeps) as Tool<unknown, unknown>);
+  }
   if (searchEnabled) {
     extraTools.push(
       createWebSearchTool({ resolve: () => search.active() }) as Tool<unknown, unknown>,
@@ -289,8 +425,7 @@ async function main(): Promise<void> {
   }
   // Image generation needs a configured endpoint: with no base URL the tool
   // is not registered at all, so the model never sees a tool it cannot use.
-  if (imageGenConfigured(config.imageBaseUrl)) {
-    extraTools.push(
+  if (imageGenConfigured(config.imageBaseUrl)) {    extraTools.push(
       createImageGenTool({
         baseUrl: config.imageBaseUrl,
         model: config.imageModel,
@@ -385,7 +520,8 @@ async function main(): Promise<void> {
   tools.registry.register(
     createToolSearchTool(tools.toolSearchDeps()) as Tool<unknown, unknown>,
   );
-  const adapters = new AdapterRegistry();
+  // AdapterRegistry is built once, up near the memory tools (Phase 4: the
+  // provider embedder needs it too); reused here for the provider services.
   const providerSvc = new ProviderService(storage, secrets, adapters);
   const modelSvc = new ModelService(storage);
   const healthSvc = new ProviderHealthService(storage, providerSvc, secrets, adapters);
@@ -422,6 +558,34 @@ async function main(): Promise<void> {
   // the test suite stay offline.
   const selection = gateway.currentSelection();
   const provider = selection ? gateway : new FakeProvider();
+
+  // Phase-5: opt-in LLM smart summaries for group discussions. Wired only
+  // when a REAL provider is selected — the /gassistant smart subcommand and
+  // the smart path inside the digest tool both degrade to the deterministic
+  // summary when this stays undefined (FakeProvider = theater, not
+  // intelligence). Runs through gateway.completeForModel() so the stored
+  // selection is re-validated per call; tool-free single-turn completion.
+  const smartSummaryPort: SmartSummaryPort | undefined = selection
+    ? {
+        summarize: async (req) => {
+          const res = await gateway.completeForModel({
+            messages: [
+              { role: "system", content: req.system },
+              { role: "user", content: req.user },
+            ],
+            model: selection.modelId,
+            timeoutMs: req.timeoutMs,
+            signal: AbortSignal.timeout(req.timeoutMs),
+          });
+          return res.text;
+        },
+      }
+    : undefined;
+  // groupDigestToolDeps was created before the gateway existed; assign the
+  // port now — the tool reads deps.smart at run time.
+  if (groupDigestToolDeps !== undefined) {
+    groupDigestToolDeps.smart = smartSummaryPort;
+  }
 
   // Phase C3: delegation. Registered AFTER `tools` exists: the delegate tool
   // derives its depth-1 child registry from the parent ToolService (the child
@@ -586,9 +750,8 @@ async function main(): Promise<void> {
       | { version?: string }
       | undefined)?.version ?? "dev";
 
-  // Phase-3 group assistant: in-process message buffer for /gsummary.
-  // Deliberately NOT persisted (privacy); the mode itself is opt-in per group.
-  const groupHistory = createGroupHistory();
+  // (groupHistory is created above, next to extraTools — the group_digest
+  // tool needs it at registration time.)
   // One options object for the system commands AND the command palette's
   // tap-to-run runners, so defaults (snapshot dir, clock, MCP…) stay in one
   // place. Passed to createBot for the palette and reused below for
@@ -696,11 +859,84 @@ async function main(): Promise<void> {
     if (identity.ownerId !== undefined) {
       const botUsername =
         (await bot.api.getMe().catch(() => undefined))?.username ?? "";
+      const gaOwnerId = String(identity.ownerId);
+      // Phase-4: digest task management for /gassistant digest. Implemented
+      // with the real schedule_task/list_tasks/cancel_task tools and the
+      // owner's live actor (same pattern as /bench schedule). The task's
+      // action runs the owner-only group_digest tool, whose notify channel
+      // is fixed to the owner's DM — the group chat id in the task row only
+      // selects whose history is summarized.
+      const ownerToolActor = () =>
+        toToolActor(
+          authorizeToolUse(auth, toAuthActor(gaOwnerId), tools.registry.list()),
+        );
+      const findDigestTaskId = async (chatId: string): Promise<number | undefined> => {
+        const res = await tools.runTool({
+          tool: "list_tasks",
+          input: {},
+          actor: ownerToolActor(),
+        });
+        if (res.status !== "ok") return undefined;
+        const data = res.data as
+          | { tasks?: Array<{ id: number; name: string }> }
+          | undefined;
+        return data?.tasks?.find((t) => t.name === digestTaskName(chatId))?.id;
+      };
+      const digestPort: DigestSchedulePort = {
+        ensureDigestTask: async (chatId, timeHHMM) => {
+          try {
+            const actor = ownerToolActor();
+            const existing = await findDigestTaskId(chatId);
+            if (existing !== undefined) {
+              await tools.runTool({
+                tool: "cancel_task",
+                input: { id: existing },
+                actor,
+              });
+            }
+            const created = await tools.runTool({
+              tool: "schedule_task",
+              input: {
+                name: digestTaskName(chatId),
+                cron: digestTimeToCron(timeHHMM),
+                timezone: "Asia/Tehran",
+                action: {
+                  type: "tool",
+                  tool: GROUP_DIGEST_TOOL_NAME,
+                  input: { chatId },
+                },
+              },
+              actor,
+            });
+            if (created.status !== "ok") return undefined;
+            const id = (created.data as { id?: number } | undefined)?.id;
+            return typeof id === "number" ? id : undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        cancelDigestTask: async (chatId) => {
+          try {
+            const existing = await findDigestTaskId(chatId);
+            if (existing === undefined) return;
+            await tools.runTool({
+              tool: "cancel_task",
+              input: { id: existing },
+              actor: ownerToolActor(),
+            });
+          } catch {
+            // Never throws by contract: a stale task row only no-ops at run
+            // time (the group_digest tool re-reads the config before sending).
+          }
+        },
+      };
       const gaEnv: GroupAssistantEnv = {
         storage,
-        ownerId: String(identity.ownerId),
+        ownerId: gaOwnerId,
         botUsername,
         history: groupHistory,
+        digest: digestPort,
+        smart: smartSummaryPort,
       };
       const gaGate = async (
         ctx: Context,
@@ -739,7 +975,11 @@ async function main(): Promise<void> {
         : (() => {
             const ownerNumericId: number = identity.ownerId;
             return {
-              runBenchNow: async (opts: { mode: "offline" | "live"; taskIds?: string[] }) => {
+              runBenchNow: async (opts: {
+                mode: "offline" | "live";
+                taskIds?: string[];
+                background?: boolean;
+              }) => {
                 const actor = toToolActor(
                   authorizeToolUse(auth, { id: ownerNumericId }, tools.registry.list()),
                 );
@@ -747,6 +987,11 @@ async function main(): Promise<void> {
                   {
                     mode: opts.mode,
                     ...(opts.taskIds !== undefined ? { tasks: opts.taskIds } : {}),
+                    // Explicit false keeps the on-demand UX synchronous (the
+                    // result is returned to the caller); true enqueues into
+                    // the Phase-4 background worker.
+                    background: opts.background ?? false,
+                    source: "manual",
                   },
                   {
                     clock: () => new Date(),
@@ -755,14 +1000,27 @@ async function main(): Promise<void> {
                   },
                 );
               },
+              // Phase-4: owner control over the background worker from /bench
+              // (status/cancel). Structural typing — no import needed.
+              benchWorker,
             };
           })()),
     });
     // The benchmark alert channel can now deliver to the owner's DM.
     benchNotifyApi = bot.api;
+    // Phase-4: the group-digest channel can now DM the owner too.
+    groupDigestNotifyApi = bot.api;
     // Phase-3 installable skills: /skill (owner-only).
     registerPhase3SkillsCommands(bot, hermesDeps, {
       skills,
+      botToken: token,
+    });
+    // Phase-5 memory: /memory auto|export|import (owner-only).
+    registerPhase5MemoryCommands(bot, hermesDeps, {
+      prefs: storage,
+      conversations: storage,
+      provider: memoryProvider,
+      proposalStore,
       botToken: token,
     });
     setHeartbeatInfoProvider(() => ({
@@ -787,6 +1045,8 @@ async function main(): Promise<void> {
       // Phase-3: owner-only commands (invisible to the public via ownerOnly).
       ...SKILLS_COMMAND_DEFS,
       ...BENCH_COMMAND_DEFS,
+      // Phase-5: owner-only memory commands (invisible to the public via ownerOnly).
+      ...PHASE5_MEMORY_COMMAND_DEFS,
       // Phase-3 group assistant (owner-gated; /gsummary usable in enabled groups).
       { command: "gassistant", descriptionFa: "حالت دستیار گروه", descriptionEn: "Group assistant mode", ownerOnly: true },
       { command: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", descriptionEn: "Summarize group discussion", ownerOnly: true },
@@ -879,6 +1139,32 @@ async function main(): Promise<void> {
             log.error("nudge delivery failed", { error: errToLog(err) });
           }
         }
+        // Phase-5: opt-in automatic event extraction from the owner's own
+        // conversations. This runs HERE — in the background sweep — and
+        // NEVER in the chat turn, so it adds zero reply latency. The scan
+        // checks the owner pref first and returns after a single pref read
+        // when disabled (the default), so a stock instance pays ~nothing.
+        // Candidates become curator proposals (kind "event"); nothing is
+        // stored without the owner's curator_decide approval.
+        if (identity.ownerId !== undefined) {
+          try {
+            const ex = await scanForEventCandidates({
+              prefs: storage,
+              conversations: storage,
+              provider: memoryProvider,
+              proposalStore,
+              ownerId: String(identity.ownerId),
+              nowMs: Date.now(),
+            });
+            if (ex.enabled && ex.newProposals > 0) {
+              log.info("auto event extraction: new proposals", {
+                count: ex.newProposals,
+              });
+            }
+          } catch (err) {
+            log.error("auto event extraction sweep failed", { error: errToLog(err) });
+          }
+        }
       } catch (err) {
         log.error("nudge sweep failed", { error: errToLog(err) });
       }
@@ -957,6 +1243,11 @@ async function main(): Promise<void> {
     onError: (message) => log.error(message),
   });
   taskScheduler.start();
+
+  // Phase-4: benchmark background worker. Started with the other schedulers
+  // so a queued live run survives as long as the daemon does. The pump timer
+  // is unref'd — it never keeps the process alive on its own.
+  benchWorker.start();
 
   // Heartbeat: the owner's autonomous tick (Phase C2). It runs on a DEDICATED
   // engine with tight per-beat budgets that shares provider/storage/tools/
@@ -1041,6 +1332,8 @@ async function main(): Promise<void> {
             tools: tools.listActiveNames().length,
             scheduler: scheduler.isRunning,
             taskScheduler: taskScheduler.isRunning,
+            // Phase-4: benchmark background worker state (idle/running).
+            benchWorker: benchWorker.snapshot().state,
           }),
           onError: (message) => log.error("health server failed to start", { error: message }),
         })
@@ -1073,6 +1366,9 @@ async function main(): Promise<void> {
           engineFactory: () => engine,
           actorForOwner: () => actorForUser(ownerIdStr),
           token: apiToken,
+          // Phase-5: the dashboard's live benchmark stream reads progress
+          // from the daemon worker (SSE on the same server, Bearer auth).
+          benchWorker,
           log: (message, fields) => log.info(message, fields),
         },
         { port: apiPort, host: apiBind },
@@ -1091,6 +1387,9 @@ async function main(): Promise<void> {
     heartbeat.stop();
     scheduler.stop();
     taskScheduler.stop();
+    // Phase-4: stop the bench worker's pump and cooperatively abort an
+    // active run before the database closes.
+    benchWorker.stop();
     clearInterval(nudgeSweepTimer);
     void health?.close();
     apiServer?.stop();

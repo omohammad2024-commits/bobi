@@ -23,7 +23,11 @@ import {
   resetDashboardRateLimitsForTests,
   type DashboardDeps,
 } from "../src/http/dashboard";
-import { escapeHtml, renderSafeMarkdown } from "../src/http/dashboard_render";
+import { escapeHtml, renderSafeMarkdown, buildLineChartSvg } from "../src/http/dashboard_render";
+import { Database } from "bun:sqlite";
+import { BenchHistory } from "../src/bench/history";
+import { setAssistantConfig } from "../src/groups/assistant";
+import type { BenchReport } from "../bench/run";
 import { createApiServer, type ApiServerDeps } from "../src/http/server";
 import { ConversationEngine } from "../src/conversation/engine";
 import { FakeProvider } from "../src/ai/fake";
@@ -31,8 +35,8 @@ import { FakeProvider } from "../src/ai/fake";
 const TOKEN = "dashboard-test-token-long-and-random-0123456789abcdef";
 const OWNER_ID = "999001";
 
-function deps(storage: Storage, token: string = TOKEN): DashboardDeps {
-  return { storage, token };
+function deps(storage: Storage, token: string = TOKEN, benchHistory?: BenchHistory): DashboardDeps {
+  return benchHistory === undefined ? { storage, token } : { storage, token, benchHistory };
 }
 
 function req(
@@ -113,6 +117,37 @@ describe("dashboard authz: every route rejects without/wrong token", () => {
     },
     { path: "/api/v1/dashboard/benchmarks", method: "GET" },
     { path: "/api/v1/dashboard/benchmarks/report?name=x", method: "GET" },
+    { path: "/api/v1/dashboard/benchmarks/trends", method: "GET" },
+    { path: "/api/v1/dashboard/benchmarks/live/stream", method: "GET" },
+    { path: "/api/v1/dashboard/schedulers", method: "GET" },
+    {
+      path: "/api/v1/dashboard/schedulers/bench",
+      method: "POST",
+      body: { enabled: true, cadence: "weekly" },
+    },
+    {
+      path: "/api/v1/dashboard/schedulers/digest",
+      method: "POST",
+      body: { enabled: true, time: "08:00" },
+    },
+    { path: "/api/v1/dashboard/digest/config", method: "GET" },
+    {
+      path: "/api/v1/dashboard/digest/prompt",
+      method: "POST",
+      body: { prompt: "x" },
+    },
+    { path: "/api/v1/dashboard/digest/prompt/reset", method: "POST", body: {} },
+    {
+      path: "/api/v1/dashboard/digest/destination",
+      method: "POST",
+      body: { chatId: "123" },
+    },
+    { path: "/api/v1/dashboard/group-digests", method: "GET" },
+    {
+      path: "/api/v1/dashboard/group-digests/set",
+      method: "POST",
+      body: { chatId: "-1001", digestEnabled: false },
+    },
   ];
 
   for (const r of routes) {
@@ -552,5 +587,1098 @@ describe("server.ts wiring (additive)", () => {
     const missing = await server.fetch(new Request("http://localhost/nope"));
     expect(missing.status).toBe(404);
     server.stop();
+  });
+
+  test("authed SPA shell embeds the schedulers tab and the chart builder", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(req("/dashboard", auth), deps(storage));
+    expect(res!.status).toBe(200);
+    const page = await res!.text();
+    expect(page).toContain('data-t="schedulers"');
+    expect(page).toContain("زمان‌بندها");
+    expect(page).toContain("buildLineChartSvg");
+    expect(page).toContain("trendTitle");
+    // Still code, not data: no scheduler state baked into the shell.
+    expect(page).not.toContain("bench: scheduled run");
+  });
+
+  test("both inline scripts parse (regression: unbalanced braces killed the SPA)", async () => {
+    // The app shell's T() once missed its closing brace, which made the
+    // whole SPA script unparseable — the shell rendered "loading" forever.
+    // new Function() compiles without running: a SyntaxError fails the test.
+    const { storage } = seededStorage();
+    const extractScript = (page: string): string => {
+      const start = page.indexOf("<script>\n");
+      const end = page.lastIndexOf("</script>");
+      expect(start).toBeGreaterThan(-1);
+      expect(end).toBeGreaterThan(start);
+      return page.slice(start + "<script>\n".length, end);
+    };
+    const appRes = await handleDashboardRequest(req("/dashboard", auth), deps(storage));
+    const appScript = extractScript(await appRes!.text());
+    expect(() => new Function(appScript)).not.toThrow();
+    // And the unauthenticated login shell too.
+    const loginRes = await handleDashboardRequest(req("/dashboard", noAuth), deps(storage));
+    const loginScript = extractScript(await loginRes!.text());
+    expect(() => new Function(loginScript)).not.toThrow();
+  });
+});
+
+// ------------------------------------------------- phase 4: trends + schedulers
+
+/** Canned BenchReport fixture (same shape as tests/bench_history.test.ts). */
+function benchFixture(over: Partial<BenchReport> = {}): BenchReport {
+  return {
+    generatedAt: "2026-10-18T10:00:00.000Z",
+    mode: "offline",
+    provider: "fake",
+    model: "fake-echo",
+    taskCount: 2,
+    totals: {
+      passed: 1,
+      failed: 1,
+      avgScorePct: 75,
+      totalLatencyMs: 100,
+      inputTokens: 10,
+      outputTokens: 20,
+      costUsd: 0,
+    },
+    results: [
+      {
+        taskId: "calc_01",
+        title_fa: "جمع ساده",
+        category: "calc",
+        passed: true,
+        score: 3,
+        maxScore: 3,
+        checks: [],
+        turns: [],
+        totalLatencyMs: 50,
+        inputTokens: 5,
+        outputTokens: 10,
+        costUsd: 0,
+        costEstimated: true,
+      },
+      {
+        taskId: "calc_02",
+        title_fa: '"><script>alert(1)</script>',
+        category: "calc",
+        passed: false,
+        score: 1,
+        maxScore: 2,
+        checks: [],
+        turns: [],
+        totalLatencyMs: 50,
+        inputTokens: 5,
+        outputTokens: 10,
+        costUsd: 0,
+        costEstimated: true,
+      },
+    ],
+    ...over,
+  };
+}
+
+function seededBenchHistory(): BenchHistory {
+  const history = new BenchHistory(new Database(":memory:"));
+  const base = benchFixture();
+  history.recordRun({
+    ...base,
+    generatedAt: "2026-10-16T10:00:00.000Z",
+    totals: { ...base.totals, avgScorePct: 60 },
+  });
+  history.recordRun({
+    ...base,
+    generatedAt: "2026-10-17T10:00:00.000Z",
+    totals: { ...base.totals, avgScorePct: 80 },
+  });
+  history.recordRun({
+    ...base,
+    generatedAt: "2026-10-18T10:00:00.000Z",
+    mode: "live",
+    model: "real-model",
+    totals: { ...base.totals, avgScorePct: 90 },
+  });
+  return history;
+}
+
+describe("dashboard benchmark trends API (phase 4)", () => {
+  test("empty history -> null pair and empty series", async () => {
+    const { storage } = seededStorage();
+    const history = new BenchHistory(new Database(":memory:"));
+    const res = await handleDashboardRequest(
+      req("/api/v1/dashboard/benchmarks/trends", auth),
+      deps(storage, TOKEN, history),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["pair"]).toBeNull();
+    expect(body["runs"]).toEqual([]);
+    expect(body["pairs"]).toEqual([]);
+    expect(body["tasks"]).toEqual([]);
+    expect(body["task"]).toBeNull();
+  });
+
+  test("default pair is the latest run; pairs and tasks are listed", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      req("/api/v1/dashboard/benchmarks/trends", auth),
+      deps(storage, TOKEN, seededBenchHistory()),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["pair"]).toEqual({ mode: "live", model: "real-model" });
+    const runs = body["runs"] as Array<Record<string, unknown>>;
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!["avgScorePct"]).toBe(90);
+    const pairs = body["pairs"] as Array<Record<string, unknown>>;
+    expect(pairs).toHaveLength(2);
+    const tasks = body["tasks"] as Array<Record<string, unknown>>;
+    expect(tasks.map((t) => t["taskId"]).sort()).toEqual(["calc_01", "calc_02"]);
+  });
+
+  test("explicit pair selects runs oldest->newest; task trend returns per-task points", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      req("/api/v1/dashboard/benchmarks/trends?mode=offline&model=fake-echo&task=calc_02", auth),
+      deps(storage, TOKEN, seededBenchHistory()),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["pair"]).toEqual({ mode: "offline", model: "fake-echo" });
+    const runs = body["runs"] as Array<Record<string, unknown>>;
+    expect(runs.map((r) => r["avgScorePct"])).toEqual([60, 80]);
+    expect((runs[0]!["tsMs"] as number) < (runs[1]!["tsMs"] as number)).toBe(true);
+    const task = body["task"] as Record<string, unknown>;
+    expect(task["taskId"]).toBe("calc_02");
+    const points = task["points"] as Array<Record<string, unknown>>;
+    expect(points).toHaveLength(2);
+    expect(points[0]!["scorePct"]).toBe(50);
+    // The hostile title travels as JSON data only; the chart builder escapes it.
+    expect(task["titleFa"]).toContain("<script>");
+    const svg = buildLineChartSvg({
+      series: [
+        {
+          label: String(task["titleFa"]),
+          color: "#ffb020",
+          points: points.map((p) => ({ ts: Number(p["tsMs"]), value: Number(p["scorePct"]) })),
+        },
+      ],
+      formatTick: (ts) => String(ts),
+      emptyText: "none",
+    });
+    expect(svg).not.toContain("<script>");
+    expect(svg).toContain("&lt;script&gt;");
+  });
+
+  test("unknown pair -> empty series, not an error", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      req("/api/v1/dashboard/benchmarks/trends?mode=offline&model=nope", auth),
+      deps(storage, TOKEN, seededBenchHistory()),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["runs"]).toEqual([]);
+  });
+
+  test("invalid mode/model/task values -> 400", async () => {
+    const { storage } = seededStorage();
+    const history = seededBenchHistory();
+    for (const q of [
+      "?mode=%3Cscript%3E&model=fake-echo",
+      "?mode=offline&model=a%20b",
+      "?mode=offline&model=fake-echo&task=CALC_01",
+      "?mode=offline&model=fake-echo&task=../x",
+    ]) {
+      const res = await handleDashboardRequest(
+        req("/api/v1/dashboard/benchmarks/trends" + q, auth),
+        deps(storage, TOKEN, history),
+      );
+      expect(res!.status).toBe(400);
+    }
+  });
+});
+
+describe("dashboard schedulers API (phase 4)", () => {
+  function post(path: string, body: unknown, token: string = TOKEN): Request {
+    return req(path, { method: "POST", token, body });
+  }
+
+  test("GET with no schedules -> both missing", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    expect(res!.status).toBe(200);
+    const schedulers = (await jsonBody(res!))["schedulers"] as Array<Record<string, unknown>>;
+    expect(schedulers.map((s) => s["key"])).toEqual(["bench", "digest"]);
+    expect(schedulers[0]!["exists"]).toBe(false);
+    expect(schedulers[0]!["enabled"]).toBe(false);
+    expect(schedulers[1]!["exists"]).toBe(false);
+  });
+
+  test("bench: validation rejects bad input", async () => {
+    const { storage } = seededStorage();
+    for (const body of [
+      {},
+      { enabled: "yes" },
+      { enabled: true },
+      { enabled: true, cadence: "hourly" },
+      { enabled: true, cadence: "weekly; rm -rf" },
+      { enabled: true, cadence: "weekly", mode: "turbo" },
+    ]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/schedulers/bench", body),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+      expect(((await jsonBody(res!))["error"] as string).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("bench: enable weekly creates the task; state round-trips through GET", async () => {
+    const { storage } = seededStorage();
+    const before = Date.now();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "weekly", mode: "offline" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const created = await jsonBody(res!);
+    expect(created["ok"]).toBe(true);
+    expect(created["cadence"]).toBe("weekly");
+    const id = Number(created["id"]);
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.name).toBe("bench: scheduled run");
+    expect(task?.cronExpr).toBe("0 3 * * 0");
+    expect(task?.timezone).toBe("Asia/Tehran");
+    expect(task?.enabled).toBe(true);
+    expect(task!.nextRunAtMs).toBeGreaterThan(before);
+    expect(JSON.parse(task!.actionJson)).toEqual({
+      type: "tool",
+      tool: "run_bench",
+      input: { mode: "offline" },
+    });
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const bench = ((await jsonBody(get!))["schedulers"] as Array<Record<string, unknown>>)[0]!;
+    expect(bench["exists"]).toBe(true);
+    expect(bench["enabled"]).toBe(true);
+    expect(bench["cadence"]).toBe("weekly");
+    expect(bench["mode"]).toBe("offline");
+    expect(bench["cron"]).toBe("0 3 * * 0");
+  });
+
+  test("bench: live mode is baked into the action; cadence updates in place", async () => {
+    const { storage } = seededStorage();
+    const first = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "weekly" }),
+      deps(storage),
+    );
+    const id = Number((await jsonBody(first!))["id"]);
+    const second = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "daily", mode: "live" }),
+      deps(storage),
+    );
+    expect(second!.status).toBe(200);
+    expect(Number((await jsonBody(second!))["id"])).toBe(id);
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.cronExpr).toBe("0 3 * * *");
+    expect(JSON.parse(task!.actionJson)).toEqual({
+      type: "tool",
+      tool: "run_bench",
+      input: { mode: "live" },
+    });
+    // Exactly one bench schedule exists — updates never duplicate.
+    expect(storage.listTasks(OWNER_ID, 200).filter((t) => t.name === "bench: scheduled run")).toHaveLength(1);
+  });
+
+  test("bench: disable flips the flag and keeps the row; disabling a missing schedule -> 400", async () => {
+    const { storage } = seededStorage();
+    const missing = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: false }),
+      deps(storage),
+    );
+    expect(missing!.status).toBe(400);
+
+    const created = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "monthly" }),
+      deps(storage),
+    );
+    const id = Number((await jsonBody(created!))["id"]);
+    const off = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: false }),
+      deps(storage),
+    );
+    expect(off!.status).toBe(200);
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.enabled).toBe(false);
+    // Row (and its history) is kept, unlike Telegram's `schedule off`.
+    expect(task?.cronExpr).toBe("0 3 1 * *");
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const bench = ((await jsonBody(get!))["schedulers"] as Array<Record<string, unknown>>)[0]!;
+    expect(bench["enabled"]).toBe(false);
+    expect(bench["exists"]).toBe(true);
+  });
+
+  test("bench: a Telegram-set custom cron is reported as custom", async () => {
+    const { storage } = seededStorage();
+    storage.createTask({
+      name: "bench: scheduled run",
+      cronExpr: "15 4 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: JSON.stringify({ type: "tool", tool: "run_bench", input: { mode: "offline" } }),
+      createdByUserId: OWNER_ID,
+      nextRunAtMs: Date.now() + 3_600_000,
+    });
+    const res = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const bench = ((await jsonBody(res!))["schedulers"] as Array<Record<string, unknown>>)[0]!;
+    expect(bench["cadence"]).toBe("custom");
+    expect(bench["cron"]).toBe("15 4 * * *");
+  });
+
+  test("bench: every mutation is audit-logged", async () => {
+    const { storage } = seededStorage();
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "weekly" }),
+      deps(storage),
+    );
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "hourly" }),
+      deps(storage),
+    );
+    const events = storage.auditEvents(50);
+    const ok = events.find((e) => e.operation === "dashboard.scheduler.bench" && e.outcome === "success");
+    const denied = events.find((e) => e.operation === "dashboard.scheduler.bench" && e.outcome === "denied");
+    expect(ok).toBeDefined();
+    expect(ok!.actorId).toBe(OWNER_ID);
+    expect(denied).toBeDefined();
+    // Audit detail carries no secrets — just the cadence key.
+    expect(String(ok!.detail)).not.toContain(TOKEN);
+  });
+
+  test("digest: validation rejects bad time; create requires a time", async () => {
+    const { storage } = seededStorage();
+    for (const body of [
+      { enabled: true },
+      { enabled: true, time: "25:00" },
+      { enabled: true, time: "8:00" },
+      { enabled: true, time: "08:60" },
+      { enabled: true, time: "08:00; rm" },
+      { enabled: "yes" },
+    ]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/schedulers/digest", body),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+    }
+  });
+
+  test("digest: enable with time creates the blueprint-equivalent task", async () => {
+    const { storage } = seededStorage();
+    const before = Date.now();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "08:30" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const created = await jsonBody(res!);
+    expect(created["ok"]).toBe(true);
+    expect(created["time"]).toBe("08:30");
+    const id = Number(created["id"]);
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.name).toBe("blueprint: morning_digest");
+    expect(task?.cronExpr).toBe("30 8 * * *");
+    expect(task?.timezone).toBe("Asia/Tehran");
+    expect(task!.nextRunAtMs).toBeGreaterThan(before);
+    const action = JSON.parse(task!.actionJson) as Record<string, unknown>;
+    expect(action["type"]).toBe("agent");
+    // Fresh digest delivers to the owner's DM, like /blueprint from a DM.
+    expect(action["chatId"]).toBe(OWNER_ID);
+    expect(typeof action["prompt"]).toBe("string");
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const digest = ((await jsonBody(get!))["schedulers"] as Array<Record<string, unknown>>)[1]!;
+    expect(digest["exists"]).toBe(true);
+    expect(digest["enabled"]).toBe(true);
+    expect(digest["time"]).toBe("08:30");
+  });
+
+  test("digest: updating the time preserves the existing action (chatId + prompt)", async () => {
+    const { storage } = seededStorage();
+    const id = storage.createTask({
+      name: "blueprint: morning_digest",
+      cronExpr: "0 8 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: JSON.stringify({ type: "agent", chatId: "custom-chat", prompt: "custom prompt" }),
+      createdByUserId: OWNER_ID,
+      nextRunAtMs: Date.now() + 3_600_000,
+    });
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "09:15" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    expect((await jsonBody(res!))["time"]).toBe("09:15");
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.cronExpr).toBe("15 9 * * *");
+    const action = JSON.parse(task!.actionJson) as Record<string, unknown>;
+    expect(action["chatId"]).toBe("custom-chat");
+    expect(action["prompt"]).toBe("custom prompt");
+  });
+
+  test("digest: toggling on without a time keeps the current cron", async () => {
+    const { storage } = seededStorage();
+    const id = storage.createTask({
+      name: "blueprint: morning_digest",
+      cronExpr: "30 7 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: JSON.stringify({ type: "agent", chatId: OWNER_ID, prompt: "p" }),
+      createdByUserId: OWNER_ID,
+      nextRunAtMs: Date.now() + 3_600_000,
+      enabled: false,
+    });
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.enabled).toBe(true);
+    expect(task?.cronExpr).toBe("30 7 * * *");
+  });
+
+  test("digest: disable flips the flag; disabling a missing schedule -> 400", async () => {
+    const { storage } = seededStorage();
+    const missing = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: false }),
+      deps(storage),
+    );
+    expect(missing!.status).toBe(400);
+
+    const created = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "07:00" }),
+      deps(storage),
+    );
+    const id = Number((await jsonBody(created!))["id"]);
+    const off = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: false }),
+      deps(storage),
+    );
+    expect(off!.status).toBe(200);
+    expect(storage.getTask(OWNER_ID, id)?.enabled).toBe(false);
+  });
+
+  test("digest: mutations are audit-logged", async () => {
+    const { storage } = seededStorage();
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "08:00" }),
+      deps(storage),
+    );
+    const events = storage.auditEvents(50);
+    const ok = events.find((e) => e.operation === "dashboard.scheduler.digest" && e.outcome === "success");
+    expect(ok).toBeDefined();
+    expect(ok!.actorId).toBe(OWNER_ID);
+    expect(String(ok!.detail)).toContain("08:00");
+  });
+
+  test("owner id missing -> 503 (fail-closed)", async () => {
+    delete process.env.OWNER_TELEGRAM_ID;
+    const { storage } = seededStorage();
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    expect(get!.status).toBe(503);
+    const postRes = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "weekly" }),
+      deps(storage),
+    );
+    expect(postRes!.status).toBe(503);
+  });
+
+  test("POST without JSON content-type -> 415", async () => {
+    const { storage } = seededStorage();
+    const r = new Request("http://localhost/api/v1/dashboard/schedulers/bench", {
+      method: "POST",
+      headers: { authorization: `Bearer ${TOKEN}`, "content-type": "text/plain" },
+      body: JSON.stringify({ enabled: true, cadence: "weekly" }),
+    });
+    const res = await handleDashboardRequest(r, deps(storage));
+    expect(res!.status).toBe(415);
+  });
+});
+
+describe("buildLineChartSvg (shared browser/server code)", () => {
+  const fmt = { formatTick: (ts: number) => "t" + ts, emptyText: "no data" };
+
+  test("empty series renders the escaped empty message", () => {
+    const svg = buildLineChartSvg({ series: [], ...fmt, emptyText: "داده‌ای نیست <>" });
+    expect(svg.startsWith("<svg")).toBe(true);
+    expect(svg).toContain("داده‌ای نیست &lt;&gt;");
+    expect(svg).not.toContain("<>");
+  });
+
+  test("labels, colors and tick strings are escaped (XSS)", () => {
+    const svg = buildLineChartSvg({
+      series: [
+        {
+          label: '"><script>alert(1)</script>',
+          color: 'red" onload="alert(2)',
+          points: [{ ts: 1, value: 50 }],
+        },
+      ],
+      formatTick: () => "<b>tick</b>",
+      emptyText: "none",
+    });
+    expect(svg).not.toContain("<script>");
+    // The hostile color is attribute-escaped: quotes become &quot; so it
+    // cannot break out of stroke="/fill=" — the raw payload never appears.
+    expect(svg).not.toContain('onload="alert');
+    expect(svg).toContain("onload=&quot;alert(2)");
+    expect(svg).toContain("&lt;script&gt;");
+    expect(svg).toContain("&lt;b&gt;tick&lt;/b&gt;");
+  });
+
+  test("non-finite points are dropped; values clamp to the bounds", () => {
+    const svg = buildLineChartSvg({
+      series: [
+        {
+          label: "s",
+          color: "#fff",
+          points: [
+            { ts: 1, value: NaN },
+            { ts: 2, value: Infinity },
+            { ts: 3, value: 150 },
+            { ts: 4, value: -20 },
+          ],
+        },
+      ],
+      ...fmt,
+    });
+    expect(svg).not.toContain("NaN");
+    expect(svg).not.toContain("Infinity");
+    // Only the two finite points survive as dots.
+    expect(svg.match(/<circle/g)?.length).toBe(2);
+  });
+
+  test("rtl reverses the time axis", () => {
+    const points = [
+      { ts: 100, value: 10 },
+      { ts: 200, value: 90 },
+    ];
+    const ltr = buildLineChartSvg({ series: [{ label: "s", color: "#fff", points }], ...fmt });
+    const rtl = buildLineChartSvg({ series: [{ label: "s", color: "#fff", points }], rtl: true, ...fmt });
+    const xs = (svg: string): number[] =>
+      [...svg.matchAll(/<circle cx="([0-9.]+)"/g)].map((m) => Number(m[1]));
+    const xl = xs(ltr);
+    expect(xl[0]!).toBeLessThan(xl[1]!);
+    const xr = xs(rtl);
+    expect(xr[0]!).toBeGreaterThan(xr[1]!);
+  });
+
+  test("single point renders without crashing", () => {
+    const svg = buildLineChartSvg({
+      series: [{ label: "one", color: "#fff", points: [{ ts: 5, value: 42 }] }],
+      ...fmt,
+    });
+    expect(svg).toContain("<circle");
+    expect(svg).toContain("<path");
+  });
+});
+
+describe("dashboard custom crons (phase 5)", () => {
+  function post(path: string, body: unknown, token: string = TOKEN): Request {
+    return req(path, { method: "POST", token, body });
+  }
+
+  test("bench: invalid custom crons are rejected", async () => {
+    const { storage } = seededStorage();
+    for (const cron of [
+      "not a cron",
+      "0 0 0 * *", // day-of-month 0 is invalid
+      "61 * * * *", // minute out of range
+      "0 0 30 2 *", // February 30th can never occur
+      "* * * * * *", // six fields
+      "x".repeat(65), // over the length cap
+      "",
+    ]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/schedulers/bench", { enabled: true, cron }),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+      expect(((await jsonBody(res!))["error"] as string).length).toBeGreaterThan(0);
+    }
+  });
+
+  test("bench: overly-frequent custom crons are rejected (floor: 1h)", async () => {
+    const { storage } = seededStorage();
+    for (const cron of ["* * * * *", "*/30 * * * *", "*/59 * * * *"]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/schedulers/bench", { enabled: true, cron }),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+    }
+    // No task row was created by the rejected attempts.
+    expect(storage.listTasks(OWNER_ID, 200)).toHaveLength(0);
+
+    // Exactly at the floor is allowed: @hourly == 60 minutes between firings.
+    const ok = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cron: "@hourly" }),
+      deps(storage),
+    );
+    expect(ok!.status).toBe(200);
+  });
+
+  test("bench: a valid custom cron installs, marked custom, and updates in place", async () => {
+    const { storage } = seededStorage();
+    const first = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cron: "0 4 * * 1" }),
+      deps(storage),
+    );
+    expect(first!.status).toBe(200);
+    const created = await jsonBody(first!);
+    expect(created["ok"]).toBe(true);
+    expect(created["custom"]).toBe(true);
+    expect(created["cron"]).toBe("0 4 * * 1");
+    expect(created["cadence"]).toBeUndefined();
+    const id = Number(created["id"]);
+    expect(storage.getTask(OWNER_ID, id)?.cronExpr).toBe("0 4 * * 1");
+
+    const second = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cron: "0 5 * * 2", mode: "live" }),
+      deps(storage),
+    );
+    expect(second!.status).toBe(200);
+    const upd = await jsonBody(second!);
+    expect(Number(upd["id"])).toBe(id);
+    expect(upd["custom"]).toBe(true);
+    expect(upd["mode"]).toBe("live");
+    expect(storage.listTasks(OWNER_ID, 200)).toHaveLength(1);
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const bench = ((await jsonBody(get!))["schedulers"] as Array<Record<string, unknown>>)[0]!;
+    expect(bench["cadence"]).toBe("custom");
+    expect(bench["cron"]).toBe("0 5 * * 2");
+  });
+
+  test("bench: presets keep working after the custom-cron change", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", { enabled: true, cadence: "daily" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["cadence"]).toBe("daily");
+    expect(body["custom"]).toBeUndefined();
+  });
+
+  test("bench: a custom cron takes precedence over the cadence selector", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/bench", {
+        enabled: true,
+        cadence: "daily",
+        cron: "0 6 * * 3",
+      }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["custom"]).toBe(true);
+    expect(body["cron"]).toBe("0 6 * * 3");
+  });
+
+  test("digest: invalid and overly-frequent custom crons are rejected (floor: 15min)", async () => {
+    const { storage } = seededStorage();
+    for (const cron of ["garbage", "* * * * *", "*/10 * * * *"]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/schedulers/digest", { enabled: true, cron }),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+    }
+    expect(storage.listTasks(OWNER_ID, 200)).toHaveLength(0);
+  });
+
+  test("digest: a valid custom cron installs and the view reports it as custom", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, cron: "0 8 * * *" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["custom"]).toBe(true);
+    expect(body["cron"]).toBe("0 8 * * *");
+    expect(body["time"]).toBe("08:00");
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/schedulers", auth), deps(storage));
+    const digest = ((await jsonBody(get!))["schedulers"] as Array<Record<string, unknown>>)[1]!;
+    // The view maps picker-representable crons back to a time (custom:false),
+    // whatever their origin — the POST receipt above is what reports custom.
+    expect(digest["custom"]).toBeFalsy();
+    expect(digest["cron"]).toBe("0 8 * * *");
+    expect(digest["time"]).toBe("08:00");
+  });
+
+  test("digest: non-daily custom cron shows custom without a time mapping", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, cron: "0 */2 * * *" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["custom"]).toBe(true);
+    expect(body["time"]).toBeNull();
+  });
+});
+
+describe("dashboard digest prompt & destination (phase 5)", () => {
+  function post(path: string, body: unknown, token: string = TOKEN): Request {
+    return req(path, { method: "POST", token, body });
+  }
+
+  const DEFAULT_PROMPT =
+    "خلاصهٔ صبحگاهی به فارسی: مهم‌ترین کارهای امروز، یادآورهای نزدیک و هدف‌های فعال را کوتاه خلاصه کن.";
+
+  async function createDigest(storage: Storage): Promise<number> {
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "08:00" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    return Number((await jsonBody(res!))["id"]);
+  }
+
+  test("config: no task -> exists:false; prompt edit without a task -> 400", async () => {
+    const { storage } = seededStorage();
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/digest/config", auth), deps(storage));
+    expect(get!.status).toBe(200);
+    const cfg = await jsonBody(get!);
+    expect(cfg["exists"]).toBe(false);
+    expect(cfg["enabled"]).toBe(false);
+
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt", { prompt: "hello" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(400);
+  });
+
+  test("config: blueprint ownership is surfaced and the default prompt is shown", async () => {
+    const { storage } = seededStorage();
+    await createDigest(storage);
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/digest/config", auth), deps(storage));
+    expect(get!.status).toBe(200);
+    const cfg = await jsonBody(get!);
+    expect(cfg["exists"]).toBe(true);
+    expect(cfg["blueprint"]).toBe("morning_digest");
+    expect(cfg["ownedBy"]).toBe("blueprint");
+    expect(cfg["actionIsAgent"]).toBe(true);
+    expect(cfg["prompt"]).toBe(DEFAULT_PROMPT);
+    expect(cfg["isCustomPrompt"]).toBe(false);
+    expect(cfg["chatId"]).toBe(OWNER_ID);
+    expect(cfg["isDefaultDestination"]).toBe(true);
+    expect(cfg["time"]).toBe("08:00");
+  });
+
+  test("prompt: edit round-trips through the same scheduler store (ownership respected)", async () => {
+    const { storage } = seededStorage();
+    const id = await createDigest(storage);
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt", { prompt: "پرامپت تستی داشبورد" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["ok"]).toBe(true);
+    expect(body["isCustomPrompt"]).toBe(true);
+
+    // The row is updated in place: name, cron and destination are untouched.
+    const task = storage.getTask(OWNER_ID, id);
+    expect(task?.name).toBe("blueprint: morning_digest");
+    expect(task?.cronExpr).toBe("0 8 * * *");
+    const action = JSON.parse(task!.actionJson) as Record<string, unknown>;
+    expect(action["type"]).toBe("agent");
+    expect(action["prompt"]).toBe("پرامپت تستی داشبورد");
+    expect(action["chatId"]).toBe(OWNER_ID);
+
+    const get = await handleDashboardRequest(req("/api/v1/dashboard/digest/config", auth), deps(storage));
+    const cfg = await jsonBody(get!);
+    expect(cfg["prompt"]).toBe("پرامپت تستی داشبورد");
+    expect(cfg["isCustomPrompt"]).toBe(true);
+
+    // A later time change (same store) preserves the custom prompt.
+    const upd = await handleDashboardRequest(
+      post("/api/v1/dashboard/schedulers/digest", { enabled: true, time: "09:15" }),
+      deps(storage),
+    );
+    expect(upd!.status).toBe(200);
+    const task2 = storage.getTask(OWNER_ID, id);
+    expect((JSON.parse(task2!.actionJson) as Record<string, unknown>)["prompt"]).toBe(
+      "پرامپت تستی داشبورد",
+    );
+  });
+
+  test("prompt: validation rejects empty / too-long / non-string prompts", async () => {
+    const { storage } = seededStorage();
+    await createDigest(storage);
+    for (const prompt of ["", "   ", "x".repeat(4001), 123, null]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/digest/prompt", { prompt }),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+    }
+  });
+
+  test("prompt: reset restores the /blueprint default", async () => {
+    const { storage } = seededStorage();
+    const id = await createDigest(storage);
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt", { prompt: "custom" }),
+      deps(storage),
+    );
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt/reset", {}),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    expect((await jsonBody(res!))["isCustomPrompt"]).toBe(false);
+    const task = storage.getTask(OWNER_ID, id);
+    expect((JSON.parse(task!.actionJson) as Record<string, unknown>)["prompt"]).toBe(DEFAULT_PROMPT);
+  });
+
+  test("destination: edit changes only the chatId; bad chatIds are rejected", async () => {
+    const { storage } = seededStorage();
+    const id = await createDigest(storage);
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/destination", { chatId: "-100123456" }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["chatId"]).toBe("-100123456");
+    expect(body["isDefaultDestination"]).toBe(false);
+    const task = storage.getTask(OWNER_ID, id);
+    const action = JSON.parse(task!.actionJson) as Record<string, unknown>;
+    expect(action["chatId"]).toBe("-100123456");
+    expect(action["prompt"]).toBe(DEFAULT_PROMPT); // prompt untouched
+    expect(task?.name).toBe("blueprint: morning_digest");
+
+    for (const chatId of ["abc", "", "12.5", "1".repeat(21), "--5"]) {
+      const bad = await handleDashboardRequest(
+        post("/api/v1/dashboard/digest/destination", { chatId }),
+        deps(storage),
+      );
+      expect(bad!.status).toBe(400);
+    }
+  });
+
+  test("prompt/destination: a task whose action is not agent-shaped is refused, not mangled", async () => {
+    const { storage } = seededStorage();
+    storage.createTask({
+      name: "blueprint: morning_digest",
+      cronExpr: "0 8 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: JSON.stringify({ type: "tool", tool: "run_bench", input: {} }),
+      createdByUserId: OWNER_ID,
+      nextRunAtMs: Date.now() + 3_600_000,
+      enabled: true,
+    });
+    const p = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt", { prompt: "x" }),
+      deps(storage),
+    );
+    expect(p!.status).toBe(400);
+    const d = await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/destination", { chatId: "123" }),
+      deps(storage),
+    );
+    expect(d!.status).toBe(400);
+    const cfg = await jsonBody(
+      (await handleDashboardRequest(req("/api/v1/dashboard/digest/config", auth), deps(storage)))!,
+    );
+    expect(cfg["actionIsAgent"]).toBe(false);
+    expect(cfg["prompt"]).toBeNull();
+  });
+
+  test("audit: prompt/destination changes are logged without the prompt text", async () => {
+    const { storage } = seededStorage();
+    const id = await createDigest(storage);
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/prompt", { prompt: "پرامپت محرمانهٔ تستی" }),
+      deps(storage),
+    );
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/digest/destination", { chatId: "-1009" }),
+      deps(storage),
+    );
+    const events = storage.auditEvents(50);
+    const promptEv = events.find((e) => e.operation === "dashboard.digest.config" && (e.detail ?? "").includes("prompt updated"));
+    expect(promptEv).toBeDefined();
+    expect(promptEv!.outcome).toBe("success");
+    expect(promptEv!.actorId).toBe(OWNER_ID);
+    // The prompt text itself never lands in the audit detail.
+    for (const e of events) {
+      expect(e.detail ?? "").not.toContain("پرامپت محرمانهٔ تستی");
+    }
+    const destEv = events.find((e) => (e.detail ?? "").includes("destination updated"));
+    expect(destEv).toBeDefined();
+    expect(destEv!.outcome).toBe("success");
+    expect(Number(destEv!.detail!.match(/id=(\d+)/)?.[1])).toBe(id);
+  });
+});
+
+describe("dashboard group digests (phase 5)", () => {
+  function post(path: string, body: unknown, token: string = TOKEN): Request {
+    return req(path, { method: "POST", token, body });
+  }
+
+  function seedGroup(storage: Storage, chatId: string, patch: Record<string, unknown>): void {
+    const res = setAssistantConfig(storage, OWNER_ID, chatId, patch);
+    expect(res.ok).toBe(true);
+  }
+
+  test("list: empty when no group configs exist", async () => {
+    const { storage } = seededStorage();
+    const res = await handleDashboardRequest(req("/api/v1/dashboard/group-digests", auth), deps(storage));
+    expect(res!.status).toBe(200);
+    expect((await jsonBody(res!))["groups"]).toEqual([]);
+  });
+
+  test("list: groups with assistant configs are listed with digest + task state", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true, digestTime: "07:30" });
+    seedGroup(storage, "-1002", { enabled: false });
+    const res = await handleDashboardRequest(req("/api/v1/dashboard/group-digests", auth), deps(storage));
+    expect(res!.status).toBe(200);
+    const groups = (await jsonBody(res!))["groups"] as Array<Record<string, unknown>>;
+    expect(groups.map((g) => g["chatId"])).toEqual(["-1001", "-1002"]);
+    expect(groups[0]!["mode"]).toBe(true);
+    expect(groups[0]!["digestEnabled"]).toBe(false);
+    expect(groups[0]!["digestTime"]).toBe("07:30");
+    expect((groups[0]!["task"] as Record<string, unknown>)["exists"]).toBe(false);
+    expect(groups[1]!["mode"]).toBe(false);
+  });
+
+  test("set: enabling without assistant mode is refused (need_mode), no task created", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: false });
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: true }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(400);
+    expect(storage.listTasks(OWNER_ID, 200)).toHaveLength(0);
+  });
+
+  test("set: enable creates the digest task row and flips the config", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true, digestTime: "07:30" });
+    const res = await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: true }),
+      deps(storage),
+    );
+    expect(res!.status).toBe(200);
+    const body = await jsonBody(res!);
+    expect(body["ok"]).toBe(true);
+    expect(body["time"]).toBe("07:30");
+    const rows = storage.listTasks(OWNER_ID, 200).filter((t) => t.name === "group_digest:-1001");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.cronExpr).toBe("30 7 * * *");
+    expect(rows[0]!.timezone).toBe("Asia/Tehran");
+    const action = JSON.parse(rows[0]!.actionJson) as Record<string, unknown>;
+    expect(action["type"]).toBe("tool");
+    expect(action["tool"]).toBe("group_digest");
+    expect((action["input"] as Record<string, unknown>)["chatId"]).toBe("-1001");
+
+    const list = await handleDashboardRequest(req("/api/v1/dashboard/group-digests", auth), deps(storage));
+    const groups = (await jsonBody(list!))["groups"] as Array<Record<string, unknown>>;
+    expect(groups[0]!["digestEnabled"]).toBe(true);
+    expect((groups[0]!["task"] as Record<string, unknown>)["exists"]).toBe(true);
+    expect((groups[0]!["task"] as Record<string, unknown>)["enabled"]).toBe(true);
+  });
+
+  test("set: time change re-schedules in place (exactly one row); disable cancels the row", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true });
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: true }),
+      deps(storage),
+    );
+    const changed = await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", {
+        chatId: "-1001",
+        digestEnabled: true,
+        time: "09:45",
+      }),
+      deps(storage),
+    );
+    expect(changed!.status).toBe(200);
+    expect((await jsonBody(changed!))["time"]).toBe("09:45");
+    const rows = storage.listTasks(OWNER_ID, 200).filter((t) => t.name === "group_digest:-1001");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.cronExpr).toBe("45 9 * * *");
+
+    const off = await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: false }),
+      deps(storage),
+    );
+    expect(off!.status).toBe(200);
+    expect(storage.listTasks(OWNER_ID, 200).filter((t) => t.name === "group_digest:-1001")).toHaveLength(0);
+    const list = await handleDashboardRequest(req("/api/v1/dashboard/group-digests", auth), deps(storage));
+    const groups = (await jsonBody(list!))["groups"] as Array<Record<string, unknown>>;
+    expect(groups[0]!["digestEnabled"]).toBe(false);
+  });
+
+  test("set: validation rejects bad chatId / time / missing flag", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true });
+    for (const body of [
+      { chatId: "abc", digestEnabled: true },
+      { chatId: "", digestEnabled: false },
+      { chatId: "-1001", digestEnabled: "yes" },
+      { chatId: "-1001" },
+      { chatId: "-1001", digestEnabled: true, time: "25:00" },
+      { chatId: "-1001", digestEnabled: true, time: "8:00" },
+    ]) {
+      const res = await handleDashboardRequest(
+        post("/api/v1/dashboard/group-digests/set", body),
+        deps(storage),
+      );
+      expect(res!.status).toBe(400);
+    }
+  });
+
+  test("set: audit entries record every change", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true });
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: true }),
+      deps(storage),
+    );
+    await handleDashboardRequest(
+      post("/api/v1/dashboard/group-digests/set", { chatId: "-1001", digestEnabled: false }),
+      deps(storage),
+    );
+    const events = storage.auditEvents(50).filter((e) => e.operation === "dashboard.group_digest");
+    expect(events.length).toBeGreaterThanOrEqual(2);
+    expect(events[0]!.outcome).toBe("success");
+    expect(events[0]!.actorId).toBe(OWNER_ID);
+    expect(events[0]!.detail).toContain("-1001");
+  });
+
+  test("storage.listUserPrefKeys is prefix-scoped to the owner", async () => {
+    const { storage } = seededStorage();
+    seedGroup(storage, "-1001", { enabled: true });
+    seedGroup(storage, "-1002", { enabled: true });
+    storage.setUserPref(OWNER_ID, "voice_mode", "1");
+    storage.setUserPref("other-user", "gacfg:-9999", "{}");
+    expect(storage.listUserPrefKeys(OWNER_ID, "gacfg:")).toEqual(["gacfg:-1001", "gacfg:-1002"]);
+    expect(storage.listUserPrefKeys(OWNER_ID, "gacfg:-1001")).toEqual(["gacfg:-1001"]);
   });
 });

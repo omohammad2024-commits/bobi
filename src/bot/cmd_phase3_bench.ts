@@ -3,9 +3,18 @@
  *
  * /bench history [n]              — recent runs (newest first)
  * /bench trend [task_id]         — avg-score trend, overall or per task
- * /bench run [--live] [task ids] — run the suite now
+ * /bench run [--live] [--bg] [task ids] — run the suite now (--bg: background worker)
  * /bench schedule <cron|off> [--live] — schedule periodic runs (default OFF)
- * /bench status                  — schedule state + latest run
+ * /bench status                  — schedule state + worker state + latest run
+ * /bench cancel                  — cancel the running/queued background run
+ *
+ * Phase-4: LIVE runs execute in the daemon BenchWorker (src/bench/worker.ts),
+ * outside the scheduler's 30s action budget. `/bench schedule --live` writes
+ * a scheduled action with input {mode:"live", background:true}, which
+ * enqueues in milliseconds; the worker runs the full suite, records history,
+ * and drives the regression alert path. /bench status shows the worker
+ * (idle/running/pending); /bench cancel drops the queue and aborts the
+ * active run. All owner-only, bilingual.
  *
  * Conventions (per `src/bot/cmd_context.ts` and cmd_auto.ts):
  * - logic lives in exported `handleXxx(deps, …)` functions taking plain
@@ -43,7 +52,9 @@
  *  3. /bench schedule creates a scheduled task whose action runs run_bench —
  *     a sandboxed, :memory:-only suite (see src/bench/tool.ts). The cron
  *     string is validated with parseCron before the tool call; the task name
- *     is a fixed constant so exactly one bench schedule exists.
+ *     is a fixed constant so exactly one bench schedule exists. Live
+ *     schedules pass background:true, so the action only enqueues into the
+ *     daemon worker (milliseconds, inside the scheduler's action budget).
  */
 import type { Bot } from "grammy";
 import { gateGroup, gateUser, senderLang } from "./bot";
@@ -83,6 +94,38 @@ const MAX_CRON_LENGTH = 64;
 const TASK_ID_RE = /^[a-z0-9][a-z0-9_]{0,63}$/;
 
 /**
+ * Minimal control surface of the daemon BenchWorker (`src/bench/worker.ts`),
+ * typed structurally so this module never imports the worker — the
+ * coordinator passes the real worker, tests pass a stub.
+ */
+export interface BenchWorkerSnapshot {
+  state: "idle" | "running";
+  current:
+    | { jobId: string; mode: string; source: string; startedAtMs: number }
+    | undefined;
+  pending: number;
+  /**
+   * Phase-5: live per-task progress while a run is active. Undefined when
+   * idle or when the executor does not report progress. Kept structural
+   * (mirrors src/bench/worker.ts's WorkerSnapshot) so tests pass stubs.
+   */
+  progress?:
+    | {
+        done: number;
+        total: number;
+        currentTaskId: string | null;
+        currentTitleFa: string | null;
+        elapsedMs: number;
+      }
+    | undefined;
+}
+
+export interface BenchWorkerControl {
+  snapshot(): BenchWorkerSnapshot;
+  cancelAll(reason: string): { cancelledPending: number; abortedRunning: boolean };
+}
+
+/**
  * Deps for /bench. The full bot-command dep set (so schedule_* tool calls
  * reuse actorForTelegramUser/callToolAs and the gates see groups/users);
  * plus the benchmark history and the on-demand runner the coordinator wires.
@@ -92,11 +135,18 @@ export type BenchDeps = HermesCommandDeps & {
   /**
    * Run the suite now and return the run_bench output. Wired by the
    * coordinator (see module doc). Undefined = not wired in this build.
+   * background:true enqueues into the worker and returns {status:"queued"}.
    */
   runBenchNow?: (opts: {
     mode: "offline" | "live";
     taskIds?: string[];
+    background?: boolean;
   }) => Promise<RunBenchOutput>;
+  /**
+   * Daemon background worker, wired by the coordinator. Undefined = this
+   * build has no worker (status shows "unavailable", cancel refuses).
+   */
+  benchWorker?: BenchWorkerControl;
 };
 
 // ---------------------------------------------------------------------------
@@ -126,6 +176,8 @@ export async function handleBench(
       return handleBenchSchedule(deps, sender, tokens.slice(1), lang);
     case "status":
       return handleBenchStatus(deps, sender, lang);
+    case "cancel":
+      return handleBenchCancel(deps, lang);
     case "":
     case "help":
       return tr(lang, "cmd_phase3_bench.help");
@@ -165,6 +217,10 @@ export function handleBenchHistory(
         tasks: r.taskCount,
       }),
     );
+    // Phase-5: show the failure reason when one was recorded (e.g. crash recovery).
+    if (r.note !== null && r.note !== "") {
+      L.push(tr(lang, "cmd_phase3_bench.history.note", { note: r.note }));
+    }
   }
   return L.join("\n\n");
 }
@@ -205,7 +261,7 @@ export function handleBenchTrend(
   return L.join("\n");
 }
 
-/** /bench run [--live] [task ids...] */
+/** /bench run [--live] [--bg] [task ids...] */
 export async function handleBenchRun(
   deps: BenchDeps,
   sender: SenderRef,
@@ -214,8 +270,9 @@ export async function handleBenchRun(
 ): Promise<string> {
   void sender;
   const mode: "offline" | "live" = tokens.includes("--live") ? "live" : "offline";
+  const background = tokens.includes("--bg");
   const taskIds = tokens
-    .filter((t) => t !== "--live")
+    .filter((t) => t !== "--live" && t !== "--bg")
     .map((t) => t.trim().toLowerCase())
     .filter((t) => t.length > 0);
   for (const id of taskIds) {
@@ -228,8 +285,12 @@ export async function handleBenchRun(
   }
   const out = await deps.runBenchNow({
     mode,
+    background,
     ...(taskIds.length > 0 ? { taskIds } : {}),
   });
+  if (out.status === "queued") {
+    return tr(lang, "cmd_phase3_bench.run.queued", { position: out.position ?? "?" });
+  }
   const prefix =
     tr(lang, "cmd_phase3_bench.run.started", {
       mode: tr(lang, `cmd_phase3_bench.schedule.mode.${mode}`),
@@ -303,18 +364,32 @@ export async function handleBenchSchedule(
       name: BENCH_SCHEDULE_TASK_NAME,
       cron,
       timezone: "Asia/Tehran",
-      action: { type: "tool", tool: "run_bench", input: { mode } },
+      // Phase-4: live runs go through the daemon BenchWorker (background
+      // enqueue, milliseconds inside the scheduler's action budget). The
+      // tool ALSO auto-enqueues live when a worker is wired, but the flag
+      // makes the intent explicit in the stored action.
+      action: {
+        type: "tool",
+        tool: "run_bench",
+        input: {
+          mode,
+          ...(mode === "live" ? { background: true, source: "schedule" } : {}),
+        },
+      },
     },
     actor,
   );
   if (!created.ok) return created.message ?? tr(lang, "cmd_phase3_bench.tool_failed");
   const id = (created.data as { id?: number })?.id ?? "?";
   const modeLabel = tr(lang, `cmd_phase3_bench.schedule.mode.${mode}`);
-  return tr(
+  const base = tr(
     lang,
     existing ? "cmd_phase3_bench.schedule.updated" : "cmd_phase3_bench.schedule.created",
     { cron, mode: modeLabel, id },
   );
+  return mode === "live"
+    ? `${base}\n${tr(lang, "cmd_phase3_bench.schedule.live_worker_note")}`
+    : base;
 }
 
 /** /bench status — schedule state + latest run. */
@@ -352,7 +427,67 @@ export async function handleBenchStatus(
   } else {
     L.push(tr(lang, "cmd_phase3_bench.status.no_last"));
   }
+
+  // Phase-4: daemon worker state (idle / running / queued).
+  L.push(workerStatusLine(deps.benchWorker, lang));
   return L.join("\n");
+}
+
+/** /bench cancel — drop the worker queue and abort the active run (owner-only). */
+export async function handleBenchCancel(
+  deps: BenchDeps,
+  lang: BenchLang = "fa",
+): Promise<string> {
+  const worker = deps.benchWorker;
+  if (!worker) return tr(lang, "cmd_phase3_bench.cancel.unavailable");
+  const res = worker.cancelAll("owner /bench cancel");
+  if (res.cancelledPending === 0 && !res.abortedRunning) {
+    return tr(lang, "cmd_phase3_bench.cancel.nothing");
+  }
+  return tr(lang, "cmd_phase3_bench.cancel.done", {
+    pending: res.cancelledPending,
+    running: res.abortedRunning ? 1 : 0,
+  });
+}
+
+function workerStatusLine(
+  worker: BenchWorkerControl | undefined,
+  lang: BenchLang,
+): string {
+  if (!worker) return tr(lang, "cmd_phase3_bench.status.worker.unavailable");
+  const snap = worker.snapshot();
+  const L: string[] = [];
+  if (snap.state === "running" && snap.current !== undefined) {
+    L.push(
+      tr(lang, "cmd_phase3_bench.status.worker.running", {
+        mode: tr(
+          lang,
+          snap.current.mode === "live"
+            ? "cmd_phase3_bench.schedule.mode.live"
+            : "cmd_phase3_bench.schedule.mode.offline",
+        ),
+        started: tehranShort(new Date(snap.current.startedAtMs).toISOString()),
+      }),
+    );
+  } else {
+    L.push(tr(lang, "cmd_phase3_bench.status.worker.idle"));
+  }
+  // Phase-5: live per-task progress of the running benchmark.
+  if (snap.state === "running" && snap.progress !== undefined) {
+    const p = snap.progress;
+    L.push(
+      tr(lang, "cmd_phase3_bench.status.worker.progress", {
+        done: p.done,
+        total: p.total,
+        task: p.currentTitleFa ?? p.currentTaskId ?? "…",
+        elapsed: Math.max(0, Math.round(p.elapsedMs / 1000)),
+      }),
+    );
+  }
+  if (snap.pending > 0) {
+    L.push(tr(lang, "cmd_phase3_bench.status.worker.pending", { n: snap.pending }));
+  }
+  return L.join(" ");
 }
 
 // ---------------------------------------------------------------------------

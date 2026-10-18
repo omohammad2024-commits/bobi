@@ -69,6 +69,11 @@ export class AdapterRegistry {
      * local extraction is needed. Mirrors `capabilities.documentInput`.
      */
     documentInput: boolean;
+    /**
+     * The adapter produces text embeddings (Phase 4, semantic memory).
+     * Mirrors `capabilities.embeddings` without constructing an instance.
+     */
+    embeddings: boolean;
   } {
     switch (type) {
       case "openai_compatible":
@@ -79,6 +84,7 @@ export class AdapterRegistry {
           listModels: type === "openai_compatible",
           audioInput: false,
           documentInput: false,
+          embeddings: true,
         };
       case "gemini":
         return {
@@ -87,6 +93,7 @@ export class AdapterRegistry {
           listModels: true,
           audioInput: true,
           documentInput: true,
+          embeddings: false,
         };
       case "anthropic":
         return {
@@ -95,9 +102,10 @@ export class AdapterRegistry {
           listModels: false,
           audioInput: false,
           documentInput: true,
+          embeddings: false,
         };
       default:
-        return { label: type, listModels: false, audioInput: false, documentInput: false };
+        return { label: type, listModels: false, audioInput: false, documentInput: false, embeddings: false };
     }
   }
 }

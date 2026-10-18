@@ -22,6 +22,12 @@ export interface Skill {
   description: string;
   /** Optional lowercase keywords that boost matching. */
   triggers: readonly string[];
+  /**
+   * Optional version label from the `version:` frontmatter field
+   * (phase 4: skill sharing). Free-form but conventionally semver
+   * ("1.2.0"); absent when the file declares none.
+   */
+  version?: string;
   /** Markdown body injected into the system prompt on a match. */
   body: string;
   /** Absolute path of the file the skill was loaded from. */

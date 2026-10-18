@@ -169,6 +169,7 @@ export function writeSkillFile(dir: string, validated: ValidatedSkill): string {
 function frontmatterRoundTrip(validated: ValidatedSkill): string {
   const s = validated.skill;
   const lines = ["---", `name: ${s.name}`, `description: ${s.description}`];
+  if (s.version !== undefined) lines.push(`version: ${s.version}`);
   if (s.triggers.length > 0) lines.push(`triggers: [${s.triggers.join(", ")}]`);
   lines.push("---", "", s.body.trim(), "");
   return lines.join("\n");
@@ -307,6 +308,30 @@ export function uninstallSkillFile(dir: string, name: string): boolean {
     }
   }
   return removed;
+}
+
+/**
+ * Names of installed skills (enabled and disabled), sorted. Reads only the
+ * directory listing — filenames, never file contents — so it stays cheap
+ * and never fails on a corrupt skill file.
+ */
+export function listInstalledSkillNames(dir: string): { name: string; enabled: boolean }[] {
+  let entries: string[];
+  try {
+    entries = readdirSync(resolve(dir));
+  } catch {
+    return [];
+  }
+  const out: { name: string; enabled: boolean }[] = [];
+  for (const e of entries.sort()) {
+    if (!e.endsWith(".md")) continue;
+    if (!e.startsWith(".")) {
+      out.push({ name: e.slice(0, -".md".length), enabled: true });
+    } else if (e.startsWith(".disabled-")) {
+      out.push({ name: e.slice(".disabled-".length, -".md".length), enabled: false });
+    }
+  }
+  return out;
 }
 
 /** Read one installed skill file back (enabled or disabled), parsed. */

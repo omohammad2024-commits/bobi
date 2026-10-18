@@ -46,11 +46,15 @@ describe("the preset list", () => {
     expect(isProviderPreset("not-a-service")).toBe(false);
   });
 
-  test("the gated services are not offered", () => {
-    // OpenCode Zen's free tier refuses requests from outside its own client:
-    // "OpenCode's free tier can only be used from within OpenCode". Listing it
-    // would send the owner into a wall they cannot get past.
-    expect(isProviderPreset("opencode")).toBe(false);
+  test("opencode zen is offered at the owner's request", () => {
+    // The owner explicitly asked for the OpenCode Zen preset (Oct 19, 2026).
+    // It used to be excluded because the free tier may refuse requests from
+    // outside the OpenCode client; the preset note now says so plainly.
+    const p = providerPreset("opencode");
+    expect(p).toBeDefined();
+    expect(p?.baseUrl).toBe("https://opencode.ai/zen/v1");
+    expect(p?.note).toContain("403");
+    expect(isProviderPreset("opencode")).toBe(true);
   });
 });
 

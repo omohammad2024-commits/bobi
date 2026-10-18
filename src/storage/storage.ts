@@ -115,6 +115,45 @@ export interface AiModelRow {
   updatedAt: number;
 }
 
+/**
+ * The owner's ed25519 signing keypair for skill packages (Phase 5, item 1).
+ * Single row (id = 1). `privateKeyJwk` is the JWK JSON holding the secret —
+ * it is never logged and never returned by any list call.
+ */
+export interface SkillSigningKeyRow {
+  /** SHA-256 hex of the raw 32-byte public key — the publisher id. */
+  keyId: string;
+  /** Raw 32-byte public key, base64. Safe to share. */
+  publicKey: string;
+  /** Private key JWK JSON. The secret. */
+  privateKeyJwk: string;
+  /** unix ms */
+  createdAtMs: number;
+}
+
+/** One trusted skill-package publisher (Phase 5, item 1). */
+export interface TrustedSkillPublisherRow {
+  /** SHA-256 hex of the raw 32-byte public key — the publisher id. */
+  keyId: string;
+  /** Owner-chosen label shown on review cards. */
+  label: string;
+  /** Raw 32-byte public key, base64; "" when trusted by fingerprint only. */
+  publicKey: string;
+  /** unix ms */
+  addedAtMs: number;
+}
+
+/**
+ * Install provenance for one skill: which publisher signed it, captured
+ * from the verified envelope at import time. `keyId` null = unsigned.
+ */
+export interface SkillInstallProvenanceRow {
+  skillName: string;
+  keyId: string | null;
+  /** unix ms */
+  signedAtMs: number;
+}
+
 /** A conversation's rolling summary plus how far it reaches. */
 export interface ConversationSummary {
   summary: string;
@@ -693,6 +732,40 @@ CREATE TABLE IF NOT EXISTS heartbeat_log (
   status      TEXT NOT NULL CHECK(status IN ('ok','failed','skipped'))
 );
 CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat_log(id DESC);
+
+-- Phase 5, item 1 — skill package signing. The owner's ed25519 keypair,
+-- single row. The private key lives ONLY here: it is never logged, never
+-- sent over any channel, and only leaves through the explicit
+-- "/skill keyexport" path. At-rest protection is the database file itself
+-- (same class as conversation contents); see docs/PHASE5_SKILL_SIGNING.md
+-- for the attack-surface review.
+CREATE TABLE IF NOT EXISTS skill_signing_key (
+  id              INTEGER PRIMARY KEY CHECK(id = 1),
+  key_id          TEXT NOT NULL,
+  public_key      TEXT NOT NULL,
+  private_key_jwk TEXT NOT NULL,
+  created_at_ms   INTEGER NOT NULL
+);
+
+-- Owner-maintained trusted-publisher registry: key fingerprint -> label.
+-- Trust in a signing key comes ONLY from this table; the envelope's own
+-- public key is never trusted by itself. Revocation = deleting the row.
+CREATE TABLE IF NOT EXISTS skill_trusted_publishers (
+  key_id      TEXT PRIMARY KEY,
+  label       TEXT NOT NULL,
+  public_key  TEXT NOT NULL DEFAULT '',
+  added_at_ms INTEGER NOT NULL
+);
+
+-- Install provenance: which publisher (if any) signed each installed skill,
+-- captured from the verified envelope at import time. key_id NULL = the
+-- skill was installed unsigned. Survives untrust so "/skill list" can flag
+-- skills whose publisher was later revoked.
+CREATE TABLE IF NOT EXISTS skill_install_provenance (
+  skill_name   TEXT PRIMARY KEY,
+  key_id       TEXT,
+  signed_at_ms INTEGER NOT NULL
+);
 `;
 
 /**
@@ -701,7 +774,7 @@ CREATE INDEX IF NOT EXISTS idx_heartbeat_time ON heartbeat_log(id DESC);
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 17;
+export const SCHEMA_VERSION = 18;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
@@ -2788,6 +2861,142 @@ export class Storage {
        SET value=excluded.value, updated_at_ms=excluded.updated_at_ms`,
       [userId, key, value, Date.now()],
     );
+  }
+
+  /**
+   * Phase-5 dashboard: keys of one user's prefs starting with a prefix
+   * (e.g. the `gacfg:` group-assistant configs). Additive read-only helper;
+   * LIKE wildcards in the prefix are escaped so the match is literal.
+   */
+  listUserPrefKeys(userId: string, prefix: string): string[] {
+    const escaped = prefix.replace(/[\\%_]/g, (c) => `\\${c}`);
+    return this.query<{ key: string }>(
+      `SELECT key FROM user_prefs WHERE user_id=? AND key LIKE ? ESCAPE '\\' ORDER BY key ASC`,
+      [userId, `${escaped}%`],
+    ).map((r) => r.key);
+  }
+
+  // ---- phase 5, item 1: skill package signing ----
+
+  /**
+   * The owner's signing keypair, if `/skill keygen` has run. The returned
+   * row carries the private key — callers must never log it or send it
+   * anywhere except the explicit key-export path.
+   */
+  getSkillSigningKey(): SkillSigningKeyRow | undefined {
+    const rows = this.query<{
+      key_id: string;
+      public_key: string;
+      private_key_jwk: string;
+      created_at_ms: number;
+    }>(`SELECT key_id, public_key, private_key_jwk, created_at_ms FROM skill_signing_key WHERE id=1`);
+    const r = rows[0];
+    if (r === undefined) return undefined;
+    return {
+      keyId: r.key_id,
+      publicKey: r.public_key,
+      privateKeyJwk: r.private_key_jwk,
+      createdAtMs: r.created_at_ms,
+    };
+  }
+
+  /** Store (or replace) the owner's signing keypair. Single row, id = 1. */
+  setSkillSigningKey(key: { keyId: string; publicKey: string; privateKeyJwk: string }): void {
+    this.exec(
+      `INSERT INTO skill_signing_key(id, key_id, public_key, private_key_jwk, created_at_ms)
+       VALUES(1,?,?,?,?)
+       ON CONFLICT(id) DO UPDATE SET
+         key_id=excluded.key_id, public_key=excluded.public_key,
+         private_key_jwk=excluded.private_key_jwk, created_at_ms=excluded.created_at_ms`,
+      [key.keyId, key.publicKey, key.privateKeyJwk, Date.now()],
+    );
+  }
+
+  /** Trust a publisher's key: upsert by fingerprint, refreshing the label. */
+  trustSkillPublisher(p: { keyId: string; label: string; publicKey: string }): { added: boolean } {
+    const existing = this.getTrustedSkillPublisher(p.keyId);
+    const now = Date.now();
+    if (existing === undefined) {
+      this.exec(
+        `INSERT INTO skill_trusted_publishers(key_id, label, public_key, added_at_ms)
+         VALUES(?,?,?,?)`,
+        [p.keyId, p.label, p.publicKey, now],
+      );
+      return { added: true };
+    }
+    // Keep the known public key when the new trust carries none (trusted by
+    // fingerprint), but prefer a freshly supplied one.
+    const publicKey = p.publicKey !== "" ? p.publicKey : existing.publicKey;
+    this.exec(
+      `UPDATE skill_trusted_publishers SET label=?, public_key=? WHERE key_id=?`,
+      [p.label, publicKey, p.keyId],
+    );
+    return { added: false };
+  }
+
+  /** Revoke trust in a publisher. Returns false when it was not trusted. */
+  untrustSkillPublisher(keyId: string): boolean {
+    const res = this.exec(`DELETE FROM skill_trusted_publishers WHERE key_id=?`, [keyId]);
+    return (res.changes as number) > 0;
+  }
+
+  getTrustedSkillPublisher(keyId: string): TrustedSkillPublisherRow | undefined {
+    const rows = this.query<{
+      key_id: string;
+      label: string;
+      public_key: string;
+      added_at_ms: number;
+    }>(`SELECT key_id, label, public_key, added_at_ms FROM skill_trusted_publishers WHERE key_id=?`, [
+      keyId,
+    ]);
+    const r = rows[0];
+    if (r === undefined) return undefined;
+    return { keyId: r.key_id, label: r.label, publicKey: r.public_key, addedAtMs: r.added_at_ms };
+  }
+
+  listTrustedSkillPublishers(): TrustedSkillPublisherRow[] {
+    return this.query<{
+      key_id: string;
+      label: string;
+      public_key: string;
+      added_at_ms: number;
+    }>(
+      `SELECT key_id, label, public_key, added_at_ms FROM skill_trusted_publishers ORDER BY added_at_ms ASC`,
+    ).map((r) => ({
+      keyId: r.key_id,
+      label: r.label,
+      publicKey: r.public_key,
+      addedAtMs: r.added_at_ms,
+    }));
+  }
+
+  /**
+   * Record which publisher signed an installed skill (null = unsigned),
+   * from the verified envelope at import time. Upserted per skill name.
+   */
+  recordSkillInstallProvenance(p: { skillName: string; keyId: string | null }): void {
+    this.exec(
+      `INSERT INTO skill_install_provenance(skill_name, key_id, signed_at_ms)
+       VALUES(?,?,?)
+       ON CONFLICT(skill_name) DO UPDATE SET
+         key_id=excluded.key_id, signed_at_ms=excluded.signed_at_ms`,
+      [p.skillName, p.keyId, Date.now()],
+    );
+  }
+
+  /** Drop a skill's provenance row (on uninstall). */
+  removeSkillInstallProvenance(skillName: string): void {
+    this.exec(`DELETE FROM skill_install_provenance WHERE skill_name=?`, [skillName]);
+  }
+
+  getSkillInstallProvenance(skillName: string): SkillInstallProvenanceRow | undefined {
+    const rows = this.query<{ skill_name: string; key_id: string | null; signed_at_ms: number }>(
+      `SELECT skill_name, key_id, signed_at_ms FROM skill_install_provenance WHERE skill_name=?`,
+      [skillName],
+    );
+    const r = rows[0];
+    if (r === undefined) return undefined;
+    return { skillName: r.skill_name, keyId: r.key_id, signedAtMs: r.signed_at_ms };
   }
 
   // ---- low-level guarded wrappers ----

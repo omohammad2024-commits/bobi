@@ -219,6 +219,7 @@ function setup() {
       provider,
       store,
       isOwner: (id) => id === OWNER,
+      now: () => NOW_MS,
     }),
   });
   return { provider, store, svc };

@@ -37,15 +37,17 @@
  * results are the owner's private data — run history must not leak across
  * users, so both the tool and /bench stay owner-only.
  *
- * NOTE on live scheduled runs: a full 24-task live run takes several
- * minutes, longer than the scheduler's per-action budget (30s default). The
- * run still completes in the background and persists + notifies, but the
- * scheduled task shows "failed" for that slot. Prefer offline on a schedule
- * and live on demand (`bun bench/run.ts --live` or /bench run --live);
- * documented in docs/PHASE3_BENCH.md.
+ * NOTE on live scheduled runs (Phase-4): a full 24-task live run takes
+ * several minutes, longer than the scheduler's per-action budget (30s
+ * default). Live runs therefore go through the daemon-side BenchWorker
+ * (`src/bench/worker.ts`): the scheduled action is
+ * `{type:"tool", tool:"run_bench", input:{mode:"live", background:true}}`,
+ * which ENQUEUES in milliseconds (no LLM calls inside the action path) and
+ * returns "queued". The worker picks the job up on its next pump, runs the
+ * full suite with real provider calls, records to the history tables, and
+ * drives the same regression alert path below. Offline scheduled runs stay
+ * synchronous — they finish in seconds, inside the budget.
  */
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { ToolError } from "../tools/errors";
 import type { Tool, ToolContext } from "../tools/types";
 import {
@@ -60,6 +62,14 @@ import {
 } from "../../bench/run";
 import { loadTasks } from "../../bench/schema";
 import { BenchHistory } from "./history";
+import {
+  tryAcquireBenchRunLock,
+  releaseBenchRunLock,
+  defaultBenchTasksDir,
+  type BenchJobSource,
+  type BenchJobSpec,
+  type EnqueueOutcome,
+} from "./worker";
 import {
   compareToBaseline,
   decideAlert,
@@ -82,12 +92,35 @@ export interface RunBenchInput {
   mode?: "offline" | "live";
   /** Optional subset of task ids (from bench/tasks). Defaults to the full suite. */
   tasks?: string[];
+  /**
+   * Run in the background via the daemon BenchWorker instead of blocking.
+   *
+   * - true: enqueue and return {status:"queued"} in milliseconds. Requires a
+   *   wired worker (the daemon); without one the call fails loudly rather
+   *   than silently running for minutes.
+   * - false: run synchronously, exactly like before (the caller waits).
+   * - undefined (default): enqueue automatically when mode is "live" AND a
+   *   worker is wired — so a scheduled live run can never accidentally burn
+   *   the scheduler's 30s action budget. Explicit false keeps the old
+   *   on-demand live behaviour (the result is returned to the caller).
+   */
+  background?: boolean;
+  /**
+   * Where the request came from. The worker notifies the owner directly on a
+   * failed MANUAL run, while scheduled runs use the repeated-failure alert
+   * path (no per-attempt spam). Defaults to "schedule" (conservative).
+   */
+  source?: BenchJobSource;
 }
 
 export interface RunBenchOutput {
-  status: "ok" | "skipped";
+  status: "ok" | "skipped" | "queued";
   /** Stored history id (ok only). */
   runId?: number;
+  /** Worker job id (queued only). */
+  jobId?: string;
+  /** 1-based place in the worker queue (queued only). */
+  position?: number;
   mode: "offline" | "live";
   model?: string;
   taskCount?: number;
@@ -122,6 +155,13 @@ export interface RunBenchToolDeps {
    * defaultLiveStackBuilder(config.dbPath). Omit to allow offline only.
    */
   buildLive?: () => BenchStack;
+  /**
+   * Background enqueue target: the daemon BenchWorker's enqueue, wired by
+   * the coordinator. When present, background runs (explicit or the live
+   * default) are handed to the worker; the tool itself never blocks on them.
+   * Omit (tests, CLI-less builds) to allow synchronous runs only.
+   */
+  enqueueJob?: (spec: BenchJobSpec) => EnqueueOutcome;
   /** Task YAML dir; defaults to the repo's bench/tasks. */
   tasksDir?: string;
   /** Injectable suite executor, for deterministic tests. */
@@ -138,9 +178,9 @@ export interface RunBenchToolDeps {
   log?: (message: string) => void;
 }
 
-/** Default tasks dir, relative to this file: <repo>/bench/tasks. */
+/** Default tasks dir: <repo>/bench/tasks. Single source lives in worker.ts. */
 export function defaultTasksDir(): string {
-  return join(dirname(fileURLToPath(import.meta.url)), "..", "..", "bench", "tasks");
+  return defaultBenchTasksDir();
 }
 
 /**
@@ -199,6 +239,18 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
           required: false,
           description: "زیرمجموعه‌ای از شناسه‌های تسک‌ها؛ خالی یعنی کل مجموعه.",
         },
+        background: {
+          type: "boolean",
+          required: false,
+          description:
+            "اجرای پس‌زمینه در ورکر دیمون (بدون انتظار). برای live زمان‌بندی‌شده لازم است؛ در غیر این صورت محدودیت ۳۰ ثانیه‌ای زمان‌بند تمام می‌شود.",
+        },
+        source: {
+          type: "enum",
+          required: false,
+          description: "منبع درخواست: schedule (زمان‌بندی‌شده) یا manual (دستی).",
+          choices: ["schedule", "manual"] as const,
+        },
       },
     },
 
@@ -211,80 +263,159 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
         throw new ToolError("invalid_input", "حالت باید offline یا live باشد.");
       }
       const taskIds = validateTaskIds(input.tasks);
+      const source: BenchJobSource = input.source ?? "schedule";
 
-      // Build the sandboxed stack. The builders throw (Persian) when a live
-      // run is requested but no provider is configured — that is the loud
-      // skip, not a silent fake.
-      let stack: BenchStack;
-      if (mode === "live") {
-        if (!deps.buildLive) {
-          throw new ToolError(
-            "not_found",
-            "اجرای زنده در این نمونه پیکربندی نشده است؛ فقط حالت آفلاین.",
-          );
-        }
-        try {
-          stack = deps.buildLive();
-        } catch (err) {
-          const reason = err instanceof Error ? err.message : String(err);
-          await safeNotify(deps, formatSkipAlert(reason));
-          return {
-            status: "skipped",
-            mode,
-            alerted: false,
-            reason,
-            summary: "بنچ‌مارک زنده رد شد: ارائه‌دهنده پیکربندی نشده است.",
-          };
-        }
-      } else {
-        stack = buildOfflineStack();
+      // Background resolution: explicit flag wins; otherwise a live run with
+      // a wired worker enqueues automatically, so a scheduled live action
+      // written before Phase-4 (input {mode:"live"}) can never accidentally
+      // burn the scheduler's 30s action budget.
+      const wantBackground =
+        input.background ?? (mode === "live" && deps.enqueueJob !== undefined);
+      if (wantBackground) {
+        return enqueueBackground(deps, mode, taskIds, source);
       }
 
-      const runId = stampName();
-      const executeSuite =
-        deps.executeSuite ??
-        ((stack: BenchStack, execRunId: string, execTaskIds?: string[]) =>
-          defaultExecuteSuite(stack, execRunId, tasksDir, mode, execTaskIds));
-      const report = await executeSuite(stack, runId, taskIds);
-      const storedId = deps.history.recordRun(report);
-
-      // Regression check against the rolling baseline, with cooldown+dedupe.
-      let alerted = false;
-      let comparison: BaselineComparison | undefined;
+      // Synchronous path: share the process-wide bench lock with the
+      // background worker. A manual run while the worker is busy fails LOUDLY
+      // instead of interleaving the task-mock state — a wrong silent score
+      // is worse than a clear "busy".
+      if (!tryAcquireBenchRunLock()) {
+        throw new ToolError(
+          "overloaded",
+          "یک اجرای بنچ‌مارک دیگر (پس‌زمینه) در حال انجام است؛ کمی بعد تلاش کنید یا با «/bench cancel» لغوش کنید.",
+        );
+      }
       try {
-        const decision = decideAlert(deps.history, report, {
-          ...deps.baseline,
-          now,
-        });
-        comparison = decision.comparison;
-        if (decision.fire) {
-          await safeNotify(deps, formatRegressionAlert(decision.comparison, report));
-          deps.history.markAlertSent(decision.key, now());
-          alerted = true;
-        }
-      } catch (err) {
-        // A baseline failure must never fail the run: the scores are stored,
-        // and the owner is told the comparison did not happen.
-        deps.log?.(`bench baseline failed: ${err instanceof Error ? err.message : String(err)}`);
+        return await runSynchronous(deps, mode, taskIds, tasksDir, now);
+      } finally {
+        releaseBenchRunLock();
       }
-
-      return {
-        status: "ok",
-        runId: storedId,
-        mode,
-        model: report.model,
-        taskCount: report.taskCount,
-        passed: report.totals.passed,
-        failed: report.totals.failed,
-        avgScorePct: report.totals.avgScorePct,
-        alerted,
-        summary:
-          formatRunSummary(report, storedId) +
-          (comparison !== undefined && comparison.reason === "insufficient_baseline"
-            ? "\n(خط‌مبنا هنوز کافی نیست؛ بعد از چند اجرای دیگر هشدار افت کیفیت فعال می‌شود.)"
-            : ""),
-      };
     },
+  };
+}
+
+/**
+ * Background path: validate, then hand the job to the daemon BenchWorker.
+ * Milliseconds, no LLM calls — safe inside the scheduler's action budget.
+ */
+function enqueueBackground(
+  deps: RunBenchToolDeps,
+  mode: "offline" | "live",
+  taskIds: string[] | undefined,
+  source: BenchJobSource,
+): RunBenchOutput {
+  if (deps.enqueueJob === undefined) {
+    throw new ToolError(
+      "not_found",
+      "اجرای پس‌زمینه در این نمونه پیکربندی نشده است؛ ورکر بنچ‌مارک فعال نیست.",
+    );
+  }
+  const spec: BenchJobSpec = {
+    mode,
+    source,
+    ...(taskIds !== undefined ? { taskIds } : {}),
+  };
+  const outcome = deps.enqueueJob(spec);
+  if (!outcome.queued) {
+    deps.log?.(`bench enqueue refused (${outcome.reason}): mode=${mode}`);
+    return {
+      status: "skipped",
+      mode,
+      alerted: false,
+      reason: outcome.reason,
+      summary:
+        "صف بنچ‌مارک پس‌زمینه پر است (یک اجرا در حال انجام است)؛ این نوبت رد شد و چیزی ثبت نشد.",
+    };
+  }
+  return {
+    status: "queued",
+    jobId: outcome.jobId,
+    position: outcome.position,
+    mode,
+    alerted: false,
+    summary: `بنچ‌مارک در صف پس‌زمینه قرار گرفت (جایگاه ${outcome.position}). نتیجه به مالک اعلام می‌شود.`,
+  };
+}
+
+/** The pre-Phase-4 synchronous body, unchanged apart from living in a helper. */
+async function runSynchronous(
+  deps: RunBenchToolDeps,
+  mode: "offline" | "live",
+  taskIds: string[] | undefined,
+  tasksDir: string,
+  now: () => number,
+): Promise<RunBenchOutput> {
+  // Build the sandboxed stack. The builders throw (Persian) when a live
+  // run is requested but no provider is configured — that is the loud
+  // skip, not a silent fake.
+  let stack: BenchStack;
+  if (mode === "live") {
+    if (!deps.buildLive) {
+      throw new ToolError(
+        "not_found",
+        "اجرای زنده در این نمونه پیکربندی نشده است؛ فقط حالت آفلاین.",
+      );
+    }
+    try {
+      stack = deps.buildLive();
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      await safeNotify(deps, formatSkipAlert(reason));
+      return {
+        status: "skipped",
+        mode,
+        alerted: false,
+        reason,
+        summary: "بنچ‌مارک زنده رد شد: ارائه‌دهنده پیکربندی نشده است.",
+      };
+    }
+  } else {
+    stack = buildOfflineStack();
+  }
+
+  const runId = stampName();
+  const executeSuite =
+    deps.executeSuite ??
+    ((stack: BenchStack, execRunId: string, execTaskIds?: string[]) =>
+      defaultExecuteSuite(stack, execRunId, tasksDir, mode, execTaskIds));
+  const report = await executeSuite(stack, runId, taskIds);
+  const storedId = deps.history.recordRun(report);
+
+  // Regression check against the rolling baseline, with cooldown+dedupe.
+  let alerted = false;
+  let comparison: BaselineComparison | undefined;
+  try {
+    const decision = decideAlert(deps.history, report, {
+      ...deps.baseline,
+      now,
+    });
+    comparison = decision.comparison;
+    if (decision.fire) {
+      await safeNotify(deps, formatRegressionAlert(decision.comparison, report));
+      deps.history.markAlertSent(decision.key, now());
+      alerted = true;
+    }
+  } catch (err) {
+    // A baseline failure must never fail the run: the scores are stored,
+    // and the owner is told the comparison did not happen.
+    deps.log?.(`bench baseline failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  return {
+    status: "ok",
+    runId: storedId,
+    mode,
+    model: report.model,
+    taskCount: report.taskCount,
+    passed: report.totals.passed,
+    failed: report.totals.failed,
+    avgScorePct: report.totals.avgScorePct,
+    alerted,
+    summary:
+      formatRunSummary(report, storedId) +
+      (comparison !== undefined && comparison.reason === "insufficient_baseline"
+        ? "\n(خط‌مبنا هنوز کافی نیست؛ بعد از چند اجرای دیگر هشدار افت کیفیت فعال می‌شود.)"
+        : ""),
   };
 }
 

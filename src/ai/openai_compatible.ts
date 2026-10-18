@@ -24,6 +24,8 @@ import type {
 import {
   type AIProviderAdapter,
   type AdapterSettings,
+  type EmbedRequest,
+  type EmbedResponse,
   type ListModelsRequest,
   type RemoteModel,
 } from "./adapter";
@@ -47,7 +49,9 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
   readonly type = "openai_compatible" as const;
   readonly capabilities = {
     listModels: true,
-    notes: "POST {baseUrl}/chat/completions و GET {baseUrl}/models",
+    // Phase 4: POST {baseUrl}/embeddings, the standard OpenAI wire shape.
+    embeddings: true,
+    notes: "POST {baseUrl}/chat/completions، GET {baseUrl}/models و POST {baseUrl}/embeddings",
   };
   readonly label = "سفارشی / سازگار با OpenAI";
 
@@ -106,6 +110,92 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     }
     return out;
   }
+
+  /**
+   * Embed texts via POST {baseUrl}/embeddings (Phase 4, semantic memory).
+   *
+   * Wire format: request {model, input: string[]}; response
+   * {data: [{embedding: number[], index: number}], model?}. Entries are
+   * re-ordered by `index` when the service provides it, so a service that
+   * answers out of order still lines up with the input texts.
+   *
+   * Same transport policy as complete(): DNS-pinned, no redirects, and the
+   * response body never escapes into an error. A malformed embedding entry
+   * fails the whole call rather than silently misaligning vectors with texts.
+   */
+  async embed(req: EmbedRequest): Promise<EmbedResponse> {
+    if (req.texts.length === 0) {
+      return { embeddings: [], model: req.model };
+    }
+    const target = await resolveTarget(this.target, {
+      ...(this.target.allowLocalTargets !== undefined
+        ? { allowLocalTargets: this.target.allowLocalTargets }
+        : {}),
+    });
+    const res = await fetchJson(target, {
+      path: "/embeddings",
+      method: "POST",
+      headers: headers(this.target.apiKey),
+      body: JSON.stringify({ model: req.model, input: req.texts }),
+      timeoutMs: req.timeoutMs,
+      signal: req.signal,
+    });
+
+    const parsed = parseEmbedResponse(res, req.texts.length);
+    return {
+      embeddings: parsed.embeddings,
+      model: parsed.model ?? req.model,
+    };
+  }
+}
+
+/**
+ * Parse an /embeddings response body.
+ *
+ * Exported so the wire format can be asserted without a network (same
+ * rationale as buildRequestBody). Entries are re-ordered by `index` when the
+ * service provides it, so a service that answers out of order still lines up
+ * with the input texts. A malformed entry or a count mismatch throws AiError
+ * rather than silently misaligning vectors with texts — a shifted vector
+ * would poison the memory index with the wrong meaning.
+ */
+export function parseEmbedResponse(
+  res: Record<string, unknown>,
+  expectedCount: number,
+): { embeddings: number[][]; model?: string } {
+  const data = res["data"];
+  if (!Array.isArray(data) || data.length === 0) {
+    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+  }
+  const vectors: Array<{ index: number; embedding: number[] }> = [];
+  for (const entry of data) {
+    if (!isRecord(entry)) {
+      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    }
+    const embedding = entry["embedding"];
+    if (
+      !Array.isArray(embedding) ||
+      embedding.length === 0 ||
+      !embedding.every((v) => typeof v === "number" && Number.isFinite(v))
+    ) {
+      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    }
+    const index = entry["index"];
+    vectors.push({
+      index: typeof index === "number" && Number.isInteger(index) ? index : vectors.length,
+      embedding: embedding as number[],
+    });
+  }
+  vectors.sort((a, b) => a.index - b.index);
+  const embeddings = vectors.map((v) => v.embedding);
+  if (embeddings.length !== expectedCount) {
+    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+  }
+  const model = res["model"];
+  return {
+    embeddings,
+    ...(typeof model === "string" && model.length > 0 ? { model } : {}),
+  };
 }
 
 /**

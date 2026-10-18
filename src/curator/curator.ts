@@ -16,6 +16,7 @@
  */
 import { createHash } from "node:crypto";
 import type { MemoryProvider, StoredMemory } from "../memory/provider";
+import type { NewEvent } from "../memory/events";
 
 /**
  * Reserved action name for a future scheduler action type.
@@ -30,15 +31,25 @@ export const CURATOR_TASK_ACTION = "curate";
 
 /** Kinds of proposals the curator can raise. "archive" comes from the
  *  Phase-3 summarizer: old memories consolidated into an archive entry,
- *  with the originals proposed for deletion (owner-approved, never silent). */
-export type ProposalKind = "duplicate" | "stale" | "split" | "archive";
+ *  with the originals proposed for deletion (owner-approved, never silent).
+ *  "event" (Phase-5) is an auto-extracted dated-event candidate from the
+ *  owner's conversations; "import" (Phase-5) is an item from an imported
+ *  memory package that needs the owner's review (conflict, or reviewAll). */
+export type ProposalKind = "duplicate" | "stale" | "split" | "archive" | "event" | "import";
 
-/** What applying a proposal would do, as structured data (never code). */
+/** What applying a proposal would do, as structured data (never code).
+ *
+ *  "add" (Phase-5) writes a brand-new memory from an import package;
+ *  "add_event" (Phase-5) records a dated event through EventStore (which
+ *  re-validates) — upsert semantics by the deterministic event key.
+ */
 export type ProposalAction =
   | { type: "merge"; keepKey: string; removeKeys: string[] }
   | { type: "delete"; keys: string[] }
   | { type: "update"; key: string; newContent: string }
-  | { type: "split"; key: string; parts: Array<{ key: string; content: string }> };
+  | { type: "split"; key: string; parts: Array<{ key: string; content: string }> }
+  | { type: "add"; key: string; content: string }
+  | { type: "add_event"; event: NewEvent };
 
 /**
  * One curator proposal.
@@ -69,6 +80,10 @@ export function kindLabelFa(kind: ProposalKind): string {
       return "تقسیم";
     case "archive":
       return "بایگانی";
+    case "event":
+      return "رویداد";
+    case "import":
+      return "ورودی";
   }
 }
 

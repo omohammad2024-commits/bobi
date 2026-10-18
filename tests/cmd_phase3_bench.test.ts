@@ -287,3 +287,181 @@ describe("handleBenchStatus", () => {
     expect(out).toContain("85٪");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase-4: background worker surface (--bg, status worker section, cancel)
+// ---------------------------------------------------------------------------
+
+function stubWorker(
+  over: Partial<{
+    state: "idle" | "running";
+    pending: number;
+    cancel: { cancelledPending: number; abortedRunning: boolean };
+  }> = {},
+) {
+  return {
+    snapshot: () => ({
+      state: over.state ?? "idle",
+      current:
+        (over.state ?? "idle") === "running"
+          ? {
+              jobId: "bench-1",
+              mode: "live",
+              source: "schedule",
+              startedAtMs: Date.parse("2026-10-18T19:00:00.000Z"),
+            }
+          : undefined,
+      pending: over.pending ?? 0,
+    }),
+    cancelAll: (_reason: string) =>
+      over.cancel ?? { cancelledPending: 0, abortedRunning: false },
+  };
+}
+
+describe("handleBenchRun --bg (Phase-4)", () => {
+  test("--bg enqueues: runBenchNow gets background:true, reply is bilingual queued message", async () => {
+    const seen: { background: boolean | undefined; mode: string }[] = [];
+    const d = deps({
+      runBenchNow: (async (opts: { mode: "offline" | "live"; background?: boolean }) => {
+        seen.push({ background: opts.background, mode: opts.mode });
+        return { status: "queued", mode: opts.mode, alerted: false, summary: "q", position: 2 };
+      }) as never,
+    });
+    const out = await handleBenchRun(d, sender, ["--live", "--bg"], "fa");
+    expect(seen).toEqual([{ background: true, mode: "live" }]);
+    expect(out).toContain("صف");
+    expect(out).toContain("2");
+  });
+
+  test("without --bg the call stays synchronous (background:false)", async () => {
+    const seen: { background: boolean | undefined }[] = [];
+    const d = deps({
+      runBenchNow: (async (opts: { background?: boolean }) => {
+        seen.push({ background: opts.background });
+        return { status: "ok", mode: "offline", alerted: false, summary: "done" };
+      }) as never,
+    });
+    const out = await handleBenchRun(d, sender, [], "en");
+    expect(seen).toEqual([{ background: false }]);
+    expect(out).toContain("done");
+  });
+
+  test("--bg reply is English when lang=en", async () => {
+    const d = deps({
+      runBenchNow: (async () => ({
+        status: "queued",
+        mode: "live",
+        alerted: false,
+        summary: "q",
+        position: 1,
+      })) as never,
+    });
+    expect(await handleBenchRun(d, sender, ["--bg"], "en")).toContain("queued");
+  });
+});
+
+describe("handleBenchSchedule (Phase-4)", () => {
+  test("--live schedule writes background:true into the stored action", async () => {
+    const seen: unknown[] = [];
+    const tools = {
+      async execute(req: { tool: string; input: unknown }) {
+        if (req.tool === "list_tasks") return { status: "ok", data: { tasks: [], count: 0 } };
+        if (req.tool === "schedule_task") {
+          seen.push(req.input);
+          return { status: "ok", data: { id: 7 } };
+        }
+        return { status: "error", message: "?" };
+      },
+    };
+    const d = deps({ tools: tools as never });
+    const out = await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0", "--live"], "fa");
+    const action = (seen[0] as { action: { input: Record<string, unknown> } }).action;
+    expect(action.input.mode).toBe("live");
+    expect(action.input.background).toBe(true);
+    expect(action.input.source).toBe("schedule");
+    // The reply tells the owner the run happens in the background worker.
+    expect(out).toContain("پس‌زمینه");
+  });
+
+  test("offline schedule has no background flag", async () => {
+    const seen: unknown[] = [];
+    const tools = {
+      async execute(req: { tool: string; input: unknown }) {
+        if (req.tool === "list_tasks") return { status: "ok", data: { tasks: [], count: 0 } };
+        if (req.tool === "schedule_task") {
+          seen.push(req.input);
+          return { status: "ok", data: { id: 7 } };
+        }
+        return { status: "error", message: "?" };
+      },
+    };
+    const d = deps({ tools: tools as never });
+    await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0"], "fa");
+    const action = (seen[0] as { action: { input: Record<string, unknown> } }).action;
+    expect(action.input.mode).toBe("offline");
+    expect("background" in action.input).toBe(false);
+  });
+});
+
+describe("handleBenchStatus worker section (Phase-4)", () => {
+  test("idle worker renders the idle line", async () => {
+    const d = deps({
+      tools: stubTools([], []) as never,
+      benchWorker: stubWorker({ state: "idle" }) as never,
+    });
+    const out = await handleBenchStatus(d, sender, "fa");
+    expect(out).toContain("بیکار");
+  });
+
+  test("running worker renders mode + pending count", async () => {
+    const d = deps({
+      tools: stubTools([], []) as never,
+      benchWorker: stubWorker({ state: "running", pending: 2 }) as never,
+    });
+    const out = await handleBenchStatus(d, sender, "fa");
+    expect(out).toContain("در حال اجرا");
+    expect(out).toContain("2");
+  });
+
+  test("no worker wired renders unavailable", async () => {
+    const d = deps({ tools: stubTools([], []) as never });
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("not active");
+  });
+});
+
+describe("handleBenchCancel (Phase-4)", () => {
+  test("dispatches on 'cancel' and reports counts", async () => {
+    const d = deps({
+      benchWorker: stubWorker({
+        cancel: { cancelledPending: 2, abortedRunning: true },
+      }) as never,
+    });
+    const out = await handleBench(d, sender, "cancel", true, "fa");
+    expect(out).toContain("لغو شد");
+    expect(out).toContain("2");
+  });
+
+  test("nothing to cancel says so", async () => {
+    const d = deps({ benchWorker: stubWorker() as never });
+    expect(await handleBench(d, sender, "cancel", true, "fa")).toContain("نیست");
+  });
+
+  test("no worker wired refuses", async () => {
+    const d = deps({});
+    expect(await handleBench(d, sender, "cancel", true, "en")).toContain("not active");
+  });
+
+  test("non-owner is rejected before dispatch", async () => {
+    const d = deps({ benchWorker: stubWorker() as never });
+    expect(await handleBench(d, sender, "cancel", false, "fa")).toContain("مالک");
+  });
+});
+
+describe("help text (Phase-4)", () => {
+  test("help mentions --bg and cancel in both languages", async () => {
+    const d = deps({});
+    expect(await handleBench(d, sender, "help", true, "fa")).toContain("/bench cancel");
+    expect(await handleBench(d, sender, "", true, "en")).toContain("--bg");
+  });
+});

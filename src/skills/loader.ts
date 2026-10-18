@@ -7,14 +7,15 @@
  *   name: <kebab-case>
  *   description: <one line, Persian or English>
  *   triggers: [keyword1, keyword2]   # optional
+ *   version: 1.2.0                   # optional (phase 4: skill sharing)
  *   ---
  *   # body markdown (the skill content)
  *
  * The frontmatter parser is intentionally minimal: it reads only `name`,
- * `description`, and `triggers` from simple `key: value` lines, with `triggers`
- * additionally accepting the inline-list form `[a, b]`. There is no YAML
- * dependency to exploit or keep updated, and nothing else in the frontmatter
- * is acted upon.
+ * `description`, `triggers`, and the optional `version` from simple
+ * `key: value` lines, with `triggers` additionally accepting the inline-list
+ * form `[a, b]`. There is no YAML dependency to exploit or keep updated, and
+ * nothing else in the frontmatter is acted upon.
  *
  * Strictness rules: a file missing `name` or `description` is SKIPPED with a
  * logged warning — the loader never throws for a bad file, because one broken
@@ -81,6 +82,7 @@ export function parseSkillFile(text: string, source: string): ParsedSkillFile {
       name: front.name,
       description: front.description,
       triggers: front.triggers,
+      ...(front.version !== undefined ? { version: front.version } : {}),
       body,
       source,
     },
@@ -91,6 +93,15 @@ interface Frontmatter {
   name?: string;
   description?: string;
   triggers: readonly string[];
+  version?: string;
+}
+
+/** Accept a version label only when it is a short single token (no whitespace). */
+function cleanVersion(value: string): string | undefined {
+  const v = value.trim();
+  if (v.length === 0 || v.length > 32) return undefined;
+  if (/\s/.test(v)) return undefined;
+  return v;
 }
 
 function parseFrontmatter(lines: string[]): Frontmatter {
@@ -118,6 +129,10 @@ function parseFrontmatter(lines: string[]): Frontmatter {
       front.description = value;
     } else if (key === "triggers") {
       front.triggers = parseTriggers(value);
+    } else if (key === "version") {
+      // Optional, informational: an invalid label is dropped, never fatal.
+      const v = cleanVersion(value);
+      if (v !== undefined) front.version = v;
     }
   }
   return front;

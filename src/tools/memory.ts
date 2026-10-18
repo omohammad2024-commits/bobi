@@ -18,9 +18,23 @@
  * Phase D2: the tools take a MemoryProvider instead of Storage. The provider
  * may be sync or async — every call is awaited either way — so swapping the
  * backend never changes the tools.
+ *
+ * Phase 4: recall ranks by meaning when a SemanticMemoryIndex is wired in
+ * (embeddings from the owner's configured provider, cosine similarity over
+ * stored vectors). When the index is absent or unavailable, recall silently
+ * falls back to the original substring ranking — no error, no user-visible
+ * change.
+ *
+ * Phase 5: when both signals exist, recall fuses the substring ranking and
+ * the vector ranking with Reciprocal Rank Fusion (searchMode "hybrid")
+ * instead of either/or. Stale vectors (old model/dimension) are excluded
+ * from ranking and re-embedded in the background; the kill switch and the
+ * silent text fallback are unchanged.
  */
 import { ToolError } from "./errors";
 import type { MemoryProvider } from "../memory/provider";
+import type { SemanticMemoryIndex } from "../memory/semantic";
+import { reciprocalRankFusion } from "../memory/hybrid";
 import type { Tool, ToolActor, ToolContext } from "./types";
 
 export const REMEMBER_PERMISSION = "tools:remember";
@@ -36,6 +50,13 @@ const MAX_RECALL_LIMIT = 20;
 
 export interface MemoryDeps {
   provider: MemoryProvider;
+  /**
+   * Phase 4: semantic (vector-similarity) search over memories. Optional —
+   * when absent (or when it reports unavailability), recall degrades to the
+   * original substring ranking with no error and no behavior change beyond
+   * ranking.
+   */
+  semantic?: SemanticMemoryIndex;
 }
 
 // ---------- remember ----------
@@ -104,6 +125,11 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
 
       await deps.provider.upsert(userId, key, content);
 
+      // Phase 4: embed the new memory in the background so future recall can
+      // rank by meaning. Fire-and-forget by contract — a slow or failing
+      // provider can never slow down or break remember.
+      deps.semantic?.indexMemory(userId, key, content);
+
       return {
         key,
         replaced: existing !== undefined,
@@ -121,10 +147,31 @@ export interface RecallInput {
 }
 
 export interface RecallOutput {
-  /** Matching memories, newest first. */
+  /** Matching memories, best match first. */
   memories: Array<{ key: string; content: string }>;
   total: number;
+  /**
+   * How the matches were ranked.
+   * - "hybrid" (phase 5): the vector ranking and the substring ranking were
+   *   fused with Reciprocal Rank Fusion — a memory matching both signals
+   *   outranks one matching only one.
+   * - "semantic": only the vector ranking produced candidates (no
+   *   substring match), so the fusion is the semantic order.
+   * - "text": the original substring rank (no query, or semantic
+   *   unavailable — silent fallback, never an error).
+   */
+  searchMode: "semantic" | "text" | "hybrid";
 }
+
+/**
+ * Phase 5: how many semantic candidates take part in RRF fusion.
+ *
+ * The text ranking is always complete (it is computed over the already
+ * fetched list); the semantic list is capped here so one recall cannot fan
+ * out to a provider.get per memory. 50 keeps the fusion exact where it
+ * matters — anything past rank 50 contributes less than 1/(60+50) per list.
+ */
+const HYBRID_SEMANTIC_CANDIDATES = 50;
 
 export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutput> {
   return {
@@ -162,12 +209,55 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       const all = await deps.provider.list(userId, MAX_MEMORIES_PER_USER);
 
       const query = input.query?.trim() ?? "";
-      const matches =
-        query.length === 0 ? all.slice(0, limit) : rank(all, query).slice(0, limit);
+      if (query.length === 0) {
+        return {
+          memories: all.slice(0, limit).map((m) => ({ key: m.key, content: m.content })),
+          total: all.length,
+          searchMode: "text",
+        };
+      }
+
+      // Phase 5: true hybrid ranking. When the semantic index can answer,
+      // fuse its ranking with the deterministic substring ranking via
+      // Reciprocal Rank Fusion instead of picking either/or. `undefined`
+      // means "not available right now" — fall back to the original
+      // substring ranking, silently. Ranking is an enhancement, never a
+      // dependency.
+      const semanticHits = await deps.semantic?.search(
+        userId,
+        query,
+        HYBRID_SEMANTIC_CANDIDATES,
+      );
+      if (semanticHits !== undefined) {
+        const textRanked = rank(all, query);
+        const fusedKeys = reciprocalRankFusion(
+          [textRanked.map((m) => m.key), semanticHits.map((h) => h.key)],
+          limit,
+        );
+        const byKey = new Map(all.map((m) => [m.key, m]));
+        const memories: Array<{ key: string; content: string }> = [];
+        for (const key of fusedKeys) {
+          const m = byKey.get(key);
+          if (m !== undefined) memories.push({ key: m.key, content: m.content });
+        }
+        // Which signals actually drove the result: both non-empty →
+        // "hybrid"; semantic only → "semantic"; neither → "text" (the same
+        // substring order the old fallback would have produced).
+        const searchMode =
+          textRanked.length > 0 && semanticHits.length > 0
+            ? "hybrid"
+            : semanticHits.length > 0
+              ? "semantic"
+              : "text";
+        return { memories, total: all.length, searchMode };
+      }
 
       return {
-        memories: matches.map((m) => ({ key: m.key, content: m.content })),
+        memories: rank(all, query)
+          .slice(0, limit)
+          .map((m) => ({ key: m.key, content: m.content })),
         total: all.length,
+        searchMode: "text",
       };
     },
   };
@@ -237,6 +327,10 @@ export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutp
       const userId = ownerOf(ctx.actor);
 
       const removed = await deps.provider.delete(userId, key);
+      // Phase 4: drop the vector too, so a forgotten memory can never rank
+      // in a future semantic search. Best-effort: search() joins back to the
+      // provider, so a leftover row could never surface anyway.
+      deps.semantic?.removeMemory(userId, key);
       return { key, removed, total: await deps.provider.count(userId) };
     },
   };

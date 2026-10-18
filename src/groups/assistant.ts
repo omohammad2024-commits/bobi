@@ -9,6 +9,20 @@
  * 2. `/gsummary` gives a short deterministic summary of recent discussion
  *    (no LLM: statistics + top words — see buildSummaryText).
  * 3. `/gpoll "سوال" "گزینه۱" "گزینه۲" ...` creates a native Telegram poll.
+ * 4. Phase-4: `/gassistant digest on|off|status|time HH:MM` schedules a DAILY
+ *    digest of the group's discussion, delivered to the OWNER's private chat
+ *    (never posted into the group). Content is the same deterministic
+ *    summary (no LLM); scheduling is delegated to the coordinator's
+ *    DigestSchedulePort (see group_digest.ts) so this module never touches
+ *    the task table directly.
+ * 5. Phase-5: `/gassistant smart on|off|status` toggles the OPT-IN LLM
+ *    smart-summary layer (default OFF, requires assistant mode AND a wired
+ *    AI provider). When ON, the OWNER's `/gsummary` and the scheduled
+ *    digest may additionally request an LLM summary (see
+ *    smart_summary.ts — injection-hardened via structural isolation).
+ *    The smart section is served ONLY to the owner (their explicit group
+ *    request, or the digest DM); non-owners always get the deterministic
+ *    summary and never learn the layer exists.
  *
  * Trust pattern mirrors src/moderation/config.ts exactly:
  * - Owner-scoped storage: config lives in `user_prefs` under the OWNER's user
@@ -55,6 +69,7 @@
 import type { Storage } from "../storage/storage";
 import { formatNum, formatTime } from "./panel_strings";
 import { tr, type AssistantLang } from "./assistant_strings";
+import { summarizeSmart, type SmartSummaryPort } from "./smart_summary";
 
 // ---------------------------------------------------------------- config ----
 
@@ -70,6 +85,24 @@ export interface AssistantConfig {
   summaryMaxMessages: number;
   /** Whether the owner may create polls in this group. Default true. */
   pollsAllowed: boolean;
+  /**
+   * Phase-4: daily digest of this group's discussion, delivered to the
+   * OWNER's private chat (never posted into the group). Default false —
+   * strictly opt-in like everything else here. Requires `enabled`.
+   */
+  digestEnabled: boolean;
+  /**
+   * Phase-4: daily digest time as "HH:MM" 24-hour (Asia/Tehran). Default
+   * "08:00". Bounds: valid clock time.
+   */
+  digestTime: string;
+  /**
+   * Phase-5: LLM smart summary layer. Default false — strictly opt-in.
+   * When ON, the owner's /gsummary and the scheduled digest may additionally
+   * request an LLM summary (injection-hardened; see smart_summary.ts).
+   * Requires `enabled` (needs the history buffer) and a wired AI provider.
+   */
+  smartSummary: boolean;
 }
 
 export const DEFAULT_ASSISTANT_CONFIG: Readonly<AssistantConfig> = {
@@ -77,6 +110,9 @@ export const DEFAULT_ASSISTANT_CONFIG: Readonly<AssistantConfig> = {
   replyOnlyWhenCalled: true,
   summaryMaxMessages: 30,
   pollsAllowed: true,
+  digestEnabled: false,
+  digestTime: "08:00",
+  smartSummary: false,
 };
 
 export const SUMMARY_MAX_MESSAGES_MIN = 5;
@@ -99,7 +135,13 @@ const KNOWN_FIELDS: ReadonlySet<string> = new Set([
   "replyOnlyWhenCalled",
   "summaryMaxMessages",
   "pollsAllowed",
+  "digestEnabled",
+  "digestTime",
+  "smartSummary",
 ]);
+
+/** "HH:MM" 24-hour clock, e.g. "08:00", "21:30". */
+const DIGEST_TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;
 
 function isIntInRange(v: unknown, min: number, max: number): v is number {
   return (
@@ -152,6 +194,23 @@ export function validateAssistantConfig(
     } else {
       next.summaryMaxMessages = patch.summaryMaxMessages;
     }
+  }
+  if (patch.digestEnabled !== undefined) {
+    if (typeof patch.digestEnabled !== "boolean")
+      errors.push("digestEnabled must be boolean");
+    else next.digestEnabled = patch.digestEnabled;
+  }
+  if (patch.digestTime !== undefined) {
+    if (typeof patch.digestTime !== "string" || !DIGEST_TIME_RE.test(patch.digestTime.trim())) {
+      errors.push('digestTime must be "HH:MM" 24-hour, e.g. "08:00"');
+    } else {
+      next.digestTime = patch.digestTime.trim();
+    }
+  }
+  if (patch.smartSummary !== undefined) {
+    if (typeof patch.smartSummary !== "boolean")
+      errors.push("smartSummary must be boolean");
+    else next.smartSummary = patch.smartSummary;
   }
 
   return errors.length > 0 ? { ok: false, errors } : { ok: true, config: next };
@@ -516,6 +575,35 @@ export interface GroupAssistantEnv {
   botUsername: string;
   /** The message buffer /gsummary reads from. */
   history: GroupHistory;
+  /**
+   * Phase-4: scheduled-digest task management, wired by the coordinator.
+   * Absent → digest subcommands report that scheduling is unavailable
+   * (config still readable/writable; the task row is simply not managed).
+   */
+  digest?: DigestSchedulePort;
+  /**
+   * Phase-5: LLM smart-summary port, wired by the coordinator to the AI
+   * gateway (only when a real provider is configured). Absent → the smart
+   * layer degrades to the deterministic summary with a small note.
+   */
+  smart?: SmartSummaryPort | undefined;
+}
+
+/**
+ * The narrowest surface the assistant handlers need from the coordinator's
+ * scheduled-task layer (Phase-4 group digests). The coordinator implements
+ * it with the real schedule_task/list_tasks/cancel_task tools and the
+ * owner's actor; tests inject fakes.
+ */
+export interface DigestSchedulePort {
+  /**
+   * Create (replacing any existing one) the daily digest task for a group.
+   * Returns the new task id, or undefined when creation failed (the handler
+   * then reports a generic failure, not raw tool text).
+   */
+  ensureDigestTask(chatId: string, timeHHMM: string): Promise<number | undefined>;
+  /** Cancel the digest task for a group, if one exists. Never throws. */
+  cancelDigestTask(chatId: string): Promise<void>;
 }
 
 /** Minimal context shape the handlers need (the handleVoiceCommand pattern). */
@@ -551,12 +639,55 @@ export function assistantStatusText(
   cfg: AssistantConfig,
   lang: AssistantLang = "fa",
 ): string {
-  return tr(lang, "gassistant.status", {
+  const base = tr(lang, "gassistant.status", {
     state: tr(lang, cfg.enabled ? "gassistant.state_on" : "gassistant.state_off"),
     silent: tr(lang, cfg.replyOnlyWhenCalled ? "gassistant.value_on" : "gassistant.value_off"),
     n: formatNum(cfg.summaryMaxMessages, lang),
     polls: tr(lang, cfg.pollsAllowed ? "gassistant.value_on" : "gassistant.value_off"),
   });
+  const digest = tr(lang, "gassistant.digest.status_line", {
+    digest: tr(
+      lang,
+      cfg.digestEnabled ? "gassistant.digest.status_on" : "gassistant.digest.status_off",
+      { time: cfg.digestTime },
+    ),
+  });
+  const smart = tr(lang, "gassistant.smart.status_line", {
+    smart: tr(lang, cfg.smartSummary ? "gassistant.value_on" : "gassistant.value_off"),
+  });
+  return `${base}\n${digest}\n${smart}`;
+}
+
+/**
+ * Parse "/gassistant smart on|off|status" (or with @bot suffix).
+ * Returns undefined when this is not a smart subcommand at all.
+ */
+export function parseSmartArg(
+  fullText: string,
+): { kind: "on" | "off" | "status" } | { kind: "bad" } | undefined {
+  const parts = fullText.trim().split(/\s+/);
+  if (parts.length < 2 || parts[1]!.toLowerCase() !== "smart") return undefined;
+  const sub = (parts[2] ?? "").toLowerCase();
+  if (sub === "on" || sub === "off" || sub === "status") return { kind: sub };
+  return { kind: "bad" };
+}
+
+/**
+ * Parse "/gassistant digest on|off|status|time HH:MM" (or with @bot suffix).
+ * Returns undefined when this is not a digest subcommand at all.
+ */
+export function parseDigestArg(
+  fullText: string,
+): { kind: "on" | "off" | "status" } | { kind: "time"; time: string } | { kind: "bad" } | undefined {
+  const parts = fullText.trim().split(/\s+/);
+  if (parts.length < 2 || parts[1]!.toLowerCase() !== "digest") return undefined;
+  const sub = (parts[2] ?? "").toLowerCase();
+  if (sub === "on" || sub === "off" || sub === "status") return { kind: sub };
+  if (sub === "time") {
+    const time = (parts[3] ?? "").trim();
+    return { kind: "time", time };
+  }
+  return { kind: "bad" };
 }
 
 /**
@@ -583,6 +714,18 @@ export async function handleGassistantCommand(
   }
   const arg = parseAssistantArg(ctx.message?.text ?? "");
   if (arg === undefined) {
+    // Maybe a digest subcommand: /gassistant digest on|off|status|time HH:MM.
+    const digestArg = parseDigestArg(ctx.message?.text ?? "");
+    if (digestArg !== undefined) {
+      await handleGassistantDigest(ctx, env, String(ctx.chat!.id), digestArg, lang);
+      return;
+    }
+    // Maybe a smart subcommand: /gassistant smart on|off|status.
+    const smartArg = parseSmartArg(ctx.message?.text ?? "");
+    if (smartArg !== undefined) {
+      await handleGassistantSmart(ctx, env, String(ctx.chat!.id), smartArg, lang);
+      return;
+    }
     await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
     return;
   }
@@ -604,6 +747,205 @@ export async function handleGassistantCommand(
   );
 }
 
+type DigestArg =
+  | { kind: "on" | "off" | "status" }
+  | { kind: "time"; time: string }
+  | { kind: "bad" };
+
+/**
+ * /gassistant digest on|off|status|time HH:MM — OWNER ONLY (the caller
+ * handleGassistantCommand already gated ownership and group context).
+ *
+ * Manages the Phase-4 daily digest: a scheduled task that sends the
+ * deterministic discussion summary to the OWNER's private chat. The group
+ * itself stays silent.
+ */
+async function handleGassistantDigest(
+  ctx: GroupAssistantCtx,
+  env: GroupAssistantEnv,
+  chatId: string,
+  darg: DigestArg,
+  lang: AssistantLang = "fa",
+): Promise<void> {
+  const cfg = getAssistantConfig(env.storage, env.ownerId, chatId);
+
+  if (darg.kind === "bad") {
+    await safeReply(ctx, tr(lang, "gassistant.digest.usage"));
+    return;
+  }
+
+  if (darg.kind === "status") {
+    await safeReply(
+      ctx,
+      tr(lang, "gassistant.digest.status_line", {
+        digest: digestStateText(cfg, lang),
+      }),
+    );
+    return;
+  }
+
+  if (darg.kind === "off") {
+    const res = setAssistantConfig(env.storage, env.ownerId, chatId, {
+      digestEnabled: false,
+    });
+    if (!res.ok) {
+      await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
+      return;
+    }
+    try {
+      await env.digest?.cancelDigestTask(chatId);
+    } catch {
+      // Best effort: the config is already off, so a stale task row only
+      // no-ops at run time (the tool re-reads the config before sending).
+    }
+    await safeReply(ctx, tr(lang, "gassistant.digest.off"));
+    return;
+  }
+
+  if (darg.kind === "time") {
+    const time = darg.time.trim();
+    if (!/^([01]\d|2[0-3]):([0-5]\d)$/.test(time)) {
+      await safeReply(ctx, tr(lang, "gassistant.digest.bad_time"));
+      return;
+    }
+    const res = setAssistantConfig(env.storage, env.ownerId, chatId, {
+      digestTime: time,
+    });
+    if (!res.ok) {
+      await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
+      return;
+    }
+    if (res.config.digestEnabled) {
+      if (env.digest === undefined) {
+        await safeReply(ctx, tr(lang, "gassistant.digest.unavailable"));
+        return;
+      }
+      const id = await env.digest.ensureDigestTask(chatId, time).catch(() => undefined);
+      if (id === undefined) {
+        await safeReply(ctx, tr(lang, "gassistant.digest.schedule_failed"));
+        return;
+      }
+    }
+    await safeReply(ctx, tr(lang, "gassistant.digest.time_set", { time }));
+    return;
+  }
+
+  // darg.kind === "on"
+  if (!cfg.enabled) {
+    // The digest is a feature OF the assistant mode; without the mode there
+    // is no history buffer to summarize.
+    await safeReply(ctx, tr(lang, "gassistant.digest.need_mode"));
+    return;
+  }
+  if (env.digest === undefined) {
+    await safeReply(ctx, tr(lang, "gassistant.digest.unavailable"));
+    return;
+  }
+  // Create the task BEFORE flipping the config: if scheduling fails, the
+  // config must not claim a digest that will never fire.
+  const id = await env.digest.ensureDigestTask(chatId, cfg.digestTime).catch(() => undefined);
+  if (id === undefined) {
+    await safeReply(ctx, tr(lang, "gassistant.digest.schedule_failed"));
+    return;
+  }
+  const res = setAssistantConfig(env.storage, env.ownerId, chatId, {
+    digestEnabled: true,
+  });
+  if (!res.ok) {
+    // Config write failed after scheduling — cancel the task so the two
+    // stay consistent (the tool would no-op anyway, reading the config).
+    await env.digest.cancelDigestTask(chatId).catch(() => undefined);
+    await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
+    return;
+  }
+  await safeReply(
+    ctx,
+    tr(lang, "gassistant.digest.on", { time: res.config.digestTime }),
+  );
+}
+
+/** "on at 08:00" / "off" line for the digest state, both languages. */
+function digestStateText(
+  cfg: AssistantConfig,
+  lang: AssistantLang,
+): string {
+  return tr(
+    lang,
+    cfg.digestEnabled ? "gassistant.digest.status_on" : "gassistant.digest.status_off",
+    { time: cfg.digestTime },
+  );
+}
+
+type SmartArg = { kind: "on" | "off" | "status" } | { kind: "bad" };
+
+/**
+ * /gassistant smart on|off|status — OWNER ONLY (the caller
+ * handleGassistantCommand already gated ownership and group context).
+ *
+ * Toggles the Phase-5 opt-in LLM summary layer: when ON, the OWNER's
+ * /gsummary and the scheduled digest may additionally request an LLM
+ * summary (injection-hardened; see smart_summary.ts). The layer is never
+ * shown to non-owners — their /gsummary stays deterministic.
+ */
+async function handleGassistantSmart(
+  ctx: GroupAssistantCtx,
+  env: GroupAssistantEnv,
+  chatId: string,
+  sarg: SmartArg,
+  lang: AssistantLang = "fa",
+): Promise<void> {
+  if (sarg.kind === "bad") {
+    await safeReply(ctx, tr(lang, "gassistant.smart.usage"));
+    return;
+  }
+
+  if (sarg.kind === "status") {
+    const cfg = getAssistantConfig(env.storage, env.ownerId, chatId);
+    await safeReply(
+      ctx,
+      tr(lang, "gassistant.smart.status_line", {
+        smart: tr(lang, cfg.smartSummary ? "gassistant.value_on" : "gassistant.value_off"),
+      }),
+    );
+    return;
+  }
+
+  if (sarg.kind === "off") {
+    const res = setAssistantConfig(env.storage, env.ownerId, chatId, {
+      smartSummary: false,
+    });
+    if (!res.ok) {
+      await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
+      return;
+    }
+    await safeReply(ctx, tr(lang, "gassistant.smart.off"));
+    return;
+  }
+
+  // sarg.kind === "on"
+  const cfg = getAssistantConfig(env.storage, env.ownerId, chatId);
+  if (!cfg.enabled) {
+    // The smart layer summarizes the history buffer; without assistant
+    // mode there is no buffer to read.
+    await safeReply(ctx, tr(lang, "gassistant.smart.need_mode"));
+    return;
+  }
+  if (env.smart === undefined) {
+    // Honest at enable time: without a wired provider the flag would only
+    // ever degrade to the deterministic summary.
+    await safeReply(ctx, tr(lang, "gassistant.smart.unavailable"));
+    return;
+  }
+  const res = setAssistantConfig(env.storage, env.ownerId, chatId, {
+    smartSummary: true,
+  });
+  if (!res.ok) {
+    await safeReply(ctx, tr(lang, "gassistant.bad_arg"));
+    return;
+  }
+  await safeReply(ctx, tr(lang, "gassistant.smart.on"));
+}
+
 /**
  * /gsummary — summarize recent group discussion.
  *
@@ -611,6 +953,10 @@ export async function handleGassistantCommand(
  * point of the feature), but the mode itself is owner-gated and a disabled
  * group gets only the terse "not enabled" line. The summary is posted in the
  * same group — never DM'd anywhere.
+ *
+ * Phase-5 routing rule: the LLM smart section is served ONLY on an explicit
+ * OWNER request in the group. Non-owner callers get exactly the deterministic
+ * summary — the smart layer is invisible to them, not just blocked.
  */
 export async function handleGsummaryCommand(
   ctx: GroupAssistantCtx,
@@ -628,7 +974,27 @@ export async function handleGsummaryCommand(
     return;
   }
   const messages = env.history.recent(chatId, cfg.summaryMaxMessages);
-  await safeReply(ctx, buildSummaryText(messages, lang));
+  const deterministic = buildSummaryText(messages, lang);
+  if (!cfg.smartSummary) {
+    await safeReply(ctx, deterministic);
+    return;
+  }
+  // Smart layer is ON: serve the LLM section only to the OWNER's explicit
+  // request in the group. Everyone else gets the deterministic text — the
+  // smart layer is invisible to them, not just blocked.
+  const requester = ctx.from?.id;
+  if (requester === undefined || !ownerOf(env)(String(requester))) {
+    await safeReply(ctx, deterministic);
+    return;
+  }
+  const result = await summarizeSmart({
+    messages,
+    lang,
+    cfg,
+    port: env.smart,
+    fallbackText: deterministic,
+  });
+  await safeReply(ctx, result.text);
 }
 
 /**

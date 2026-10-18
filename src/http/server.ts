@@ -28,7 +28,11 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { APP_VERSION } from "../core/app";
-import { handleDashboardRequest, isDashboardEnabled } from "./dashboard";
+import {
+  handleDashboardRequest,
+  isDashboardEnabled,
+  type BenchWorkerProgress,
+} from "./dashboard";
 import type { ConversationEngine } from "../conversation/engine";
 import type { ToolActor } from "../tools/types";
 import type { Storage } from "../storage/storage";
@@ -70,6 +74,12 @@ export interface ApiServerDeps {
   version?: string;
   /** Per-IP request budget for the turn endpoint; default 30/min. */
   rateLimitPerMinute?: number;
+  /**
+   * Phase-5: daemon BenchWorker progress surface, passed through to the
+   * dashboard's live stream endpoint. Optional; without it the stream
+   * answers 503.
+   */
+  benchWorker?: BenchWorkerProgress;
   /** Sink for startup/bind logging; must never receive the token. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
@@ -127,6 +137,7 @@ export function createApiServer(
       const dashboardRes = handleDashboardRequest(req, {
         storage: deps.storage,
         token,
+        ...(deps.benchWorker !== undefined ? { benchWorker: deps.benchWorker } : {}),
       });
       if (dashboardRes !== undefined) return dashboardRes;
     }

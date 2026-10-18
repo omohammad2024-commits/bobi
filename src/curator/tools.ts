@@ -53,6 +53,11 @@ export interface CuratorToolDeps {
    * this predicate — not anything in the request — decides ownership.
    */
   isOwner: (userId: string) => boolean;
+  /**
+   * Injectable clock (ms) for time-dependent tools (archive keys, days-until).
+   * Defaults to Date.now. Tests inject a fixed clock.
+   */
+  now?: () => number;
 }
 
 /** Build the service from deps, so review() is easy to unit-test alone. */
@@ -240,7 +245,10 @@ export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<Summari
 
     async run(input: SummarizeMemoriesInput, ctx: ToolContext): Promise<SummarizeMemoriesOutput> {
       const userId = ownerOf(ctx, deps);
-      const service = new SummarizerService({ provider: deps.provider });
+      const service =
+        deps.now !== undefined
+          ? new SummarizerService({ provider: deps.provider }, { now: deps.now })
+          : new SummarizerService({ provider: deps.provider });
       const summarizeOpts: SummarizerOptions = {};
       if (input.olderThanDays !== undefined) summarizeOpts.olderThanDays = input.olderThanDays;
       if (input.maxEntries !== undefined) summarizeOpts.maxEntries = input.maxEntries;
@@ -389,7 +397,7 @@ export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string,
     async run(_input: Record<string, never>, ctx: ToolContext): Promise<ListEventsOutput> {
       const userId = ownerOf(ctx, deps);
       const store = new EventStore(deps.provider);
-      const nowMs = Date.now();
+      const nowMs = deps.now?.() ?? Date.now();
       const rows = await store.list(userId);
       const events = rows.map(({ key, event }) => {
         const occ = nextOccurrence(event, nowMs);
@@ -457,6 +465,18 @@ async function applyProposalAction(
         await provider.upsert(userId, part.key, part.content);
       }
       break;
+    case "add":
+      // Phase-5: a brand-new memory from an import package (owner reviewed).
+      await provider.upsert(userId, action.key, action.content);
+      break;
+    case "add_event": {
+      // Phase-5: an auto-extracted or imported dated event (owner reviewed).
+      // EventStore.add re-validates and upserts by the deterministic event
+      // key, so approving the same proposal twice cannot duplicate.
+      const events = new EventStore(provider);
+      await events.add(userId, action.event);
+      break;
+    }
   }
 }
 

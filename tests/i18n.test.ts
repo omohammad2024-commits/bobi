@@ -334,6 +334,80 @@ const FA_EXPECTED: Readonly<Record<string, string>> = {
   "onb.provider.test_fail_note": "⚠️ پروایدر ساخته شد ولی تست اتصال ناموفق بود: {msg}\nمی‌تونی دوباره تست کنی، یا ادامه بدی و بعداً از /ai بررسی‌ش کنی.",
   "onb.provider.title": "🔑 اتصال به هوش مصنوعی",
   "onb.skip": "⏭ رد شدن",
+  // Phase 4, item 5 — skill sharing (export/import packages).
+  "ph4_skill_share.export.not_found": "❌ مهارتی با نام «{name}» پیدا نشد.",
+  "ph4_skill_share.export.too_large": "❌ بستهٔ مهارت «{name}» از سقف حجم بیشتر شد و قابل صدور نیست.",
+  "ph4_skill_share.export.failed": "❌ صدور بسته ناموفق بود.",
+  "ph4_skill_share.export.done":
+    "📦 بستهٔ مهارت «{name}» آماده شد (نسخهٔ {version}).\nاین فایل `.bobiskill` را نگه دار یا برای نمونهٔ دیگر بابی بفرست؛ با «/skill import» نصب می‌شود.",
+  "ph4_skill_share.export.no_version": "بدون نسخه",
+  "ph4_skill_share.import.not_package": "❌ فقط فایل `.bobiskill` قابل وارد کردن است.",
+  "ph4_skill_share.import.too_large": "❌ حجم بسته ({bytes}) از سقف {max} بیشتر است.",
+  "ph4_skill_share.import.bad_envelope": "❌ این بستهٔ مهارت معتبر نیست: {reason}",
+  "ph4_skill_share.import.checksum_mismatch":
+    "❌ بسته دست‌کاری شده است (checksum نامعتبر) — وارد نشد.\nبسته را فقط از منبعی بگیر که به آن اعتماد داری.",
+  "ph4_skill_share.import.no_source":
+    "❌ نه نشانی دادی نه فایلی. یک نشانی بده: /skill import <نشانی>، یا فایل `.bobiskill` را بفرست، یا به پیام حاوی بسته ریپلای کن.",
+  "ph4_skill_share.import.fetch_failed": "❌ دریافت بسته ناموفق بود: {reason}",
+  "ph4_skill_share.import.review_title": "📦 بررسی بستهٔ مهارت (وارداتی)",
+  "ph4_skill_share.import.checksum_ok": "🔒 یکپارچگی بسته تأیید شد.",
+  "ph4_skill_share.import.new_skill": "✨ مهارت تازه — قبلاً با این نام نصب نشده.",
+  "ph4_skill_share.import.upgrade": "⬆️ ارتقا: نسخهٔ {old} ← {new}",
+  "ph4_skill_share.import.downgrade":
+    "⚠️ هشدار صریح: نسخهٔ بسته ({new}) از نسخهٔ نصب‌شده ({old}) قدیمی‌تر است!",
+  "ph4_skill_share.import.same_version":
+    "ℹ️ نسخهٔ بسته با نسخهٔ نصب‌شده یکسان است ({version})؛ همان نسخه دوباره نصب می‌شود.",
+  "ph4_skill_share.import.unknown_version": "ℹ️ نسخه مشخص نیست؛ مثل نصب تازه بررسی کن.",
+  "ph4_skill_share.import.source": "منبع بسته: {source}",
+  "ph4_skill_share.import.source_file": "فایل ارسالی",
+  "ph4_skill_share.import.source_replied": "پیام ریپلای‌شده",
+  "ph4_skill_share.import.exported_at": "صدور: {when} از {instance}",
+  "ph4_skill_share.import.capabilities": "قابلیت‌های اعلام‌شده: {caps}",
+  "ph4_skill_share.import.disabled_note":
+    "⏸️ این مهارت «غیرفعال» نصب می‌شود؛ بعد از تأیید با «/skill enable {name}» فعالش کن.",
+  "ph4_skill_share.import.done_disabled":
+    "✅ مهارت «{name}» وارد شد و غیرفعال است.\nبرای فعال‌سازی: /skill enable {name}",
+  "ph4_skill_share.import.rejected": "🚫 وارد کردن «{name}» لغو شد.",
+
+  "ph5_skill_signing.keygen.done":     "🔑 جفت‌کلید امضای مهارت ساخته شد.\n\nشناسهٔ ناشر (اثر انگشت کلید عمومی):\n`{keyId}`\n\nکلید عمومی (قابل اشتراک‌گذاری):\n`{pubkey}`\n\n⚠️ کلید خصوصی فقط در همین نمونه ذخیره شد و هرگز خودکار ارسال نمی‌شود. برای بکاپ: /skill keyexport",
+  "ph5_skill_signing.keygen.exists":
+    "ℹ️ کلید امضا از قبل ساخته شده (شناسه: `{keyId}`).\nبرای ساخت کلید تازه: /skill keygen --force",
+  "ph5_skill_signing.keygen.regenerated":
+    "🔑 کلید تازه ساخته و جایگزین شد.\nشناسهٔ تازه: `{keyId}`\nبسته‌هایی که قبلاً امضا کردی با کلید عمومیِ داخل خودشان همچنان قابل راستی‌آزمایی‌اند.",
+  "ph5_skill_signing.keyexport.missing":
+    "❌ هنوز کلید امضایی ساخته نشده. اول: /skill keygen",
+  "ph5_skill_signing.keyexport.caption":
+    "🔑 کلید خصوصی امضای مهارت — کاملاً محرمانه!\nاین فایل را امن نگه دار؛ هرکس آن را داشته باشد می‌تواند به نام تو بسته امضا کند.",
+  "ph5_skill_signing.export.signed_note": "🔏 با کلید `{keyId}` امضا شد.",
+  "ph5_skill_signing.export.sign_no_key":
+    "❌ «--sign» خواسته شد ولی هنوز کلید امضا ساخته نشده. اول: /skill keygen",
+  "ph5_skill_signing.export.signer_invalid":
+    "❌ کلید امضای ذخیره‌شده خراب است و بسته امضا نشد. با «/skill keygen --force» کلید تازه بساز.",
+  "ph5_skill_signing.import.sig_trusted": "✅ امضا: «{label}» — ناشر مورداعتماد",
+  "ph5_skill_signing.import.sig_unknown":
+    "✏️ امضا شده با کلید ناشناس `{keyId}` — در فهرست اعتماد تو نیست.",
+  "ph5_skill_signing.import.sig_unsigned": "⚠️ بدون امضا — فقط اگر به منبع بسته اعتماد داری، تأیید کن.",
+  "ph5_skill_signing.import.bad_signature": "❌ امضای بسته نامعتبر است (بسته دست‌کاری شده یا کلید جعلی) — وارد نشد.",
+  "ph5_skill_signing.trust.no_input": "❌ شناسهٔ ناشر را بده: /skill trust <شناسه‌کلید|کلیدعمومی> [برچسب]",
+  "ph5_skill_signing.trust.invalid":
+    "❌ ورودی معتبر نیست؛ اثر انگشت ۶۴رقمی کلید یا خود کلید عمومی (base64) را بده.",
+  "ph5_skill_signing.trust.added": "✅ ناشر «{label}» با شناسهٔ `{keyId}` به فهرست اعتماد اضافه شد.",
+  "ph5_skill_signing.trust.updated": "ℹ️ این ناشر قبلاً در فهرست بود؛ برچسب به‌روز شد: «{label}»",
+  "ph5_skill_signing.untrust.no_input": "❌ شناسهٔ ناشر را بده: /skill untrust <شناسه‌کلید>",
+  "ph5_skill_signing.untrust.removed":
+    "🗑️ ناشر «{label}» (`{keyId}`) از فهرست اعتماد حذف شد.\nمهارت‌های نصب‌شده از این ناشر در «/skill list» پرچم می‌خورند.",
+  "ph5_skill_signing.untrust.missing": "❌ این شناسه در فهرست اعتماد نیست.",
+  "ph5_skill_signing.trusted.title": "🤝 ناشران مورداعتماد ({count})",
+  "ph5_skill_signing.trusted.empty": "فهرست اعتماد خالی است.\nبا «/skill trust <شناسه> [برچسب]» ناشر اضافه کن.",
+  "ph5_skill_signing.trusted.item": "• «{label}» — `{keyId}`",
+  "ph5_skill_signing.list.title": "📦 مهارت‌های نصب‌شده ({count})",
+  "ph5_skill_signing.list.empty": "هنوز مهارتی نصب نشده.",
+  "ph5_skill_signing.list.item": "• {name} — {status} — {sig}",
+  "ph5_skill_signing.list.enabled": "فعال",
+  "ph5_skill_signing.list.disabled": "غیرفعال",
+  "ph5_skill_signing.list.sig_trusted": "✅ «{label}»",
+  "ph5_skill_signing.list.sig_revoked": "⚠️ امضا معتبر ولی ناشر در فهرست اعتماد نیست",
+  "ph5_skill_signing.list.sig_unsigned": "بدون امضا",
 };
 
 describe("fa pack", () => {

@@ -245,7 +245,13 @@ export function eventKeyFor(name: string, kind: EventKind): string {
   return `${EVENT_KEY_PREFIX}${kind}:${hash}`;
 }
 
-function parseEventPayload(content: string): MemoryEvent | undefined {
+/**
+ * Parse a stored event payload. Exported for the auto-extraction sweep
+ * (which skips candidates already stored verbatim) and the memory
+ * export/import flow (which re-validates event rows). Malformed rows
+ * return undefined — never throw.
+ */
+export function parseEventPayload(content: string): MemoryEvent | undefined {
   try {
     const v = JSON.parse(content) as Partial<MemoryEvent>;
     if (
