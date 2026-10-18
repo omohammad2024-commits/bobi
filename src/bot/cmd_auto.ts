@@ -55,6 +55,7 @@ import type { AuthorizationService } from "../auth/service";
 import type { UserPrefStore } from "./bot";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import { gateGroup, gateUser, isOwnerSender, senderLang } from "./bot";
+import { requireOwnerTier } from "./access";
 import { hasConfirmFlag } from "./cmd_session";
 import { progressMessage, truncateLabel, withTyping } from "./ux";
 import { tr, type AutoLang } from "./cmd_auto_strings";
@@ -64,25 +65,25 @@ import { tr, type AutoLang } from "./cmd_auto_strings";
 // ---------------------------------------------------------------------------
 
 export const COMMAND_DEFS: HermesCommandDef[] = [
-  { command: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", descriptionEn: "Run a prompt in the background", ownerOnly: false },
-  { command: "btw", descriptionFa: "پرسش جانبی", descriptionEn: "Side question in a separate thread", ownerOnly: false },
-  { command: "queue", descriptionFa: "صف‌بندی پیام", descriptionEn: "Queue a prompt", ownerOnly: false },
-  { command: "steer", descriptionFa: "تزریق راهنمایی", descriptionEn: "Inject guidance into the turn", ownerOnly: false },
-  { command: "agents", descriptionFa: "ایجنت‌های فعال", descriptionEn: "List active agents and tasks", ownerOnly: false },
+  { command: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", descriptionEn: "Run a prompt in the background", ownerOnly: true },
+  { command: "btw", descriptionFa: "پرسش جانبی", descriptionEn: "Side question in a separate thread", ownerOnly: true },
+  { command: "queue", descriptionFa: "صف‌بندی پیام", descriptionEn: "Queue a prompt", ownerOnly: true },
+  { command: "steer", descriptionFa: "تزریق راهنمایی", descriptionEn: "Inject guidance into the turn", ownerOnly: true },
+  { command: "agents", descriptionFa: "ایجنت‌های فعال", descriptionEn: "List active agents and tasks", ownerOnly: true },
   { command: "goal", descriptionFa: "هدف ماندگار", descriptionEn: "Manage persistent goals", ownerOnly: true },
   { command: "subgoal", descriptionFa: "زیراهداف", descriptionEn: "Manage subgoals", ownerOnly: true },
   { command: "heartbeat", descriptionFa: "یادآور دوره‌ای", descriptionEn: "Periodic heartbeat reminder", ownerOnly: true },
   { command: "loop", descriptionFa: "تکرار خودکار", descriptionEn: "Repeating task loop", ownerOnly: true },
   { command: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", descriptionEn: "Scheduled tasks", ownerOnly: true },
-  { command: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", descriptionEn: "Suggested automations", ownerOnly: false },
-  { command: "blueprint", descriptionFa: "اتوماسیون از قالب", descriptionEn: "Automation from a blueprint", ownerOnly: false },
-  { command: "refine", descriptionFa: "استخراج درس از گفت‌وگو", descriptionEn: "Extract lessons from the conversation", ownerOnly: false },
-  { command: "review", descriptionFa: "بازبینی مستقل", descriptionEn: "Independent review by a subagent", ownerOnly: false },
-  { command: "plan", descriptionFa: "طرح اجرایی", descriptionEn: "Step-by-step plan, no execution", ownerOnly: false },
-  { command: "moa", descriptionFa: "اجرای چندمدلی", descriptionEn: "Multi-model consultation", ownerOnly: false },
-  { command: "memory", descriptionFa: "مدیریت حافظه", descriptionEn: "Manage long-term memory", ownerOnly: false },
+  { command: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", descriptionEn: "Suggested automations", ownerOnly: true },
+  { command: "blueprint", descriptionFa: "اتوماسیون از قالب", descriptionEn: "Automation from a blueprint", ownerOnly: true },
+  { command: "refine", descriptionFa: "استخراج درس از گفت‌وگو", descriptionEn: "Extract lessons from the conversation", ownerOnly: true },
+  { command: "review", descriptionFa: "بازبینی مستقل", descriptionEn: "Independent review by a subagent", ownerOnly: true },
+  { command: "plan", descriptionFa: "طرح اجرایی", descriptionEn: "Step-by-step plan, no execution", ownerOnly: true },
+  { command: "moa", descriptionFa: "اجرای چندمدلی", descriptionEn: "Multi-model consultation", ownerOnly: true },
+  { command: "memory", descriptionFa: "مدیریت حافظه", descriptionEn: "Manage long-term memory", ownerOnly: true },
   { command: "learn", descriptionFa: "آموزش مهارت", descriptionEn: "Draft a new skill", ownerOnly: true },
-  { command: "bundles", descriptionFa: "بسته‌های مهارت", descriptionEn: "Skill bundles", ownerOnly: false },
+  { command: "bundles", descriptionFa: "بسته‌های مهارت", descriptionEn: "Skill bundles", ownerOnly: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -272,6 +273,9 @@ export async function handleBgStart(
     conversationId,
     userId: sender.userId,
     userText: text,
+    // Bilingual agent output: the background reply follows the task
+    // creator's UI language.
+    lang,
     actor,
   };
 
@@ -386,6 +390,8 @@ export async function handleBtw(
       conversationId,
       userId: sender.userId,
       userText: q,
+      // Bilingual agent output: the side thread answers in the asker's UI language.
+      lang,
       actor,
     });
   } catch {
@@ -533,6 +539,8 @@ export async function handleSteer(
       conversationId: sender.chatId,
       userId: sender.userId,
       userText: g,
+      // Bilingual agent output: the steered reply follows the sender's UI language.
+      lang,
       actor,
     });
   } catch {
@@ -1301,6 +1309,8 @@ export async function handleRefine(
       conversationId: `refine:${sender.userId}:${Date.now()}`,
       userId: sender.userId,
       userText: directive,
+      // Bilingual agent output: the saved-lessons summary follows the sender's UI language.
+      lang,
       actor,
     });
   } catch {
@@ -1378,6 +1388,9 @@ export async function handlePlan(
         "فقط یک طرح مرحله‌به‌مرحلهٔ شماره‌دار به فارسی تولید کن. " +
         "هیچ ابزاری را صدا نزن و هیچ کاری را اجرا نکن — فقط طرح بنویس، بدون اجرا.\n\nهدف: " +
         g,
+      // Deliberately fa: the directive fixes the plan's language to Persian
+      // regardless of the sender's /lang — the plan itself is a Persian deliverable.
+      lang: "fa",
       actor,
     });
   } catch {
@@ -1524,6 +1537,10 @@ export async function handleLearn(
         `ساختار فایل: ابتدا frontmatter با فیلدهای name (برابر «${name}») و description (یک جملهٔ فارسی دقیق)، ` +
         `سپس بدنه با بخش‌های: هدف، چه زمانی استفاده شود، مراحل اجرا. ` +
         `متن بدنه فارسی باشد؛ name و ساختار انگلیسی بماند.`,
+      // Deliberately fa: the directive above fixes the artifact's language
+      // to Persian regardless of the owner's /lang — the skill file itself
+      // is a Persian deliverable.
+      lang: "fa",
       actor,
     });
   } catch {
@@ -1631,8 +1648,8 @@ function commandArg(ctx: { msg?: { text?: string } | undefined }): string {
   return text.replace(/^\/[a-z0-9_]+(@[a-zA-Z0-9_]+)?\s*/i, "");
 }
 
-/** Reply, splitting on Telegram's length limit. Never throws. */
-async function replyLong(
+/** Reply, splitting on Telegram's length limit. Never throws. Exported for the command palette. */
+export async function replyLong(
   ctx: { reply(text: string): Promise<unknown> },
   text: string,
 ): Promise<void> {
@@ -1646,7 +1663,8 @@ async function replyLong(
   }
 }
 
-function senderOf(ctx: {
+/** Sender identity from the trusted update fields. Exported for the command palette. */
+export function senderOf(ctx: {
   from?: { id: number } | undefined;
   chat?: { id: number | string } | undefined;
 }): SenderRef | undefined {
@@ -1662,9 +1680,11 @@ function senderOf(ctx: {
  * Register all 19 automation commands. Called by the coordinator from
  * `createBot`; COMMAND_DEFS is merged into the single setMyCommands call.
  *
- * Every wrapper runs the group/user gates first (same as the built-in
- * commands), resolves the sender from the trusted update fields, and keeps
- * its logic in the exported handleXxx function above.
+ * Two-tier access: every automation command is owner-only. Every wrapper
+ * runs the group/user gates first (same as the built-in commands), then the
+ * tier gate (requireOwnerTier) — a non-owner gets the polite refusal, never
+ * execution. Each wrapper resolves the sender from the trusted update fields,
+ * and keeps its logic in the exported handleXxx function above.
  */
 export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
   const d: AutoDeps = deps;
@@ -1674,6 +1694,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     const arg = commandArg(ctx);
@@ -1701,6 +1722,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1715,6 +1737,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     await replyLong(ctx, handleQueue(d, sender, commandArg(ctx), lang));
@@ -1725,6 +1748,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1739,6 +1763,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     await replyLong(ctx, handleAgents(d, sender, lang));
@@ -1749,6 +1774,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1763,6 +1789,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1780,6 +1807,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1797,6 +1825,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1814,6 +1843,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1831,6 +1861,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     await replyLong(ctx, handleSuggestions(d, sender, isOwnerSender(ctx, deps), lang));
@@ -1841,6 +1872,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1855,6 +1887,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     // One status message, edited in place with the result — not two
@@ -1873,6 +1906,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1892,6 +1926,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1909,6 +1944,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1926,6 +1962,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1940,6 +1977,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
@@ -1967,6 +2005,7 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
     await replyLong(ctx, handleBundles(d, sender, commandArg(ctx), lang));

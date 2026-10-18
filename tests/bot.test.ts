@@ -230,48 +230,57 @@ function prefsWith(lang: string | undefined): UserPrefStore {
   };
 }
 
-describe("gateUser denial language", () => {
-  test("a revoked user with English UI gets the English denial", async () => {
+describe("gateUser ban/mute language", () => {
+  test("a banned user with English UI gets the English banned note", async () => {
     const storage = Storage.open(":memory:");
     try {
       const users = new UserAccessService(storage);
-      users.registerUser({ userId: "7" });
-      users.approve("7", "owner");
-      users.revoke("7", "owner");
+      users.ban("7", "owner");
       const f = gateCtx(7);
       const ok = await gateUser(f.ctx as never, { users, prefs: prefsWith("en") });
       expect(ok).toBe(false);
-      expect(f.replies).toEqual([t("gate.user_revoked", "en")]);
+      expect(f.replies).toEqual([t("gate.user_banned", "en")]);
     } finally {
       storage.close();
     }
   });
 
-  test("a pending user with English UI gets the English not-approved note", async () => {
+  test("a muted user is silently dropped — no reply at all", async () => {
     const storage = Storage.open(":memory:");
     try {
       const users = new UserAccessService(storage);
-      users.registerUser({ userId: "7" });
+      users.mute("7", "owner");
       const f = gateCtx(7);
       const ok = await gateUser(f.ctx as never, { users, prefs: prefsWith("en") });
       expect(ok).toBe(false);
-      expect(f.replies).toEqual([t("gate.user_not_approved", "en")]);
+      expect(f.replies).toEqual([]);
     } finally {
       storage.close();
     }
   });
 
-  test("without a language pref the denial stays Persian", async () => {
+  test("an ordinary public user passes with no row at all", async () => {
     const storage = Storage.open(":memory:");
     try {
       const users = new UserAccessService(storage);
-      users.registerUser({ userId: "7" });
-      users.approve("7", "owner");
-      users.revoke("7", "owner");
+      const f = gateCtx(7);
+      const ok = await gateUser(f.ctx as never, { users, prefs: prefsWith("en") });
+      expect(ok).toBe(true);
+      expect(f.replies).toEqual([]);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("without a language pref the banned denial stays Persian", async () => {
+    const storage = Storage.open(":memory:");
+    try {
+      const users = new UserAccessService(storage);
+      users.ban("7", "owner");
       const f = gateCtx(7);
       const ok = await gateUser(f.ctx as never, { users });
       expect(ok).toBe(false);
-      expect(f.replies).toEqual([t("gate.user_revoked", "fa")]);
+      expect(f.replies).toEqual([t("gate.user_banned", "fa")]);
     } finally {
       storage.close();
     }

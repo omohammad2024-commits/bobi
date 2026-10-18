@@ -16,10 +16,11 @@ const HERMES_DEFS = [
 ];
 
 describe("builtin command defs", () => {
-  test("registers the 10 missing builtins in deliberate order", () => {
+  test("registers the 12 builtins in deliberate order", () => {
     expect(BUILTIN_COMMAND_DEFS.map((d) => d.command)).toEqual([
       "start",
       "help",
+      "commands",
       "voice",
       "reset",
       "stop",
@@ -28,13 +29,14 @@ describe("builtin command defs", () => {
       "compress",
       "admin",
       "ai",
+      "digest",
     ]);
   });
 
-  test("only admin and ai are owner-only", () => {
+  test("start/help/commands/lang/voice are public — the rest are owner-only", () => {
     expect(
-      BUILTIN_COMMAND_DEFS.filter((d) => d.ownerOnly).map((d) => d.command),
-    ).toEqual(["admin", "ai"]);
+      BUILTIN_COMMAND_DEFS.filter((d) => !d.ownerOnly).map((d) => d.command),
+    ).toEqual(["start", "help", "commands", "voice", "lang"]);
   });
 
   test("every builtin has a non-empty fa and en description", () => {
@@ -53,32 +55,19 @@ describe("builtin command defs", () => {
 });
 
 describe("command menu ordering", () => {
-  test("public menu: 8 core builtins, then the 28 public Hermes defs", () => {
+  test("public menu: exactly the 5 public builtins — zero owner-only commands", () => {
     const pub = publicMenuCommands(HERMES_DEFS);
-    expect(pub.length).toBe(8 + 28);
-    expect(pub.slice(0, 8).map((d) => d.command)).toEqual([
-      "start",
-      "help",
-      "voice",
-      "reset",
-      "stop",
-      "lang",
-      "personality",
-      "compress",
-    ]);
+    expect(pub.map((d) => d.command)).toEqual(["start", "help", "commands", "voice", "lang"]);
     expect(pub.every((d) => !d.ownerOnly)).toBe(true);
-    // Hermes groups keep module order: a session command before an auto one.
-    const names = pub.map((d) => d.command);
-    expect(names.indexOf("history")).toBeLessThan(names.indexOf("bg"));
-    expect(names.indexOf("bg")).toBeGreaterThan(names.indexOf("new"));
   });
 
-  test("owner menu: all 10 builtins, then every Hermes def", () => {
+  test("owner menu: all 12 builtins, then every Hermes def", () => {
     const own = ownerMenuCommands(HERMES_DEFS);
-    expect(own.length).toBe(10 + HERMES_DEFS.length);
-    expect(own.slice(0, 10).map((d) => d.command)).toEqual([
+    expect(own.length).toBe(12 + HERMES_DEFS.length);
+    expect(own.slice(0, 12).map((d) => d.command)).toEqual([
       "start",
       "help",
+      "commands",
       "voice",
       "reset",
       "stop",
@@ -87,10 +76,14 @@ describe("command menu ordering", () => {
       "compress",
       "admin",
       "ai",
+      "digest",
     ]);
     const names = own.map((d) => d.command);
     expect(new Set(names).size).toBe(names.length);
     expect(own.filter((d) => d.ownerOnly).length).toBeGreaterThan(0);
+    // Hermes groups keep module order: a session command before an auto one.
+    expect(names.indexOf("history")).toBeLessThan(names.indexOf("bg"));
+    expect(names.indexOf("bg")).toBeGreaterThan(names.indexOf("new"));
   });
 
   test("owner menu is a superset of the public menu's commands", () => {

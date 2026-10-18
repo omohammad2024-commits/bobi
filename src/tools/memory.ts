@@ -60,6 +60,9 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       "یک نکتهٔ پایدار دربارهٔ کاربر را برای همیشه ذخیره کن (نام، ترجیح، پروژه). برای اطلاعات زودگذر استفاده نکن.",
     enabled: true,
     permission: { requires: [REMEMBER_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "memory",
     input: {
       fields: {
@@ -130,6 +133,9 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       "حافظه‌ها را جستجو کن. بدون query همهٔ موارد اخیر را برمی‌گرداند.",
     enabled: true,
     permission: { requires: [RECALL_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "memory",
     input: {
       fields: {
@@ -210,6 +216,9 @@ export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutp
     description: "یک حافظه را با کلیدش پاک کن.",
     enabled: true,
     permission: { requires: [FORGET_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "memory",
     input: {
       fields: {

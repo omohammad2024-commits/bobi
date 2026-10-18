@@ -57,14 +57,14 @@ function tempDir(): string {
 // ---------------------------------------------------------------- defs ----
 
 describe("COMMAND_DEFS", () => {
-  test("declares all 19 system commands, owner-only", () => {
+  test("declares all 23 system commands, owner-only", () => {
     const names = COMMAND_DEFS.map((d) => d.command).sort();
     expect(names).toEqual(
       [
-        "approve", "autoprune", "curator", "debug", "deny", "insights",
-        "model", "pause", "plugins", "reasoning", "reload_mcp",
+        "approve", "autoprune", "ban", "curator", "debug", "deny", "insights",
+        "model", "mute", "pause", "plugins", "reasoning", "reload_mcp",
         "reload_skills", "restart", "sethome", "skills", "snapshot",
-        "tools", "update", "usage",
+        "tools", "unban", "unmute", "update", "usage",
       ].sort(),
     );
     expect(COMMAND_DEFS.every((d) => d.ownerOnly)).toBe(true);

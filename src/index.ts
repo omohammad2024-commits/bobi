@@ -3,6 +3,7 @@ import { loadConfig, requireBotToken } from "./config/config";
 import { createBot, PERSONALITY_PREF_KEY } from "./bot/bot";
 import { publicMenuCommands, ownerMenuCommands } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
+import { resolveLang } from "./i18n";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
 import type { Bot } from "grammy";
 import type { BotCommandScope, LanguageCode } from "@grammyjs/types";
@@ -43,6 +44,7 @@ import { sweepNudges } from "./nudges/sweep";
 import { createScheduledTaskTools } from "./tools/scheduled_tasks";
 import { createUsageReportTool } from "./tools/usage_report";
 import { createDigestTool } from "./tools/digest_tool";
+import type { SearchHeadlinesFn } from "./digest/builder";
 import { createCuratorTools } from "./curator/tools";
 import { ProposalStore } from "./curator/proposals";
 import { registerSessionCommands, COMMAND_DEFS as SESSION_COMMAND_DEFS } from "./bot/cmd_session";
@@ -137,6 +139,19 @@ async function main(): Promise<void> {
   const searchSettings = new SearchSettingsService(storage, searchSecrets);
   const searchEnabled = config.enableWebSearch && search.isConfigured();
 
+  // Headline resolver shared by the build_digest tool (scheduled 08:00 text
+  // delivery) and the interactive /digest (on-demand tap-to-act version).
+  const digestSearchHeadlines: SearchHeadlinesFn | undefined = searchEnabled
+    ? async (query: string, limit: number, signal: AbortSignal) =>
+        (
+          await search.active().search({ query, limit, timeoutMs: 12_000, signal })
+        ).map((r) => ({
+          title: r.title,
+          url: r.url,
+          snippet: r.snippet,
+        }))
+    : undefined;
+
   // Central tool service — registers the tools and is the only sanctioned way
   // to run one. The engine reaches tools only through here, so validation,
   // permissions, timeouts and the concurrency bound apply to every call the
@@ -202,15 +217,8 @@ async function main(): Promise<void> {
       storage,
       proposalStore,
       isOwner: (userId) => identity.isOwner(Number(userId)),
-      ...(searchEnabled
-        ? {
-            searchHeadlines: async (query: string, limit: number, signal: AbortSignal) =>
-              (await search.active().search({ query, limit, timeoutMs: 12_000, signal })).map((r) => ({
-                title: r.title,
-                url: r.url,
-                snippet: r.snippet,
-              })),
-          }
+      ...(digestSearchHeadlines !== undefined
+        ? { searchHeadlines: digestSearchHeadlines }
         : {}),
     }) as Tool<unknown, unknown>,
     // Phase D4: memory curator. Reviews long-term memory and stores proposals
@@ -375,6 +383,9 @@ async function main(): Promise<void> {
       tools,
       provider,
       model: selection ? selection.modelId : config.aiModel,
+      // The child agent's reply language follows the delegating user's /lang.
+      langFor: (userId: string) =>
+        resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
     }) as Tool<unknown, unknown>,
   );
 
@@ -421,6 +432,12 @@ async function main(): Promise<void> {
     // list — only a canonical skin name ever reaches the prompt.
     personalityFor: (userId: string) =>
       resolvePersonalityName(storage.getUserPref(userId, PERSONALITY_PREF_KEY)),
+    // Bilingual agent output: the turn's user's /lang pref reaches the
+    // agent's system prompt. Server-side lookup (resolveLang), so a corrupt
+    // pref falls back to Persian and never to a language that does not exist.
+    // Explicit ConversationInput.lang from the bot layer always wins.
+    langFor: (userId: string) =>
+      resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
     // The owner is not budgeted against their own tool use.
     allowToolCall: (userId) =>
       identity.isOwner(Number(userId)) || rateLimit.takeToolCall(userId).allowed,
@@ -515,6 +532,23 @@ async function main(): Promise<void> {
     search: searchSettings,
   });
 
+  // Version shown by /version — read from package.json once at startup.
+  const BOT_VERSION: string =
+    (await Bun.file(new URL("../package.json", import.meta.url)).json().catch(() => undefined) as
+      | { version?: string }
+      | undefined)?.version ?? "dev";
+  // One options object for the system commands AND the command palette's
+  // tap-to-run runners, so defaults (snapshot dir, clock, MCP…) stay in one
+  // place. Passed to createBot for the palette and reused below for
+  // registerSystemCommands.
+  const systemOpts = {
+    dbPath: config.dbPath,
+    mcp,
+    skills,
+    proposalStore,
+    isAnyTurnRunning: () => engine.isAnyTurnRunning(),
+  };
+
   const bot = createBot(token, {
     engine,
     // Needed to download attachment bytes: Telegram reports a file's path but
@@ -554,6 +588,13 @@ async function main(): Promise<void> {
     // Hermes-parity command modules need storage for /history, /save,
     // /sessions, /resume… — without it they report "unavailable".
     storage,
+    // Command palette: the version string for /version's tap-run, and the
+    // shared system-command options for its tap-to-run runners.
+    version: BOT_VERSION,
+    systemOpts,
+    // Interactive /digest headlines: the same resolver the build_digest tool
+    // uses. Absent = the digest simply has no headlines section.
+    ...(digestSearchHeadlines !== undefined ? { digestSearchHeadlines } : {}),
     // Stage-3 group moderation: owner's numeric id for the mod gate.
     // Absent = moderation inert (default-off).
     ...(identity.ownerId !== undefined ? { moderationOwnerId: String(identity.ownerId) } : {}),
@@ -564,11 +605,8 @@ async function main(): Promise<void> {
   // 52 commands from the Hermes COMMAND_REGISTRY audit, in three modules.
   // Registration is additive: each module owns its handlers and menu entries.
   //
-  // Version shown by /version — read from package.json once at startup.
-  const BOT_VERSION: string =
-    (await Bun.file(new URL("../package.json", import.meta.url)).json().catch(() => undefined) as
-      | { version?: string }
-      | undefined)?.version ?? "dev";
+  // (BOT_VERSION and systemOpts are hoisted above createBot: the palette's
+  // tap-to-run runners need them through BotDeps.)
   /** Human interval for /heartbeat status, e.g. "30m", "2h", "45s". */
   const formatIntervalMs = (ms: number): string => {
     if (ms <= 0) return "off";
@@ -592,13 +630,7 @@ async function main(): Promise<void> {
       version: BOT_VERSION,
     };
     registerSessionCommands(bot, hermesDeps);
-    registerSystemCommands(bot, hermesDeps, {
-      dbPath: config.dbPath,
-      mcp,
-      skills,
-      proposalStore,
-      isAnyTurnRunning: () => engine.isAnyTurnRunning(),
-    });
+    registerSystemCommands(bot, hermesDeps, systemOpts);
     registerAutoCommands(bot, hermesDeps);
     setHeartbeatInfoProvider(() => ({
       enabled: config.heartbeatIntervalMs > 0,
@@ -610,7 +642,7 @@ async function main(): Promise<void> {
     // see them; handlers ALSO gate at runtime (menu hiding is not a security
     // boundary).
     //
-    // The 10 built-in commands (start/help/voice/…) are not part of the Hermes
+    // The 11 built-in commands (start/help/commands/…) are not part of the Hermes
     // modules, so they are prepended here from menu.ts: core commands first,
     // then the Hermes groups in module order (session → system → automation).
     // Public scope shows the non-owner entries; the owner scope shows
@@ -747,6 +779,9 @@ async function main(): Promise<void> {
           conversationId: chatId,
           userId,
           userText: prompt,
+          // Bilingual agent output: the scheduled run answers in its
+          // creator's /lang — the userId here is the task's creator.
+          lang: resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
           actor,
         });
         for (const chunk of out.chunks) {
@@ -795,6 +830,10 @@ async function main(): Promise<void> {
     // A beat is a small autonomous pass, never a full conversation: a
     // runaway beat cannot exceed these per-beat budgets.
     budgets: { maxIterations: 3, maxToolCalls: 5, totalTimeoutMs: 60_000 },
+    // Bilingual agent output: the heartbeat runs as the owner, so it speaks
+    // the owner's /lang.
+    langFor: (userId: string) =>
+      resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
   });
   const heartbeat = new HeartbeatService({
     engine: heartbeatEngine,

@@ -90,6 +90,10 @@ export const COMMAND_DEFS: HermesCommandDef[] = [
   { command: "deny", descriptionFa: "رد درخواست", descriptionEn: "Reject a join request", ownerOnly: true },
   { command: "sethome", descriptionFa: "کانال اصلی", descriptionEn: "Set the home chat", ownerOnly: true },
   { command: "pause", descriptionFa: "توقف اضطراری", descriptionEn: "Emergency pause", ownerOnly: true },
+  { command: "ban", descriptionFa: "مسدود کردن کاربر", descriptionEn: "Block a user", ownerOnly: true },
+  { command: "unban", descriptionFa: "رفع مسدودیت کاربر", descriptionEn: "Unblock a user", ownerOnly: true },
+  { command: "mute", descriptionFa: "نادیده گرفتن پیام‌های کاربر", descriptionEn: "Silently ignore a user's messages", ownerOnly: true },
+  { command: "unmute", descriptionFa: "رفع نادیده گرفتن کاربر", descriptionEn: "Stop ignoring a user", ownerOnly: true },
 ];
 
 // -------------------------------------------------------------- options ----
@@ -122,7 +126,7 @@ export interface SystemCommandOpts {
   execGit?: (args: string[], cwd: string, timeoutMs: number) => Promise<GitResult>;
 }
 
-interface ResolvedOpts extends Required<
+export interface ResolvedOpts extends Required<
   Pick<SystemCommandOpts, "snapshotDir" | "pluginsDir" | "now" | "exit" | "execGit">
 > {
   dbPath: string;
@@ -131,7 +135,8 @@ interface ResolvedOpts extends Required<
   isAnyTurnRunning?: () => boolean;
 }
 
-function resolveOpts(opts: SystemCommandOpts = {}): ResolvedOpts {
+/** Fill registration-option defaults. Exported so the command palette reuses the same defaults. */
+export function resolveOpts(opts: SystemCommandOpts = {}): ResolvedOpts {
   return {
     dbPath: opts.dbPath ?? "",
     snapshotDir:
@@ -1382,6 +1387,68 @@ export function parseAccessTarget(
   return { kind, id, confirmed };
 }
 
+// -------------------------------------------- /ban /unban /mute /unmute ----
+
+/**
+ * Ban/mute actions on public users — the owner's persisted controls under
+ * the two-tier model. Banned (`rejected`) users get one short, polite
+ * refusal per message; muted (`revoked`) users are silently ignored.
+ */
+export type RestrictAction = "ban" | "unban" | "mute" | "unmute";
+
+/**
+ * Parse the target of a ban/mute command: the first whitespace-separated
+ * token (a Telegram numeric user id). Undefined when no argument was given;
+ * validity is checked by handleUserRestrict so the caller can distinguish
+ * "no argument" (usage hint) from "bad argument".
+ */
+export function parseUserIdArg(arg: string | undefined): string | undefined {
+  const token = (arg ?? "").trim().split(/\s+/)[0] ?? "";
+  return token.length > 0 ? token : undefined;
+}
+
+/**
+ * Run a ban/mute/unban/unmute against the user-access service. Pure (no
+ * Telegram), so tests can drive it directly. The owner can never restrict
+ * themselves — that is refused, not executed.
+ */
+export function handleUserRestrict(
+  lang: SysLang,
+  users: UserAccessService | undefined,
+  ownerId: string,
+  action: RestrictAction,
+  targetId: string | undefined,
+  cmd: string,
+): string {
+  if (users === undefined) return tr(lang, "cmd_system.restrict.no_users");
+  if (targetId === undefined) return tr(lang, "cmd_system.restrict.usage", { cmd });
+  if (!/^[1-9][0-9]{0,19}$/.test(targetId)) {
+    return tr(lang, "cmd_system.restrict.bad_target");
+  }
+  if (targetId === ownerId) {
+    const what = lang === "fa" ? "مسدود/نادیده" : "block/mute";
+    return tr(lang, "cmd_system.restrict.self", { what });
+  }
+  const result =
+    action === "ban"
+      ? users.ban(targetId, ownerId)
+      : action === "unban"
+        ? users.unban(targetId, ownerId)
+        : action === "mute"
+          ? users.mute(targetId, ownerId)
+          : users.unmute(targetId, ownerId);
+  if (!result.ok) return tr(lang, "cmd_system.restrict.failed");
+  const key =
+    action === "ban"
+      ? "cmd_system.ban.ok"
+      : action === "unban"
+        ? "cmd_system.unban.ok"
+        : action === "mute"
+          ? "cmd_system.mute.ok"
+          : "cmd_system.unmute.ok";
+  return tr(lang, key, { id: targetId });
+}
+
 // ------------------------------------------------------------- /sethome ----
 
 /** The owner-pref key marking the home chat for proactive notifications. */
@@ -1496,13 +1563,15 @@ function flagSet(arg: string | undefined, flag: string): boolean {
   );
 }
 
-function startOfTodayMs(nowMs: number): number {
+/** Start of the local day, for the usage ledgers. Exported for the command palette. */
+export function startOfTodayMs(nowMs: number): number {
   const d = new Date(nowMs);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
 
-function isoDay(ms: number): string {
+/** YYYY-MM-DD for an insight day. Exported for the command palette. */
+export function isoDay(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10);
 }
 
@@ -1988,6 +2057,27 @@ export function registerSystemCommands(
   };
   accessCommand("approve", true);
   accessCommand("deny", false);
+
+  // ------------------------------------ /ban /unban /mute /unmute ----
+  // The owner's persisted public-user controls (two-tier model). Same
+  // owner-first gate as every system command; the target is a bare numeric
+  // user id, validated by parseUserIdArg/handleUserRestrict.
+  const restrictCommand = (cmdName: RestrictAction) => {
+    bot.command(cmdName, async (ctx) => {
+      const lang = toSysLang(senderLang(ctx, deps.prefs));
+      const g = await gate(ctx, lang);
+      if (g === undefined) return;
+      const targetId = parseUserIdArg(messageArg(ctx));
+      await safeReply(
+        ctx,
+        handleUserRestrict(lang, deps.users, g.env.ownerId, cmdName, targetId, cmdName),
+      );
+    });
+  };
+  restrictCommand("ban");
+  restrictCommand("unban");
+  restrictCommand("mute");
+  restrictCommand("unmute");
 
   // -------------------------------------------------------- /sethome ----
   bot.command("sethome", async (ctx) => {

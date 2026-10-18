@@ -177,13 +177,10 @@ describe("COMMAND_DEFS", () => {
     }
   });
 
-  test("ownerOnly flags match the spec", () => {
+  test("ownerOnly flags match the spec — two-tier: every auto command is owner-only", () => {
     const byName = Object.fromEntries(COMMAND_DEFS.map((d) => [d.command, d.ownerOnly]));
-    for (const c of ["goal", "subgoal", "heartbeat", "loop", "cron", "learn"]) {
-      expect(byName[c]).toBe(true);
-    }
-    for (const c of ["bg", "btw", "queue", "steer", "agents", "suggestions", "blueprint", "refine", "review", "plan", "moa", "memory", "bundles"]) {
-      expect(byName[c]).toBe(false);
+    for (const d of COMMAND_DEFS) {
+      expect(byName[d.command]).toBe(true);
     }
   });
 });

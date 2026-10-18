@@ -72,7 +72,7 @@ function renderAllSurfaces(lang: Lang): [string, string][] {
     ["tools.empty", toolListText([], lang)],
     ["tools.list", replyForCallback(CALLBACKS.tools, ["calculator"], lang)],
     ["gate.group", t("gate.group_not_ready", lang)],
-    ["gate.user.pending", t("gate.user_not_approved", lang)],
+    ["gate.user.banned", t("gate.user_banned", lang)],
     ["gate.user.revoked", t("gate.user_revoked", lang)],
     ["lang.prompt", t("lang.prompt", lang)],
   ];
@@ -88,8 +88,8 @@ describe("/lang end-to-end: the full switch journey", () => {
     // The central-pack surfaces are exact.
     expect(surfaces.find(([n]) => n === "tools.empty")![1]).toBe(t("menu.tools.empty", "fa"));
     expect(surfaces.find(([n]) => n === "gate.group")![1]).toBe(t("gate.group_not_ready", "fa"));
-    expect(surfaces.find(([n]) => n === "gate.user.pending")![1]).toBe(
-      t("gate.user_not_approved", "fa"),
+    expect(surfaces.find(([n]) => n === "gate.user.banned")![1]).toBe(
+      t("gate.user_banned", "fa"),
     );
     expect(surfaces.find(([n]) => n === "gate.user.revoked")![1]).toBe(t("gate.user_revoked", "fa"));
     // Menu buttons are Persian (whatever their current layout).
@@ -117,8 +117,8 @@ describe("/lang end-to-end: the full switch journey", () => {
     // Central-pack surfaces are exact.
     expect(surfaces.find(([n]) => n === "tools.empty")![1]).toBe(t("menu.tools.empty", "en"));
     expect(surfaces.find(([n]) => n === "gate.group")![1]).toBe(t("gate.group_not_ready", "en"));
-    expect(surfaces.find(([n]) => n === "gate.user.pending")![1]).toBe(
-      t("gate.user_not_approved", "en"),
+    expect(surfaces.find(([n]) => n === "gate.user.banned")![1]).toBe(
+      t("gate.user_banned", "en"),
     );
     expect(surfaces.find(([n]) => n === "gate.user.revoked")![1]).toBe(t("gate.user_revoked", "en"));
     expect(surfaces.find(([n]) => n === "lang.prompt")![1]).toBe(t("lang.prompt", "en"));

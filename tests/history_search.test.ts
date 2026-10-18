@@ -271,14 +271,14 @@ describe("search_history tool", () => {
     };
   }
 
-  test("registers with its own permission and is not owner-only", () => {
+  test("registers with its own permission and is owner-only (two-tier)", () => {
     const { storage, svc } = service();
     try {
       expect(svc.listActiveNames()).toContain("search_history");
       const tool = svc.registry.find("search_history");
       expect(tool?.permission.requires).toEqual([SEARCH_HISTORY_PERMISSION]);
       expect(SEARCH_HISTORY_PERMISSION).toBe("tools:search_history");
-      expect(tool?.ownerOnly).not.toBe(true);
+      expect(tool?.ownerOnly).toBe(true);
     } finally {
       storage.close();
     }

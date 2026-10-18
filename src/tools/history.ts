@@ -54,10 +54,12 @@ export function createSearchHistoryTool(
     description:
       "در تاریخچهٔ گفتگوها جستجوی تمام‌متن کن؛ برای پیدا کردن حرف‌های قبلی در هر گفتگویی. فقط گفتگوهای خودت جستجو می‌شود.",
     enabled: true,
-    // NOT ownerOnly: any authorized user may search their OWN history. The
-    // actor's userId scopes the query server-side (see run); the tool takes
-    // no user id from its input.
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists). The actor's
+    // userId still scopes the query server-side (see run); the tool takes no
+    // user id from its input.
     permission: { requires: [SEARCH_HISTORY_PERMISSION] },
+    ownerOnly: true,
     toolset: "memory",
     input: {
       fields: {

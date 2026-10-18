@@ -3,7 +3,8 @@
  *
  * Covers the input caps and delivery planning (pure), the speech endpoint
  * wire shape through the pinned transport against a local server, the
- * text-fallback on TTS failure, the /voice toggle logic, and the user_prefs
+ * text-fallback on TTS failure, the modality-mirroring decision matrix, the
+ * /voice 3-way preference (command + picker callbacks), and the user_prefs
  * storage layer including the 12→13 migration.
  */
 import { describe, expect, test } from "bun:test";
@@ -23,12 +24,24 @@ import { AiError } from "../src/ai/provider";
 import {
   deliverReply,
   handleVoiceCommand,
+  handleVoiceCallback,
+  decideReplyModality,
+  resolveVoicePref,
+  parseVoiceArg,
+  voiceValueForCallback,
   VOICE_FAILED_NOTE,
   VOICE_TRUNCATED_NOTE,
   VOICE_MODE_KEY,
+  VOICE_UNCONFIGURED_NOTIFIED_KEY,
   type VoiceCommandEnv,
   type UserPrefStore,
+  type VoicePref,
 } from "../src/bot/bot";
+import {
+  buildVoiceKeyboard,
+  isVoiceCallback,
+  VOICE_CALLBACKS,
+} from "../src/bot/menu";
 import { SCHEMA_VERSION, Storage } from "../src/storage/storage";
 
 // ---------- caps ----------
@@ -160,7 +173,13 @@ describe("synthesizeSpeech wire", () => {
 
 type Sent = Array<{ kind: "text" | "voice"; body: unknown }>;
 
-function fakeCtx(sent: Sent) {
+function fakeCtx(
+  sent: Sent,
+  extra: {
+    chat?: { id: number | string };
+    api?: { sendChatAction(chatId: number | string, action: string): Promise<unknown> };
+  } = {},
+) {
   return {
     reply: async (text: string) => {
       sent.push({ kind: "text", body: text });
@@ -168,6 +187,8 @@ function fakeCtx(sent: Sent) {
     replyWithVoice: async (voice: InputFile) => {
       sent.push({ kind: "voice", body: voice });
     },
+    ...(extra.chat !== undefined ? { chat: extra.chat } : {}),
+    ...(extra.api !== undefined ? { api: extra.api } : {}),
   };
 }
 
@@ -183,7 +204,7 @@ function failingSynth() {
 
 const TTS = { baseUrl: "https://tts.example/v1", apiKey: undefined, model: "tts-1", voice: "alloy" };
 
-function prefsWith(voice: "1" | "0"): UserPrefStore {
+function prefsWith(voice: string): UserPrefStore {
   const map = new Map<string, string>([[`7:${VOICE_MODE_KEY}`, voice]]);
   return {
     getUserPref: (u, k) => map.get(`${u}:${k}`),
@@ -193,68 +214,319 @@ function prefsWith(voice: "1" | "0"): UserPrefStore {
   };
 }
 
+// ---------- preference resolution & the decision matrix ----------
+
+describe("resolveVoicePref", () => {
+  test("canonical values pass through", () => {
+    expect(resolveVoicePref("auto")).toBe("auto");
+    expect(resolveVoicePref("always")).toBe("always");
+    expect(resolveVoicePref("never")).toBe("never");
+  });
+
+  test("legacy boolean toggle migrates: 1 -> always, 0/absent -> auto", () => {
+    expect(resolveVoicePref("1")).toBe("always");
+    expect(resolveVoicePref("0")).toBe("auto");
+    expect(resolveVoicePref(undefined)).toBe("auto");
+  });
+
+  test("junk values fail safe to auto", () => {
+    expect(resolveVoicePref("yes")).toBe("auto");
+    expect(resolveVoicePref("")).toBe("auto");
+  });
+});
+
+describe("decideReplyModality", () => {
+  const base = { pref: "auto" as VoicePref, inputWasVoice: true, chatType: "private", ttsConfigured: true };
+
+  test("auto mirrors the input: voice in -> voice out, text in -> text out", () => {
+    expect(decideReplyModality(base)).toBe("voice");
+    expect(decideReplyModality({ ...base, inputWasVoice: false })).toBe("text");
+  });
+
+  test("auto in a group stays text even for voice input", () => {
+    for (const chatType of ["group", "supergroup", "channel"]) {
+      expect(decideReplyModality({ ...base, chatType })).toBe("text");
+    }
+  });
+
+  test("always voices everything, everywhere — explicit user choice", () => {
+    expect(decideReplyModality({ ...base, pref: "always", chatType: "supergroup" })).toBe("voice");
+    expect(decideReplyModality({ ...base, pref: "always", inputWasVoice: false })).toBe("voice");
+  });
+
+  test("never is always text", () => {
+    expect(decideReplyModality({ ...base, pref: "never" })).toBe("text");
+  });
+
+  test("TTS unconfigured is always text", () => {
+    expect(decideReplyModality({ ...base, ttsConfigured: false })).toBe("text");
+    expect(decideReplyModality({ ...base, pref: "always", ttsConfigured: false })).toBe("text");
+  });
+});
+
+describe("parseVoiceArg", () => {
+  test("accepts the three canonical values case-insensitively", () => {
+    expect(parseVoiceArg("auto")).toBe("auto");
+    expect(parseVoiceArg("Always")).toBe("always");
+    expect(parseVoiceArg(" NEVER ")).toBe("never");
+  });
+
+  test("rejects junk and the legacy booleans", () => {
+    expect(parseVoiceArg("maybe")).toBeUndefined();
+    expect(parseVoiceArg("1")).toBeUndefined();
+    expect(parseVoiceArg("")).toBeUndefined();
+    expect(parseVoiceArg(undefined)).toBeUndefined();
+  });
+});
+
+describe("voice picker callbacks", () => {
+  test("the three canonical callbacks parse", () => {
+    expect(voiceValueForCallback(VOICE_CALLBACKS.auto)).toBe("auto");
+    expect(voiceValueForCallback(VOICE_CALLBACKS.always)).toBe("always");
+    expect(voiceValueForCallback(VOICE_CALLBACKS.never)).toBe("never");
+  });
+
+  test("junk picker data is rejected", () => {
+    expect(voiceValueForCallback("voice:maybe")).toBeUndefined();
+    expect(voiceValueForCallback("lang:fa")).toBeUndefined();
+  });
+
+  test("isVoiceCallback routes by prefix so junk reaches the rejecting handler", () => {
+    expect(isVoiceCallback("voice:auto")).toBe(true);
+    expect(isVoiceCallback("voice:maybe")).toBe(true);
+    expect(isVoiceCallback("lang:fa")).toBe(false);
+  });
+
+  test("the picker keyboard carries the three canonical callbacks", () => {
+    const kb = buildVoiceKeyboard("fa");
+    const data = JSON.stringify(kb);
+    expect(data).toContain(VOICE_CALLBACKS.auto);
+    expect(data).toContain(VOICE_CALLBACKS.always);
+    expect(data).toContain(VOICE_CALLBACKS.never);
+  });
+});
+
 describe("deliverReply", () => {
-  test("text mode sends text chunks", async () => {
+  test("auto: voice input in a private chat gets a voice reply", async () => {
     const sent: Sent = [];
     await deliverReply(
       fakeCtx(sent),
-      { tts: TTS, prefs: prefsWith("0") },
+      { tts: TTS, prefs: prefsWith("auto") },
       "7",
       ["a", "b"],
       okSynth(),
+      { inputWasVoice: true, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["voice", "voice"]);
+  });
+
+  test("auto: text input gets a text reply", async () => {
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { tts: TTS, prefs: prefsWith("auto") },
+      "7",
+      ["a", "b"],
+      okSynth(),
+      { inputWasVoice: false, chatType: "private" },
     );
     expect(sent.map((s) => s.kind)).toEqual(["text", "text"]);
     expect(sent.map((s) => s.body)).toEqual(["a", "b"]);
   });
 
-  test("voice mode sends voice instead of text", async () => {
+  test("auto: a voice note in a group gets a text reply (no group noise)", async () => {
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { tts: TTS, prefs: prefsWith("auto") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: true, chatType: "supergroup" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["text"]);
+  });
+
+  test("always: every reply is voice, even text input in a group", async () => {
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { tts: TTS, prefs: prefsWith("always") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: false, chatType: "supergroup" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["voice"]);
+  });
+
+  test("never: a voice note gets a text reply", async () => {
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { tts: TTS, prefs: prefsWith("never") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: true, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["text"]);
+  });
+
+  test("legacy pref '1' migrates to always: text input is voiced", async () => {
     const sent: Sent = [];
     await deliverReply(
       fakeCtx(sent),
       { tts: TTS, prefs: prefsWith("1") },
       "7",
-      ["a", "b"],
+      ["a"],
       okSynth(),
+      { inputWasVoice: false, chatType: "private" },
     );
-    expect(sent.map((s) => s.kind)).toEqual(["voice", "voice"]);
+    expect(sent.map((s) => s.kind)).toEqual(["voice"]);
   });
 
-  test("a TTS failure falls back to all text chunks plus one Persian note", async () => {
+  test("legacy pref '0' migrates to auto: voice input is mirrored", async () => {
     const sent: Sent = [];
     await deliverReply(
       fakeCtx(sent),
-      { tts: TTS, prefs: prefsWith("1") },
+      { tts: TTS, prefs: prefsWith("0") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: true, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["voice"]);
+  });
+
+  test("absent pref means auto: text stays text", async () => {
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { tts: TTS, prefs: prefsWith("") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: false, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["text"]);
+  });
+
+  test("an upload_voice chat action runs while synthesising", async () => {
+    const sent: Sent = [];
+    const actions: string[] = [];
+    await deliverReply(
+      fakeCtx(sent, {
+        chat: { id: 9 },
+        api: {
+          sendChatAction: async (chatId, action) => {
+            actions.push(`${String(chatId)}:${action}`);
+            return undefined;
+          },
+        },
+      }),
+      { tts: TTS, prefs: prefsWith("always") },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: false, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["voice"]);
+    expect(actions.length).toBeGreaterThanOrEqual(1);
+    expect(actions[0]).toBe("9:upload_voice");
+  });
+
+  test("a TTS failure falls back to all text chunks plus one note in the sender's language", async () => {
+    const faSent: Sent = [];
+    await deliverReply(
+      fakeCtx(faSent),
+      { tts: TTS, prefs: prefsWith("always") },
       "7",
       ["a", "b"],
       failingSynth(),
+      { inputWasVoice: false, chatType: "private" },
     );
-    expect(sent.map((s) => s.kind)).toEqual(["text", "text", "text"]);
-    expect(sent[0]?.body).toBe(VOICE_FAILED_NOTE);
-    expect(sent.slice(1).map((s) => s.body)).toEqual(["a", "b"]);
+    expect(faSent.map((s) => s.kind)).toEqual(["text", "text", "text"]);
+    expect(faSent[0]?.body).toBe(VOICE_FAILED_NOTE);
+    expect(faSent.slice(1).map((s) => s.body)).toEqual(["a", "b"]);
+
+    const enPrefs = prefsWith("always");
+    enPrefs.setUserPref("7", "lang", "en");
+    const enSent: Sent = [];
+    await deliverReply(
+      fakeCtx(enSent),
+      { tts: TTS, prefs: enPrefs },
+      "7",
+      ["a"],
+      failingSynth(),
+      { inputWasVoice: false, chatType: "private" },
+    );
+    expect(enSent[0]?.body).toBe("Text-to-speech failed; sending the reply as text.");
   });
 
   test("chunks past the voice caps arrive as text after a truncation note", async () => {
     const sent: Sent = [];
     await deliverReply(
       fakeCtx(sent),
-      { tts: TTS, prefs: prefsWith("1") },
+      { tts: TTS, prefs: prefsWith("always") },
       "7",
       ["یک", "دو", "سه"],
       okSynth(),
+      { inputWasVoice: false, chatType: "private" },
     );
     expect(sent.map((s) => s.kind)).toEqual(["voice", "voice", "text", "text"]);
     expect(sent[2]?.body).toBe(VOICE_TRUNCATED_NOTE);
     expect(sent[3]?.body).toBe("سه");
   });
 
-  test("no TTS config means text even with the pref on", async () => {
+  test("TTS unconfigured: a voice note gets text plus the bilingual note, once per user", async () => {
+    const prefs = prefsWith("auto");
     const sent: Sent = [];
-    await deliverReply(fakeCtx(sent), { prefs: prefsWith("1") }, "7", ["a"], okSynth());
-    expect(sent.map((s) => s.kind)).toEqual(["text"]);
+    await deliverReply(
+      fakeCtx(sent),
+      { prefs },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: true, chatType: "private" },
+    );
+    expect(sent.map((s) => s.kind)).toEqual(["text", "text"]);
+    expect(sent[0]?.body).toBe(
+      "تبدیل متن به صدا پیکربندی نشده است؛ حالت صوتی در دسترس نیست.",
+    );
+    expect(sent[1]?.body).toBe("a");
+    expect(prefs.getUserPref("7", VOICE_UNCONFIGURED_NOTIFIED_KEY)).toBe("1");
+
+    // The second voice note: no more nagging, just the text reply.
+    const sent2: Sent = [];
+    await deliverReply(
+      fakeCtx(sent2),
+      { prefs },
+      "7",
+      ["b"],
+      okSynth(),
+      { inputWasVoice: true, chatType: "private" },
+    );
+    expect(sent2.map((s) => s.body)).toEqual(["b"]);
+  });
+
+  test("TTS unconfigured: text users never see the note", async () => {
+    const prefs = prefsWith("auto");
+    const sent: Sent = [];
+    await deliverReply(
+      fakeCtx(sent),
+      { prefs },
+      "7",
+      ["a"],
+      okSynth(),
+      { inputWasVoice: false, chatType: "private" },
+    );
+    expect(sent.map((s) => s.body)).toEqual(["a"]);
+    expect(prefs.getUserPref("7", VOICE_UNCONFIGURED_NOTIFIED_KEY)).toBeUndefined();
   });
 });
 
-// ---------- /voice toggle ----------
+// ---------- /voice: the 3-way preference ----------
 
 function fakeVoiceCtx(replies: string[]) {
   return {
@@ -265,49 +537,141 @@ function fakeVoiceCtx(replies: string[]) {
   };
 }
 
+function fakePickerCtx() {
+  const calls: Array<{ text: string; markup: unknown }> = [];
+  return {
+    calls,
+    ctx: {
+      from: { id: 7 },
+      reply: async (text: string, extra?: { reply_markup: unknown }) => {
+        calls.push({ text, markup: extra?.reply_markup });
+      },
+    },
+  };
+}
+
+function fakeCallbackCtx() {
+  const answered: string[] = [];
+  const replies: string[] = [];
+  return {
+    answered,
+    replies,
+    ctx: {
+      from: { id: 7 },
+      answerCallbackQuery: async (text?: string) => {
+        answered.push(text ?? "");
+      },
+      reply: async (text: string) => {
+        replies.push(text);
+      },
+    },
+  };
+}
+
 describe("handleVoiceCommand", () => {
   test("reports not-configured and does not set the pref when TTS is absent", async () => {
     const replies: string[] = [];
-    const store = prefsWith("0");
+    const store = prefsWith("auto");
     const env: VoiceCommandEnv = { prefs: store };
     await handleVoiceCommand(fakeVoiceCtx(replies), env);
     expect(replies.length).toBe(1);
     expect(replies[0]).toContain("پیکربندی نشده");
-    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("0");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
   });
 
   test("does not set the pref when baseUrl is empty", async () => {
     const replies: string[] = [];
-    const store = prefsWith("0");
-    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: { ...TTS, baseUrl: "" }, prefs: store });
-    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("0");
+    const store = prefsWith("auto");
+    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: { ...TTS, baseUrl: "" }, prefs: store }, "fa", "always");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
   });
 
-  test("toggles off → on and on → off with Persian confirmations", async () => {
-    const store = prefsWith("0");
+  test("/voice always|never|auto sets the pref with a confirmation", async () => {
+    const store = prefsWith("auto");
     const env: VoiceCommandEnv = { tts: TTS, prefs: store };
 
     const r1: string[] = [];
-    await handleVoiceCommand(fakeVoiceCtx(r1), env);
-    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("1");
-    expect(r1[0]).toContain("روشن شد");
+    await handleVoiceCommand(fakeVoiceCtx(r1), env, "fa", "always");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("always");
+    expect(r1[0]).toContain("همیشه");
 
     const r2: string[] = [];
-    await handleVoiceCommand(fakeVoiceCtx(r2), env);
-    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("0");
-    expect(r2[0]).toContain("خاموش شد");
+    await handleVoiceCommand(fakeVoiceCtx(r2), env, "fa", "never");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("never");
+    expect(r2[0]).toContain("هرگز");
+
+    const r3: string[] = [];
+    await handleVoiceCommand(fakeVoiceCtx(r3), env, "en", "auto");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
+    expect(r3[0]).toContain("auto");
+  });
+
+  test("an unknown argument is rejected without touching the pref", async () => {
+    const replies: string[] = [];
+    const store = prefsWith("auto");
+    const env: VoiceCommandEnv = { tts: TTS, prefs: store };
+    await handleVoiceCommand(fakeVoiceCtx(replies), env, "fa", "maybe");
+    expect(replies[0]).toContain("نامعتبر");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
+  });
+
+  test("bare /voice shows the current mode with the picker keyboard", async () => {
+    const { calls, ctx } = fakePickerCtx();
+    const store = prefsWith("always");
+    const env: VoiceCommandEnv = { tts: TTS, prefs: store };
+    await handleVoiceCommand(ctx, env, "fa");
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.text).toContain("همیشه");
+    expect(calls[0]?.markup).toBeDefined();
+  });
+
+  test("bare /voice defaults to auto when nothing is stored", async () => {
+    const { calls, ctx } = fakePickerCtx();
+    const store = prefsWith("");
+    const env: VoiceCommandEnv = { tts: TTS, prefs: store };
+    await handleVoiceCommand(ctx, env, "en");
+    expect(calls[0]?.text).toContain("auto");
   });
 
   test("a storage failure keeps the old value and reports it", async () => {
     const replies: string[] = [];
     const store: UserPrefStore = {
-      getUserPref: () => "0",
+      getUserPref: () => "auto",
       setUserPref: () => {
         throw new Error("disk full");
       },
     };
-    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: TTS, prefs: store });
+    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: TTS, prefs: store }, "fa", "never");
     expect(replies[0]).toContain("ناموفق بود");
+  });
+});
+
+describe("handleVoiceCallback", () => {
+  test("a picker tap persists the canonical value with a confirmation", async () => {
+    const { answered, replies, ctx } = fakeCallbackCtx();
+    const store = prefsWith("auto");
+    const env: VoiceCommandEnv = { tts: TTS, prefs: store };
+    await handleVoiceCallback(ctx, env, VOICE_CALLBACKS.always, "fa");
+    expect(answered.length).toBe(1);
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("always");
+    expect(replies[0]).toContain("همیشه");
+  });
+
+  test("junk picker data is rejected without touching the store", async () => {
+    const { replies, ctx } = fakeCallbackCtx();
+    const store = prefsWith("auto");
+    const env: VoiceCommandEnv = { tts: TTS, prefs: store };
+    await handleVoiceCallback(ctx, env, "voice:maybe", "en");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
+    expect(replies[0]).toContain("Unknown option");
+  });
+
+  test("a tap with TTS unconfigured reports it and does not persist", async () => {
+    const { replies, ctx } = fakeCallbackCtx();
+    const store = prefsWith("auto");
+    await handleVoiceCallback(ctx, { prefs: store }, VOICE_CALLBACKS.never, "fa");
+    expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
+    expect(replies[0]).toContain("پیکربندی نشده");
   });
 });
 

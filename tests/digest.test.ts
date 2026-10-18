@@ -33,20 +33,21 @@ function ctx(userId: string): ToolContext {
   };
 }
 
-function deps(over: Partial<DigestDeps> = {}): DigestDeps {
+function deps(over: Partial<DigestDeps> = {}): DigestDeps & { proposalStore: ProposalStore } {
   const storage = Storage.open(":memory:");
   const proposalStore = new ProposalStore(new Database(":memory:"));
-  return {
+  const base: DigestDeps = {
     storage,
     proposalStore,
     userId: OWNER,
     now: () => NOW_MS,
     ...over,
   };
+  return { ...base, proposalStore };
 }
 
 /** Seed one task, one reminder, two proposals, three memories, one usage run. */
-function seedFull(d: DigestDeps): void {
+function seedFull(d: DigestDeps & { proposalStore: ProposalStore }): void {
   d.storage.createTask({
     name: "جلسهٔ تیم",
     cronExpr: "0 10 * * *",

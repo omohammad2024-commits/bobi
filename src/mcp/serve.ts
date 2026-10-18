@@ -31,6 +31,7 @@ import { ProviderSecretStore } from "../ai/secret_store";
 import { ToolService } from "../tools/service";
 import { AuthorizationService } from "../auth/service";
 import { OwnerIdentity, parseOwnerId } from "../auth/identity";
+import { resolveLang } from "../i18n";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import { createMcpServer } from "./server";
 
@@ -72,6 +73,9 @@ async function main(): Promise<void> {
     storage,
     tools,
     timezone: config.timezone,
+    // Bilingual agent output: MCP turns resolve the requesting user's /lang.
+    langFor: (userId: string) =>
+      resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
   });
 
   // Owner-level grants, resolved server-side right now — never from a request.

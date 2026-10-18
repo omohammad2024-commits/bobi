@@ -18,22 +18,24 @@ import {
 // ---------- /help ----------
 
 describe("/help visibility", () => {
-  test("non-owners never see owner-only commands", () => {
+  test("non-owners see exactly the public surface: start, help, commands, voice, lang", () => {
     const entries = visibleCommandHelp(false);
     const names = entries.map((c) => c.name);
+    expect(names).toEqual(["start", "help", "commands", "voice", "lang"]);
     expect(names).not.toContain("admin");
     expect(names).not.toContain("ai");
-    expect(names).toContain("help");
-    expect(names).toContain("reset");
-    expect(names).toContain("compress");
-    expect(names).toContain("stop");
-    expect(names).toContain("personality");
+    expect(names).not.toContain("model");
+    expect(names).not.toContain("history");
+    expect(names).not.toContain("ban");
   });
 
   test("owners see everything", () => {
     const names = visibleCommandHelp(true).map((c) => c.name);
     expect(names).toContain("admin");
     expect(names).toContain("ai");
+    expect(names).toContain("ban");
+    expect(names).toContain("digest");
+    expect(names).toHaveLength(69);
   });
 
   test("every entry has a Persian one-line description", () => {
@@ -49,38 +51,50 @@ describe("/help visibility", () => {
     expect(text).not.toContain("/admin");
   });
 
-  test("help is grouped by category, not a flat wall", () => {
+  test("public help shows only the general group — no session/automation/owner sections", () => {
     const text = formatCommandHelp(visibleCommandHelp(false));
     expect(text).toContain("🔹 عمومی");
-    expect(text).toContain("🗂 نشست");
-    expect(text).toContain("⚡️ اتوماسیون");
+    expect(text).not.toContain("🗂 نشست");
+    expect(text).not.toContain("⚡️ اتوماسیون");
     expect(text).not.toContain("🔒 مالک");
-    // Sections render in a fixed order.
-    expect(text.indexOf("🔹 عمومی")).toBeLessThan(text.indexOf("🗂 نشست"));
-    expect(text.indexOf("🗂 نشست")).toBeLessThan(text.indexOf("⚡️ اتوماسیون"));
+    expect(text).toContain("/lang — تغییر زبان رابط کاربری");
+    expect(text).not.toContain("/history");
   });
 
-  test("commands with examples render a one-line usage", () => {
-    const text = formatCommandHelp(visibleCommandHelp(false));
+  test("commands with examples render a one-line usage (owner help)", () => {
+    const text = formatCommandHelp(visibleCommandHelp(true));
     expect(text).toContain("/history 20 — نمایش تاریخچهٔ گفت‌وگو");
     expect(text).toContain("/undo 2 — بازگشت و بازنویسی");
-    const en = formatCommandHelp(visibleCommandHelp(false), "en");
+    const en = formatCommandHelp(visibleCommandHelp(true), "en");
     expect(en).toContain("/history 20 — Show conversation history");
   });
 
-  test("owner help gains the owner section", () => {
+  test("owner help gains the owner section; sections render in a fixed order", () => {
     const text = formatCommandHelp(visibleCommandHelp(true));
     expect(text).toContain("🔒 مالک");
     expect(text).toContain("/admin — پنل مدیریت ربات");
+    expect(text.indexOf("🔹 عمومی")).toBeLessThan(text.indexOf("🗂 نشست"));
+    expect(text.indexOf("🗂 نشست")).toBeLessThan(text.indexOf("⚡️ اتوماسیون"));
+    expect(text.indexOf("⚡️ اتوماسیون")).toBeLessThan(text.indexOf("🔒 مالک"));
   });
 
-  test("every entry has a valid group; owner-only entries are all in the owner group", () => {
+  test("every entry has a valid group; only the public five are visible to non-owners", () => {
     for (const c of COMMAND_HELP) {
       expect(["general", "session", "automation", "owner"]).toContain(c.group);
-      if (c.ownerOnly) expect(c.group).toBe("owner");
-      if (c.group === "owner") expect(c.ownerOnly).toBe(true);
+      // Two-tier model: owner-only entries keep their display group (the
+      // owner's /help stays categorized); the tier flag is what gates.
+      if (!c.ownerOnly) {
+        expect(["start", "help", "commands", "voice", "lang"]).toContain(c.name);
+      }
     }
-    expect(COMMAND_HELP.length).toBe(63);
+    expect(COMMAND_HELP.length).toBe(69);
+    expect(visibleCommandHelp(false).map((c) => c.name)).toEqual([
+      "start",
+      "help",
+      "commands",
+      "voice",
+      "lang",
+    ]);
   });
 });
 

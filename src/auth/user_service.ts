@@ -136,6 +136,62 @@ export class UserAccessService {
     return this.transition(userId, "approved", "revoked", ownerId);
   }
 
+  // ------------------------------------------------- ban / mute (two-tier) ----
+  //
+  // The public may chat freely; these are the owner's persisted controls.
+  // Banned (`rejected`) users get one short, polite refusal per message;
+  // muted (`revoked`) users are silently ignored. Both take effect on the
+  // very next message because the gate reads state on every call.
+
+  /**
+   * Ban a user: any state (or no row yet) becomes `rejected`.
+   * Idempotent — banning an already-banned user succeeds trivially.
+   */
+  ban(userId: string, ownerId: string): UserTransition {
+    return this.forceState(userId, "rejected", ownerId);
+  }
+
+  /** Lift a ban or mute: any state (or no row yet) becomes `approved`. */
+  unban(userId: string, ownerId: string): UserTransition {
+    return this.forceState(userId, "approved", ownerId);
+  }
+
+  /**
+   * Mute a user: any state (or no row yet) becomes `revoked`.
+   * Idempotent — muting an already-muted user succeeds trivially.
+   */
+  mute(userId: string, ownerId: string): UserTransition {
+    return this.forceState(userId, "revoked", ownerId);
+  }
+
+  /** Lift a mute: any state (or no row yet) becomes `approved`. */
+  unmute(userId: string, ownerId: string): UserTransition {
+    return this.forceState(userId, "approved", ownerId);
+  }
+
+  /**
+   * Move a user to `to` from whatever state they are in, creating the row
+   * when it does not exist yet. Re-banning (or re-muting) is a no-op
+   * success, so a double-tapped button never errors.
+   */
+  private forceState(
+    userId: string,
+    to: GroupState,
+    ownerId: string,
+  ): UserTransition {
+    try {
+      this.registerUser({ userId });
+      const current = this.storage.userAccess(userId)?.state;
+      if (current === undefined) return { ok: false, reason: "storage" };
+      if (current === to) return { ok: true, previous: current };
+      const changed = this.storage.transitionUser(userId, current, to, ownerId);
+      if (!changed) return { ok: false, reason: "invalid_transition" };
+      return { ok: true, previous: current };
+    } catch {
+      return { ok: false, reason: "storage" };
+    }
+  }
+
   private transition(
     userId: string,
     from: GroupState,

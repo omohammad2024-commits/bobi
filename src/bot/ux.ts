@@ -53,6 +53,19 @@ export function formatCount(n: number, lang: UxLang): string {
 
 // ------------------------------------------------------------- typing ----
 
+/** Chat actions the helpers can drive: "typing" for text work, "upload_voice" while synthesising speech. */
+export type ChatAction = "typing" | "upload_voice";
+
+/** Minimal grammy context shape the chat-action helpers need; full Context satisfies it. */
+export interface ChatActionCtx {
+  chat?: { id: number | string } | undefined;
+  api?:
+    | {
+        sendChatAction(chatId: number | string, action: ChatAction): Promise<unknown>;
+      }
+    | undefined;
+}
+
 /** Minimal grammy context shape `withTyping` needs; full Context satisfies it. */
 export interface TypingCtx {
   chat?: { id: number | string } | undefined;
@@ -72,23 +85,24 @@ export interface TypingCtx {
 const TYPING_HEARTBEAT_MS = 4000;
 
 /**
- * Run `fn` while sending `typing` chat actions on a heartbeat interval.
+ * Run `fn` while sending a chat action on a heartbeat interval.
  *
  * Best-effort: a refused chat action stops the heartbeat but never fails
  * the operation; the timer is always cleared afterwards. When there is no
- * chat id (non-Telegram test contexts) `fn` just runs.
+ * chat id or no api (non-Telegram test contexts) `fn` just runs.
  */
-export async function withTyping<T>(
-  ctx: TypingCtx,
+export async function withChatAction<T>(
+  ctx: ChatActionCtx,
+  action: ChatAction,
   fn: () => Promise<T>,
 ): Promise<T> {
   const chatId = ctx.chat?.id;
-  if (chatId === undefined) return fn();
+  if (chatId === undefined || ctx.api === undefined) return fn();
   let stopped = false;
   const beat = async (): Promise<void> => {
     if (stopped) return;
     try {
-      await ctx.api.sendChatAction(chatId, "typing");
+      await ctx.api!.sendChatAction(chatId, action);
     } catch {
       // A dead chat or a refused action: stop bothering Telegram.
       stopped = true;
@@ -104,6 +118,19 @@ export async function withTyping<T>(
     stopped = true;
     clearInterval(timer);
   }
+}
+
+/**
+ * Run `fn` while sending `typing` chat actions on a heartbeat interval.
+ *
+ * Kept as the named wrapper: existing call sites (progress spinners) mean
+ * "typing" specifically, while synthesis uses withChatAction(…, "upload_voice").
+ */
+export async function withTyping<T>(
+  ctx: TypingCtx,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withChatAction(ctx, "typing", fn);
 }
 
 // ---------------------------------------------------- progress message ----

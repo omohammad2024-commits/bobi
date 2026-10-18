@@ -205,7 +205,7 @@ describe("fa pack byte-identity", () => {
   test("pre-existing keys are untouched", () => {
     expect(fa["menu.label.chat"]).toBe("گفت‌وگو");
     expect(fa["personality.changed"]).toBe("شخصیت پاسخ‌گویی به «{label}» تغییر کرد.");
-    expect(fa["help.cmd.voice"]).toBe("روشن/خاموش کردن پاسخ صوتی");
+    expect(fa["help.cmd.voice"]).toBe("انتخاب حالت پاسخ صوتی (خودکار/همیشه/هرگز)");
     expect(fa["stop.done"]).toBe("متوقف شد ✅");
   });
 

@@ -94,7 +94,7 @@ export interface ConsultModelsDeps {
   listConfiguredModels: () => string[];
 }
 
-/** Build the consult_models tool. Not ownerOnly: approved users may consult. */
+/** Build the consult_models tool. Two-tier access: owner-only — multi-model consultation is an owner capability. */
 export function createConsultModelsTool(
   deps: ConsultModelsDeps,
 ): Tool<ConsultModelsInput, ConsultModelsOutput> {
@@ -105,6 +105,8 @@ export function createConsultModelsTool(
       "پرسش‌وجو گران است (هر مدل یک فراخوانی کامل + یک ترکیب)؛ برای سؤال‌های مهم که ارزش چند دیدگاه را دارد استفاده کن.",
     enabled: true,
     permission: { requires: [CONSULT_MODELS_PERMISSION] },
+    // Withheld from public actors by the authorization bridge.
+    ownerOnly: true,
     toolset: "agents",
     // Slow by design (up to 3 model consultations + synthesis): the executor
     // honors this instead of the 10s default. The tool ALSO enforces the same

@@ -7,9 +7,26 @@
  * blurry image), and an over-large file is refused BEFORE its bytes are
  * fetched.
  */
-import { describe, expect, test } from "bun:test";
-import { candidatesIn, hasMedia } from "../src/bot/media";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  candidatesIn,
+  extractMedia,
+  hasMedia,
+  MAX_VOICE_AUDIO_SECONDS,
+} from "../src/bot/media";
 import { MAX_ATTACHMENT_BYTES } from "../src/ai/provider";
+
+const realFetch = globalThis.fetch;
+
+afterEach(() => {
+  globalThis.fetch = realFetch;
+});
+
+/** Stub the Telegram file download with a few audio bytes. */
+function stubVoiceDownload(): void {
+  const stub = async (): Promise<Response> => new Response(Buffer.from([0x4f, 0x67, 0x67]));
+  globalThis.fetch = stub as unknown as typeof fetch;
+}
 
 /** A minimal message carrying whatever the case needs. */
 function msg(over: Record<string, unknown>) {
@@ -79,6 +96,38 @@ describe("voice and audio", () => {
   test("an audio file is distinct from a voice note", () => {
     const candidates = candidatesIn(msg({ audio: { file_id: "a", mime_type: "audio/mpeg" } }));
     expect(candidates[0]!.kind).toBe("audio");
+  });
+
+  test("a voice note carries its duration for the transcription cap", () => {
+    const candidates = candidatesIn(msg({ voice: { file_id: "v", duration: 42 } }));
+    expect(candidates[0]!.durationSec).toBe(42);
+  });
+
+  test("a voice note past the duration cap is skipped before any download", async () => {
+    const ctx = {
+      message: msg({ voice: { file_id: "v", duration: MAX_VOICE_AUDIO_SECONDS + 1 } }),
+      api: {
+        getFile: async () => {
+          throw new Error("must not download an over-long voice note");
+        },
+      },
+    } as never;
+    const extraction = await extractMedia(ctx, "TESTTOKEN");
+    expect(extraction.parts).toEqual([]);
+    expect(extraction.skipped).toEqual([{ kind: "voice", reason: "too_long" }]);
+  });
+
+  test("a voice note within the duration cap is not skipped for length", async () => {
+    const ctx = {
+      message: msg({ voice: { file_id: "v", duration: MAX_VOICE_AUDIO_SECONDS } }),
+      api: {
+        getFile: async () => ({ file_path: "voice/file.ogg" }),
+      },
+    } as never;
+    stubVoiceDownload();
+    const extraction = await extractMedia(ctx, "TESTTOKEN");
+    expect(extraction.skipped).toEqual([]);
+    expect(extraction.parts).toHaveLength(1);
   });
 });
 

@@ -635,12 +635,14 @@ describe("/whoami", () => {
       "fa",
     );
     const text = replies.join("\n");
-    // A sample across all three modules — the old static list missed these.
-    for (const cmd of ["/history", "/new", "/bg", "/review", "/bundles", "/voice"]) {
+    // Two-tier: a non-owner sees exactly the public surface (voice is public:
+    // it is conversation, not administration).
+    for (const cmd of ["/start", "/help", "/commands", "/lang", "/voice"]) {
       expect(text, cmd).toContain(cmd);
     }
-    expect(text).not.toContain("/snapshot");
-    expect(text).not.toContain("/goal");
+    for (const cmd of ["/history", "/new", "/bg", "/review", "/bundles", "/snapshot", "/goal"]) {
+      expect(text, cmd).not.toContain(cmd);
+    }
 
     const ownerReplies: string[] = [];
     await handleWhoamiCommand(

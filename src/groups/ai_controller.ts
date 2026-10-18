@@ -20,13 +20,13 @@ import { Context, InlineKeyboard } from "grammy";
 import type { AdminBoundary } from "../auth/admin_boundary";
 import type { AuthorizationService } from "../auth/service";
 import type { Permission } from "../auth/roles";
-import type { ProviderHealthService } from "../ai/health";
+import type { ProviderHealthService, ProbeResult } from "../ai/health";
 import type { ProviderSecretStore } from "../ai/secret_store";
 import type { AdapterRegistry } from "../ai/adapter_registry";
 import { ModelService, ProviderService, type ProviderView } from "../ai/provider_service";
 import type { RemoteModel } from "../ai/adapter";
 import { ADAPTER_TEMPLATES, providerPreset } from "../ai/adapter";
-import { setupFromPreset, parseSetupReply, setupPrompt } from "../ai/setup";
+import { setupFromPreset, parseSetupReply, setupPrompt, type SetupResult } from "../ai/setup";
 import { isAdapterType } from "../ai/adapter";
 import type { Storage } from "../storage/storage";
 import { resolveLang } from "../i18n";
@@ -190,6 +190,107 @@ export class AiAdminController {
     );
     if (!r.ok) return void (await this.deny(ctx));
     await this.render(ctx, r.data.text, r.data.keyboard);
+  }
+
+  // --------------------------------------- onboarding wizard support ----
+
+  /**
+   * True when a REAL provider is configured: the runtime selection points at
+   * an existing, enabled provider that has a stored credential and at least
+   * one model. This is the wizard's "already connected" check — anything less
+   * (no selection, disabled provider, missing key/model) reads as the
+   * FakeProvider state the wizard exists to fix.
+   *
+   * Read-only and fail-closed: a storage hiccup reports "not configured"
+   * rather than breaking /start.
+   */
+  hasConfiguredProvider(): boolean {
+    try {
+      const sel = this.storage.getRuntimeSettings();
+      if (sel.activeProviderId === null || sel.activeProviderId === undefined) return false;
+      const p = this.storage.getProvider(sel.activeProviderId);
+      if (p === undefined || !p.enabled) return false;
+      if (!this.storage.hasCredential(sel.activeProviderId)) return false;
+      if (this.storage.listModels(sel.activeProviderId).length === 0) return false;
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The label of the currently active provider, for the wizard's "already
+   * connected" checkmark. Undefined when nothing real is configured.
+   */
+  activeProviderLabel(): string | undefined {
+    try {
+      const sel = this.storage.getRuntimeSettings();
+      if (sel.activeProviderId === null || sel.activeProviderId === undefined) return undefined;
+      return this.storage.getProvider(sel.activeProviderId)?.label;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * One-message preset setup for the onboarding wizard: create the provider
+   * from a preset, add its suggested model, and activate the pair — the same
+   * `setupFromPreset` transaction the /ai one-message flow uses.
+   *
+   * SECURITY: runs inside the AdminBoundary with PERM_MANAGE, so ownership is
+   * re-checked server-side at execution time — a forged wizard callback from a
+   * non-owner never reaches the write. The key is never echoed back; the
+   * SetupResult only names what was created.
+   */
+  async wizardSetupPreset(
+    from: { id?: number | null; username?: string } | undefined,
+    presetId: string,
+    apiKey: string,
+    baseUrlOverride?: string,
+  ): Promise<SetupResult> {
+    const actor = this.auth.actorFromTelegramUser(from);
+    const r = await this.admin.runAdmin(
+      { actor, operation: "ai.setup", permission: PERM_MANAGE, targetId: presetId },
+      () =>
+        setupFromPreset(
+          {
+            storage: this.storage,
+            providers: this.providers,
+            models: this.models,
+            secrets: this.secrets,
+          },
+          presetId,
+          apiKey,
+          baseUrlOverride,
+        ),
+    );
+    if (!r.ok) {
+      // Unreachable for the owner (the wizard is owner-gated and PERM_MANAGE
+      // is owner-only); surface the boundary's own denial text rather than a
+      // hardcoded literal — panel sources must not carry Persian literals.
+      return { ok: false, message: r.message, notes: [] };
+    }
+    return r.data;
+  }
+
+  /**
+   * Live hello-test for a provider, for the wizard's verification step.
+   * Runs the same `health.probe` the panel's «تست» button uses (a minimal
+   * completion or model-list call), inside the AdminBoundary with
+   * PERM_MANAGE. Never leaks key material: the probe message is chosen by
+   * the health module.
+   */
+  async wizardProbeProvider(
+    from: { id?: number | null; username?: string } | undefined,
+    providerId: number,
+  ): Promise<ProbeResult> {
+    const actor = this.auth.actorFromTelegramUser(from);
+    const r = await this.admin.runAdmin(
+      { actor, operation: "ai.test.run", permission: PERM_MANAGE, targetId: String(providerId) },
+      async () => this.health.probe(providerId),
+    );
+    if (!r.ok) return { ok: false, checkedAt: Date.now() };
+    return r.data;
   }
 
   private async dispatch(ctx: Context, action: AiPanelAction): Promise<void> {

@@ -186,11 +186,10 @@ describe("enforcement decision", () => {
     storage.close();
   });
 
-  test("an unknown private-chat user is denied", () => {
+  test("an unknown private-chat user is allowed — public chat is open", () => {
     const { storage, users } = freshService();
     const d = checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" });
-    expect(d.allowed).toBe(false);
-    expect(d.allowed === false && d.state).toBe("unknown");
+    expect(d).toEqual({ allowed: true });
     storage.close();
   });
 
@@ -204,14 +203,47 @@ describe("enforcement decision", () => {
     storage.close();
   });
 
-  test("revocation denies the very next message", () => {
+  test("a pending (legacy) user is allowed — no approval queue anymore", () => {
+    const { storage, users } = freshService();
+    users.registerUser({ userId: "42" });
+    expect(
+      checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" }),
+    ).toEqual({ allowed: true });
+    storage.close();
+  });
+
+  test("a banned user is denied with the banned state", () => {
+    const { storage, users } = freshService();
+    users.ban("42", "111");
+    const d = checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" });
+    expect(d.allowed).toBe(false);
+    expect(d.allowed === false && d.state).toBe("rejected");
+    storage.close();
+  });
+
+  test("a mute denies the very next message", () => {
     const { storage, users } = freshService();
     users.registerUser({ userId: "42" });
     users.approve("42", "111");
-    users.revoke("42", "111");
+    users.mute("42", "111");
     const d = checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" });
     expect(d.allowed).toBe(false);
     expect(d.allowed === false && d.state).toBe("revoked");
+    storage.close();
+  });
+
+  test("unban / unmute restore public chat", () => {
+    const { storage, users } = freshService();
+    users.ban("42", "111");
+    users.unban("42", "111");
+    expect(
+      checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" }),
+    ).toEqual({ allowed: true });
+    users.mute("42", "111");
+    users.unmute("42", "111");
+    expect(
+      checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" }),
+    ).toEqual({ allowed: true });
     storage.close();
   });
 
@@ -227,21 +259,23 @@ describe("enforcement decision", () => {
     storage.close();
   });
 
-  test("a closed database denies rather than allowing", () => {
+  test("a closed database fails open to public chat (ban list unreadable)", () => {
     const { storage, users } = freshService();
     storage.close();
-    // A storage failure must never read as approval.
+    // Public chat is open by default; an unreadable ban list cannot be told
+    // apart from "no ban", so the gate allows. (The old approval model failed
+    // closed here; there is no approval anymore.)
     const d = checkUserAccess(users, { userId: "42", isOwner: false, chatType: "private" });
-    expect(d.allowed).toBe(false);
+    expect(d).toEqual({ allowed: true });
   });
 
   test("the denial note names the state and no message content", () => {
     const note = userDenialNote(
       { userId: "42", isOwner: false, chatType: "private" },
-      { allowed: false, state: "pending" },
+      { allowed: false, state: "rejected" },
     );
     expect(note).toContain("42");
-    expect(note).toContain("pending");
+    expect(note).toContain("rejected");
   });
 });
 

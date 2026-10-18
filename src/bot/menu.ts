@@ -57,20 +57,26 @@ export const MENU_REPLIES: Record<(typeof CALLBACKS)[keyof typeof CALLBACKS], st
  * but must appear in Telegram's command menu: core first (start → compress),
  * then the two owner-only entries.
  *
+ * Two-tier access: start/help/commands/lang/voice are public — voice is
+ * conversation, not administration. The rest are owner-only — invisible in
+ * the public menu scope and refused by the tier gate when typed or forged.
+ *
  * Descriptions mirror the central `help.cmd.*` pack values so the menu and
  * /help never disagree.
  */
 export const BUILTIN_COMMAND_DEFS: readonly HermesCommandDef[] = [
   { command: "start", descriptionFa: "شروع و نمایش منوی اصلی", descriptionEn: "Start and show the main menu", ownerOnly: false },
   { command: "help", descriptionFa: "راهنمای دستورها", descriptionEn: "Command reference", ownerOnly: false },
-  { command: "voice", descriptionFa: "روشن/خاموش کردن پاسخ صوتی", descriptionEn: "Turn voice replies on/off", ownerOnly: false },
-  { command: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", descriptionEn: "Clear this conversation's history", ownerOnly: false },
-  { command: "stop", descriptionFa: "توقف پاسخ در حال اجرا", descriptionEn: "Stop the running reply", ownerOnly: false },
+  { command: "commands", descriptionFa: "مرورگر دستورها", descriptionEn: "Browse commands by category", ownerOnly: false },
+  { command: "voice", descriptionFa: "انتخاب حالت پاسخ صوتی (خودکار/همیشه/هرگز)", descriptionEn: "Choose voice-reply mode (auto/always/never)", ownerOnly: false },
+  { command: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", descriptionEn: "Clear this conversation's history", ownerOnly: true },
+  { command: "stop", descriptionFa: "توقف پاسخ در حال اجرا", descriptionEn: "Stop the running reply", ownerOnly: true },
   { command: "lang", descriptionFa: "تغییر زبان رابط کاربری", descriptionEn: "Change the interface language", ownerOnly: false },
-  { command: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", descriptionEn: "Show or change the reply tone", ownerOnly: false },
-  { command: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", descriptionEn: "Immediately summarize old conversations", ownerOnly: false },
+  { command: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", descriptionEn: "Show or change the reply tone", ownerOnly: true },
+  { command: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", descriptionEn: "Immediately summarize old conversations", ownerOnly: true },
   { command: "admin", descriptionFa: "پنل مدیریت ربات", descriptionEn: "Bot admin panel", ownerOnly: true },
   { command: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", descriptionEn: "Manage the AI provider", ownerOnly: true },
+  { command: "digest", descriptionFa: "خلاصهٔ تعاملی امروز", descriptionEn: "Interactive daily digest", ownerOnly: true },
 ];
 
 /**
@@ -128,6 +134,9 @@ export function startScreenText(lang: Lang = "fa"): string {
 /**
  * Main menu: 3 rows × 2 buttons, grouped by area
  * (chat/tools, commands/settings, about/help).
+ *
+ * Owner-only: the full menu. The public gets buildPublicMainMenu instead —
+ * owner-only buttons are never rendered for them, not just blocked.
  */
 export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
@@ -141,6 +150,23 @@ export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
     .text(tr(lang, "menu.label.help"), CALLBACKS.help);
 }
 
+/**
+ * Public main menu: a smaller, clean 2×2 menu for non-owners.
+ *
+ * Contains only public surface: chat, the (tier-filtered) command browser,
+ * about, and help. The owner-only buttons (tools, settings) are ABSENT —
+ * not hidden behind a tap, just never rendered. A forged tap on either is
+ * refused by the callback router's tier gate.
+ */
+export function buildPublicMainMenu(lang: Lang = "fa"): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(tr(lang, "menu.label.chat"), CALLBACKS.chat)
+    .text(tr(lang, "menu.label.commands"), CALLBACKS.commands)
+    .row()
+    .text(tr(lang, "menu.label.about"), CALLBACKS.about)
+    .text(tr(lang, "menu.label.help"), CALLBACKS.help);
+}
+
 /** Single «back» button — every sub-screen gets one, so there are no dead ends. */
 export function buildBackKeyboard(lang: Lang = "fa"): InlineKeyboard {
   return new InlineKeyboard().text(tr(lang, "menu.label.back"), CALLBACKS.home);
@@ -148,10 +174,12 @@ export function buildBackKeyboard(lang: Lang = "fa"): InlineKeyboard {
 
 /**
  * Keyboard for a menu callback: the full menu on the home screen, a back
- * button on every sub-screen.
+ * button on every sub-screen. The home screen is tier-aware: the public
+ * gets the smaller public menu, never the owner buttons.
  */
-export function menuKeyboardFor(data: string, lang: Lang = "fa"): InlineKeyboard {
-  return data === CALLBACKS.home ? buildMainMenu(lang) : buildBackKeyboard(lang);
+export function menuKeyboardFor(data: string, lang: Lang = "fa", isOwner: boolean = true): InlineKeyboard {
+  if (data !== CALLBACKS.home) return buildBackKeyboard(lang);
+  return isOwner ? buildMainMenu(lang) : buildPublicMainMenu(lang);
 }
 
 /** Callback data for the /lang language picker — stable, machine-readable. */
@@ -159,6 +187,40 @@ export const LANG_CALLBACKS = {
   fa: "lang:fa",
   en: "lang:en",
 } as const;
+
+/** Callback data for the /voice mode picker — stable, machine-readable. */
+export const VOICE_CALLBACKS = {
+  auto: "voice:auto",
+  always: "voice:always",
+  never: "voice:never",
+} as const;
+
+/**
+ * Whether callback data belongs to the voice-mode picker.
+ *
+ * Matches by the "voice:" prefix rather than only the three known values, so
+ * forged or junk picker data (e.g. "voice:maybe") routes to the voice
+ * handler, which rejects it — unknown picker data is never mistaken for an
+ * ordinary menu button.
+ */
+export function isVoiceCallback(data: string): boolean {
+  return data.startsWith("voice:");
+}
+
+/**
+ * Three-button voice-mode picker keyboard.
+ *
+ * The /voice prompt above the keyboard explains the modes; the buttons carry
+ * the choice. Layout: auto and always side by side, never on its own row —
+ * the destructive-ish "never" is deliberately one tap further away.
+ */
+export function buildVoiceKeyboard(lang: Lang = "fa"): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(t("voice.option.auto", lang), VOICE_CALLBACKS.auto)
+    .text(t("voice.option.always", lang), VOICE_CALLBACKS.always)
+    .row()
+    .text(t("voice.option.never", lang), VOICE_CALLBACKS.never);
+}
 
 /**
  * Whether callback data belongs to the language picker.

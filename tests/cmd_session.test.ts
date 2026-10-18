@@ -101,9 +101,9 @@ describe("COMMAND_DEFS", () => {
   test("all fifteen session commands are defined", () => {
     expect(COMMAND_DEFS.map((d) => d.command).sort()).toEqual([...expected].sort());
   });
-  test("none is owner-only and all have fa+en descriptions", () => {
+  test("all are owner-only (two-tier) and all have fa+en descriptions", () => {
     for (const d of COMMAND_DEFS) {
-      expect(d.ownerOnly).toBe(false);
+      expect(d.ownerOnly).toBe(true);
       expect(d.descriptionFa.length).toBeGreaterThan(0);
       expect(d.descriptionEn.length).toBeGreaterThan(0);
     }
@@ -636,13 +636,14 @@ describe("/whoami", () => {
     expect(text).toContain("مالک");
     expect(text).toContain("/admin");
   });
-  test("regular user sees user role without owner commands", async () => {
+  test("regular user sees user role and only public commands", async () => {
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/whoami" });
     await handleWhoamiCommand(ctx, false, "fa");
     const text = replies.join("\n");
     expect(text).toContain("کاربر تأییدشده");
     expect(text).not.toContain("/admin");
-    expect(text).toContain("/history");
+    expect(text).not.toContain("/history");
+    expect(text).toContain("/lang");
   });
 });
 

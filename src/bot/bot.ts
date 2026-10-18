@@ -4,6 +4,9 @@ import {
   replyForCallback,
   buildLangKeyboard,
   isLangCallback,
+  buildVoiceKeyboard,
+  isVoiceCallback,
+  VOICE_CALLBACKS,
   menuKeyboardFor,
   editMenuMessage,
   startScreenText,
@@ -17,9 +20,29 @@ import {
 import { shouldHandleMessage } from "./filter";
 import { toolProgressLabel } from "./ux";
 import {
+  PALETTE_CALLBACK_PREFIX,
+  handlePaletteCallback,
+  openPaletteMessage,
+  paletteCategoriesRender,
+  registerPaletteCommands,
+} from "./palette";
+import {
+  DIGEST_CALLBACK_PREFIX,
+  handleDigestCallback,
+  registerDigestCommands,
+} from "./digest_cmd";
+import {
+  ONBOARDING_CALLBACK_PREFIX,
+  handleOnboardingCallback,
+  handleOnboardingText,
+  maybeStartOnboarding,
+  type OnboardingEnv,
+} from "./onboarding";
+import {
   buildPersonalityKeyboard,
   parsePersonalityCallback,
   PERSONALITY_CALLBACK_PREFIX,
+  withChatAction,
 } from "./ux";
 import { t, resolveLang, LANG_PREF_KEY, type Lang } from "../i18n";
 import type { ConversationEngine } from "../conversation/engine";
@@ -37,7 +60,15 @@ import { checkGroupAccess, denialNote } from "../groups/enforcement";
 import type { UserAccessService } from "../auth/user_service";
 import type { UserPanelController } from "../auth/user_controller";
 import { checkUserAccess, userDenialNote } from "../auth/user_enforcement";
+import {
+  isOwnerCtx,
+  requireOwnerTier,
+} from "./access";
+import {
+  buildPublicMainMenu,
+} from "./menu";
 import type { Storage } from "../storage/storage";
+import type { RegisterOpts } from "./cmd_system";
 import { extractMedia, hasMedia, describeMediaPart, MAX_MEDIA_PER_REPLY } from "./media";
 import { createModerator } from "../moderation/index";
 import type { RateLimiter } from "../core/rate_limit";
@@ -134,6 +165,24 @@ export interface BotDeps {
    * Set at the call site from OwnerIdentity — never from message content.
    */
   moderationOwnerId?: string;
+  /**
+   * Bot version string, shown by /version (and its palette tap). Read from
+   * package.json once at startup by the coordinator.
+   */
+  version?: string;
+  /**
+   * System-command options for the command palette's tap-to-run runners
+   * (same object the coordinator passes to registerSystemCommands, so
+   * defaults stay in one place).
+   */
+  systemOpts?: RegisterOpts;
+  /**
+   * Optional web-search resolver for the interactive /digest headlines
+   * section. The coordinator wires the same resolver it gives the
+   * build_digest tool; absent means the digest simply has no headlines
+   * section (the builder skips it gracefully).
+   */
+  digestSearchHeadlines?: import("../digest/builder").SearchHeadlinesFn;
 }
 
 /** Shown once to a group that is not approved yet. */
@@ -208,15 +257,19 @@ export async function gateGroup(
 }
 
 /**
- * Private-chat access gate.
+ * Private-chat access gate — the two-tier model.
  *
- * A private chat has no other gate, so this is what stands between an unknown
- * Telegram account and the owner's API budget. The owner is exempt; everyone
- * else needs an approved row.
+ * Public chat is OPEN: anyone may talk to Bobi, no approval queue. The owner
+ * is exempt from everything. Two persisted owner controls remain:
+ * - banned (`rejected`): the sender gets one short, polite refusal.
+ * - muted (`revoked`): the update is silently dropped — no reply at all.
  *
- * The first message from an unknown account is recorded as `pending` and the
- * owner is notified, so access can be granted without the user being told to
- * come back later.
+ * Everyone else — no row, `pending`, or `approved` — is allowed through.
+ * Legacy `pending` rows (from the old approval flow) no longer gate anything:
+ * no new pending rows are created here and the owner is never notified.
+ *
+ * The decision is read from the database on every call, so a ban/mute takes
+ * effect on the very next message.
  */
 export async function gateUser(
   ctx: Context,
@@ -242,32 +295,14 @@ export async function gateUser(
   });
   if (decision.allowed) return true;
 
-  // Record the request on first contact, so the owner has something to approve.
-  // An existing row (of any state) is left alone, which is what stops a
-  // rejected account from re-requesting by messaging again.
-  if (decision.state === "unknown") {
-    const registered = users.registerUser({
-      userId,
-      ...(ctx.from.username !== undefined ? { username: ctx.from.username } : {}),
-      ...(ctx.from.first_name !== undefined ? { firstName: ctx.from.first_name } : {}),
-    });
-    if (registered.created) {
-      // A delivery failure must not approve anyone: the row stays pending.
-      await deps.userPanel?.notifyOwnerRequest({ userId });
-    }
-  }
-
   console.error(
     `[sol] user blocked: ${userDenialNote({ userId, isOwner, chatType: ctx.chat.type }, decision)}`,
   );
-  // Denial speaks the sender's language (defaults to Persian).
+  // A muted user hears nothing at all; a banned user gets one short, polite
+  // line. The denial speaks the sender's language (defaults to Persian).
+  if (decision.state === "revoked") return false;
   const lang = senderLang(ctx, deps.prefs);
-  await safeReply(
-    ctx,
-    decision.state === "revoked"
-      ? t("gate.user_revoked", lang)
-      : t("gate.user_not_approved", lang),
-  );
+  await safeReply(ctx, t("gate.user_banned", lang));
   return false;
 }
 
@@ -373,19 +408,79 @@ async function takeMessageBudget(ctx: Context, deps: BotDeps): Promise<boolean> 
 }
 
 /**
- * Phase B2/B3 — voice transcription and voice replies.
+ * Phase B2 + phase-2 item 5 — voice transcription and the voice-first loop.
  *
  * B2: when the active provider cannot accept raw audio natively AND the owner
  * configured a transcription endpoint, voice messages are transcribed before
  * reaching the engine. Otherwise the audio parts keep their existing
  * behaviour (native handling, or the adapter's named "not sent" note).
  *
- * B3: /voice toggles a per-user `voice_mode` pref; when on, the reply chunks
- * are synthesised to speech and sent as voice messages instead of text.
+ * Voice-first (phase-2 item 5): the reply modality mirrors the input
+ * modality — a voice note gets a voice answer automatically, no toggle
+ * needed (see decideReplyModality). Text in → text out, unchanged. /voice is
+ * the explicit 3-way override (auto/always/never), not the only path.
  */
 
 /** The user_prefs key for voice replies. */
 export const VOICE_MODE_KEY = "voice_mode";
+
+/**
+ * Once-per-user flag: the "TTS not configured" note is shown at most once,
+ * so a voice user is informed but never nagged. Never set for text users.
+ */
+export const VOICE_UNCONFIGURED_NOTIFIED_KEY = "voice_unconfigured_notified";
+
+/**
+ * The three-way voice preference, stored under VOICE_MODE_KEY.
+ *
+ * - auto (default): mirror the input — voice in → voice out, text in →
+ *   text out. In groups auto stays text (see decideReplyModality).
+ * - always: every reply as voice, in any chat.
+ * - never: every reply as text.
+ */
+export type VoicePref = "auto" | "always" | "never";
+
+/** The canonical stored values, in display order. Exported for tests. */
+export const VOICE_PREF_VALUES: readonly VoicePref[] = ["auto", "always", "never"];
+
+/**
+ * Resolve the stored pref to the three-way value. Pure, for tests.
+ *
+ * Legacy migration: the old boolean toggle's "1" becomes "always"; "0",
+ * an absent key, or anything unexpected becomes "auto" (the new default).
+ */
+export function resolveVoicePref(stored: string | undefined): VoicePref {
+  if (stored === "always") return "always";
+  if (stored === "never") return "never";
+  if (stored === "1") return "always";
+  return "auto";
+}
+
+/**
+ * Decide the reply modality. Pure, so the whole decision matrix is
+ * assertable without a network or Telegram.
+ *
+ * Rules, in order:
+ * 1. TTS unconfigured → text (nothing to synthesise with).
+ * 2. pref "never" → text; pref "always" → voice (explicit user choice, in
+ *    every chat including groups).
+ * 3. pref "auto" (default): voice only when the input was a voice message
+ *    AND the chat is private. A bot blurting voice notes into a busy group
+ *    is noise, so groups get transcribed + text replies unless the user set
+ *    "always".
+ */
+export function decideReplyModality(input: {
+  pref: VoicePref;
+  inputWasVoice: boolean;
+  /** Telegram chat type: "private" | "group" | "supergroup" | "channel" | ... */
+  chatType: string;
+  ttsConfigured: boolean;
+}): "voice" | "text" {
+  if (!input.ttsConfigured) return "text";
+  if (input.pref === "never") return "text";
+  if (input.pref === "always") return "voice";
+  return input.inputWasVoice && input.chatType === "private" ? "voice" : "text";
+}
 
 /** Max audio attachments transcribed per turn; extras keep the audio parts. */
 export const MAX_TRANSCRIBED_AUDIO_PARTS = 2;
@@ -455,50 +550,84 @@ export async function transcribeAudioParts(
   return out;
 }
 
-/** Persian notes for voice-reply delivery. Exported for tests. */
+/** Bilingual notes for voice-reply delivery. Exported for tests. */
 export const VOICE_FAILED_NOTE = t("voice.tts_failed", "fa");
 export const VOICE_TRUNCATED_NOTE = t("voice.truncated", "fa");
 
+/** The context deliverReply needs: sending plus, optionally, chat actions. */
+export interface DeliverCtx {
+  reply(text: string): Promise<unknown>;
+  replyWithVoice(voice: InputFile): Promise<unknown>;
+  chat?: { id: number | string } | undefined;
+  api?:
+    | {
+        sendChatAction(chatId: number | string, action: string): Promise<unknown>;
+      }
+    | undefined;
+}
+
+/** What deliverReply needs to know about the triggering message. */
+export interface DeliverOpts {
+  /** True when the triggering message carried a voice note / audio file. */
+  inputWasVoice?: boolean;
+  /** Telegram chat type: "private" | "group" | "supergroup" | "channel". */
+  chatType?: string;
+}
+
 /**
- * Deliver the reply chunks as voice messages when the sender enabled voice
- * mode and TTS is configured; otherwise as text.
+ * Deliver the reply chunks, with the modality mirrored from the input
+ * (see decideReplyModality): voice in → voice out, text in → text out,
+ * unless the sender overrode it with /voice.
  *
  * The first MAX_VOICE_CHUNKS chunks / MAX_VOICE_CHARS characters become voice
  * (see `planVoiceDelivery`); anything past the caps is sent as text so no
- * content is lost. A TTS failure for any piece falls back to the whole reply
- * as text plus one Persian note — a half-voiced reply would be confusing.
- * Never throws: delivery faults are the caller's (runTurn's) domain.
+ * content is lost. An «upload_voice» chat action runs while synthesising so
+ * the voice reply starts ASAP. A TTS failure for any piece falls back to the
+ * whole reply as text plus one note in the sender's language — a half-voiced
+ * reply would be confusing. Never throws: delivery faults are the caller's
+ * (runTurn's) domain.
  */
 export async function deliverReply(
-  ctx: {
-    reply(text: string): Promise<unknown>;
-    replyWithVoice(voice: InputFile): Promise<unknown>;
-  },
+  ctx: DeliverCtx,
   env: Pick<BotDeps, "tts" | "prefs">,
   userId: string,
   chunks: readonly string[],
   synth: typeof synthesizeSpeech = synthesizeSpeech,
+  opts: DeliverOpts = {},
 ): Promise<void> {
   const tts = env.tts;
   const prefs = env.prefs;
-  let voiceOn = false;
+  const ttsConfigured = tts !== undefined && tts.baseUrl.trim().length > 0;
+  let pref: VoicePref = "auto";
   let lang: Lang = "fa";
   try {
-    voiceOn =
-      tts !== undefined &&
-      tts.baseUrl.trim().length > 0 &&
-      prefs?.getUserPref(userId, VOICE_MODE_KEY) === "1";
     // The sender's UI language, for the delivery notes below. Resolved from
     // the same validated pref store — never from message text.
-    if (voiceOn && prefs !== undefined) {
+    if (prefs !== undefined) {
+      pref = resolveVoicePref(prefs.getUserPref(userId, VOICE_MODE_KEY));
       lang = resolveLang(userId, prefs.getUserPref.bind(prefs));
     }
   } catch {
     // A preference read failure is not a reason to break the reply: text.
-    voiceOn = false;
+    pref = "auto";
     lang = "fa";
   }
-  if (!voiceOn) {
+
+  const inputWasVoice = opts.inputWasVoice === true;
+  const modality = decideReplyModality({
+    pref,
+    inputWasVoice,
+    chatType: opts.chatType ?? "private",
+    ttsConfigured,
+  });
+
+  if (modality === "text") {
+    // A voice note that cannot be answered in voice deserves one short
+    // explanation — bilingual, shown once per user, and never to text
+    // users (they did not ask for voice).
+    if (!ttsConfigured && inputWasVoice && prefs !== undefined) {
+      await noteVoiceUnavailable(ctx, prefs, userId, lang);
+    }
     for (const chunk of chunks) await ctx.reply(chunk);
     return;
   }
@@ -506,7 +635,9 @@ export async function deliverReply(
   const { voice, text } = planVoiceDelivery(chunks);
   try {
     for (const piece of voice) {
-      const { audio } = await synth(tts!, piece, AbortSignal.timeout(TTS_TIMEOUT_MS));
+      const { audio } = await withChatAction(ctx, "upload_voice", () =>
+        synth(tts!, piece, AbortSignal.timeout(TTS_TIMEOUT_MS)),
+      );
       await ctx.replyWithVoice(new InputFile(audio, "bobi.ogg"));
     }
   } catch (err) {
@@ -522,23 +653,80 @@ export async function deliverReply(
   }
 }
 
+/**
+ * Tell a voice user once that TTS is not configured, then remember it.
+ *
+ * Best-effort and silent on failure: a preference hiccup must not break the
+ * reply, and a user who cannot be reached does not need a retry loop.
+ */
+async function noteVoiceUnavailable(
+  ctx: { reply(text: string): Promise<unknown> },
+  prefs: UserPrefStore,
+  userId: string,
+  lang: Lang,
+): Promise<void> {
+  let notified = false;
+  try {
+    notified = prefs.getUserPref(userId, VOICE_UNCONFIGURED_NOTIFIED_KEY) === "1";
+  } catch {
+    notified = false;
+  }
+  if (notified) return;
+  try {
+    prefs.setUserPref(userId, VOICE_UNCONFIGURED_NOTIFIED_KEY, "1");
+  } catch {
+    // The note below still goes out; the flag is an optimisation.
+  }
+  try {
+    await ctx.reply(t("voice.not_configured", lang));
+  } catch {
+    // Best effort: the user cannot be reached.
+  }
+}
+
 /** The environment /voice needs: TTS config plus the preference store. */
 export type VoiceCommandEnv = Pick<BotDeps, "tts" | "prefs">;
 
 /**
- * /voice: toggle the sender's voice_mode preference.
+ * Parse a /voice argument into the canonical pref value. Pure, for tests.
+ * Accepts the three canonical values, case-insensitively; anything else
+ * (including an absent argument) is undefined and handled by the caller.
+ */
+export function parseVoiceArg(arg: string | undefined): VoicePref | undefined {
+  if (arg === undefined) return undefined;
+  const v = arg.trim().toLowerCase();
+  return (VOICE_PREF_VALUES as readonly string[]).includes(v)
+    ? (v as VoicePref)
+    : undefined;
+}
+
+/** Parse a voice: callback into the canonical pref value; junk → undefined. */
+export function voiceValueForCallback(data: string): VoicePref | undefined {
+  if (data === VOICE_CALLBACKS.auto) return "auto";
+  if (data === VOICE_CALLBACKS.always) return "always";
+  if (data === VOICE_CALLBACKS.never) return "never";
+  return undefined;
+}
+
+/**
+ * /voice: show or set the sender's voice-mode preference (auto/always/never).
  *
- * Gated by the caller (same user gate as other commands). Persian replies;
- * never throws. When TTS is not configured the preference is NOT set — an
- * enabled flag with no endpoint behind it would silently change nothing.
+ * - `/voice` — the current mode plus tap-to-pick buttons (the /lang pattern).
+ * - `/voice auto|always|never` — set it directly.
+ *
+ * Public under the two-tier model (voice is conversation): gated by the
+ * caller with the same group/user gates as the message path, never the tier
+ * gate. Never throws. When TTS is not configured the preference is NOT set —
+ * an enabled flag with no endpoint behind it would silently change nothing.
  */
 export async function handleVoiceCommand(
   ctx: {
     from?: { id: number | string } | undefined;
-    reply(text: string): Promise<unknown>;
+    reply(text: string, extra?: { reply_markup: InlineKeyboard }): Promise<unknown>;
   },
   env: VoiceCommandEnv,
   lang: Lang = "fa",
+  arg?: string,
 ): Promise<void> {
   if (ctx.from === undefined) return;
   if (env.tts === undefined || env.tts.baseUrl.trim().length === 0 || env.prefs === undefined) {
@@ -551,15 +739,52 @@ export async function handleVoiceCommand(
   }
 
   const userId = String(ctx.from.id);
-  let current = "0";
-  try {
-    current = env.prefs.getUserPref(userId, VOICE_MODE_KEY) ?? "0";
-  } catch {
-    // Default off; the set below will surface a real storage fault.
+
+  // An explicit argument sets the preference directly.
+  const value = parseVoiceArg(arg);
+  if (value !== undefined) {
+    await storeVoicePref(ctx, env.prefs, userId, value, lang);
+    return;
   }
-  const next = current === "1" ? "0" : "1";
+  if (arg !== undefined && arg.trim().length > 0) {
+    try {
+      await ctx.reply(t("voice.unknown_option", lang));
+    } catch {
+      // Best effort.
+    }
+    return;
+  }
+
+  // Bare /voice: the current mode with tap-to-pick buttons. The write itself
+  // happens in handleVoiceCallback, which only ever stores canonical values.
+  let current: VoicePref = "auto";
   try {
-    env.prefs.setUserPref(userId, VOICE_MODE_KEY, next);
+    current = resolveVoicePref(env.prefs.getUserPref(userId, VOICE_MODE_KEY));
+  } catch {
+    // Default auto; the set below will surface a real storage fault.
+  }
+  try {
+    await ctx.reply(t("voice.prompt", lang, { mode: t(`voice.mode.${current}`, lang) }), {
+      reply_markup: buildVoiceKeyboard(lang),
+    });
+  } catch {
+    // Best effort: the user cannot be reached.
+  }
+}
+
+/**
+ * Persist one canonical voice pref and confirm in the sender's language.
+ * A storage failure reports the shared prefs failure line, as before.
+ */
+async function storeVoicePref(
+  ctx: { reply(text: string): Promise<unknown> },
+  prefs: UserPrefStore,
+  userId: string,
+  value: VoicePref,
+  lang: Lang,
+): Promise<void> {
+  try {
+    prefs.setUserPref(userId, VOICE_MODE_KEY, value);
   } catch {
     try {
       await ctx.reply(t("prefs.save_failed", lang));
@@ -569,12 +794,50 @@ export async function handleVoiceCommand(
     return;
   }
   try {
-    await ctx.reply(
-      next === "1" ? t("voice.enabled", lang) : t("voice.disabled", lang),
-    );
+    await ctx.reply(t(`voice.set_${value}`, lang));
   } catch {
     // The preference was saved; a failed confirmation is not worth failing over.
   }
+}
+
+/**
+ * /voice button click: persist the sender's chosen mode.
+ *
+ * SECURITY: only the three canonical values are ever written to user_prefs;
+ * junk callback data is rejected without touching the store. Raw callback
+ * text never reaches t() as a mode (the key suffix is exactly one of the
+ * three canonical values here).
+ *
+ * Gated by the caller (same group/user gates as the /voice command, no tier
+ * gate — voice is conversation); never throws.
+ */
+export async function handleVoiceCallback(
+  ctx: {
+    from?: { id: number | string } | undefined;
+    answerCallbackQuery(text?: string): Promise<unknown>;
+    reply(text: string): Promise<unknown>;
+  },
+  env: VoiceCommandEnv,
+  data: string,
+  lang: Lang = "fa",
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery();
+  } catch {
+    // Best effort: Telegram shows the loading indicator briefly.
+  }
+  if (ctx.from === undefined) return;
+  const value = voiceValueForCallback(data);
+  if (value === undefined) {
+    // Junk picker data — reject, don't persist.
+    await safeReply(ctx, t("voice.unknown_option", lang));
+    return;
+  }
+  if (env.tts === undefined || env.tts.baseUrl.trim().length === 0 || env.prefs === undefined) {
+    await safeReply(ctx, t("voice.not_configured", lang));
+    return;
+  }
+  await storeVoicePref(ctx, env.prefs, String(ctx.from.id), value, lang);
 }
 
 /**
@@ -615,44 +878,49 @@ export interface CommandHelpEntry {
  */
 export const COMMAND_HELP: readonly CommandHelpEntry[] = [
   // ---- general ----
+  // Two-tier access: the public surface is exactly start/help/commands/lang/voice.
+  // Every other command is owner-only (ownerOnly: true) — invisible to the
+  // public in menus, /help and the palette, and refused by the tier gate.
   { name: "start", descriptionFa: "شروع و نمایش منوی اصلی", ownerOnly: false, group: "general" },
   { name: "help", descriptionFa: "راهنمای دستورها", ownerOnly: false, group: "general" },
-  { name: "voice", descriptionFa: "روشن/خاموش کردن پاسخ صوتی", ownerOnly: false, group: "general" },
-  { name: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", ownerOnly: false, group: "general" },
-  { name: "stop", descriptionFa: "توقف پاسخ در حال اجرا", ownerOnly: false, group: "general" },
+  { name: "commands", descriptionFa: "مرورگر دستورها", ownerOnly: false, group: "general" },
+  { name: "voice", descriptionFa: "انتخاب حالت پاسخ صوتی (خودکار/همیشه/هرگز)", ownerOnly: false, group: "general" },
+  { name: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", ownerOnly: true, group: "general" },
+  { name: "stop", descriptionFa: "توقف پاسخ در حال اجرا", ownerOnly: true, group: "general" },
   { name: "lang", descriptionFa: "تغییر زبان رابط کاربری", ownerOnly: false, group: "general" },
-  { name: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", ownerOnly: false, group: "general" },
-  { name: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", ownerOnly: false, group: "general" },
+  { name: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", ownerOnly: true, group: "general" },
+  { name: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", ownerOnly: true, group: "general" },
   // ---- session ----
-  { name: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "20", exampleEn: "20" },
-  { name: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", ownerOnly: false, group: "session", exampleFa: "json", exampleEn: "json" },
-  { name: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", ownerOnly: false, group: "session" },
-  { name: "undo", descriptionFa: "بازگشت و بازنویسی", ownerOnly: false, group: "session", exampleFa: "2", exampleEn: "2" },
-  { name: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "resume", descriptionFa: "ازسرگیری نشست", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "sessions", descriptionFa: "نشست‌های قبلی", ownerOnly: false, group: "session" },
-  { name: "status", descriptionFa: "وضعیت", ownerOnly: false, group: "session" },
-  { name: "context", descriptionFa: "وضعیت حافظهٔ زمینه", ownerOnly: false, group: "session" },
-  { name: "busy", descriptionFa: "رفتار هنگام مشغولی", ownerOnly: false, group: "session", exampleFa: "queue", exampleEn: "queue" },
-  { name: "whoami", descriptionFa: "نقش من", ownerOnly: false, group: "session" },
-  { name: "footer", descriptionFa: "پانویس فنی", ownerOnly: false, group: "session", exampleFa: "on", exampleEn: "on" },
-  { name: "version", descriptionFa: "نسخهٔ بابی", ownerOnly: false, group: "session" },
-  { name: "new", descriptionFa: "شروع نشست تازه", ownerOnly: false, group: "session" },
+  { name: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "20", exampleEn: "20" },
+  { name: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", ownerOnly: true, group: "session", exampleFa: "json", exampleEn: "json" },
+  { name: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", ownerOnly: true, group: "session" },
+  { name: "undo", descriptionFa: "بازگشت و بازنویسی", ownerOnly: true, group: "session", exampleFa: "2", exampleEn: "2" },
+  { name: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "resume", descriptionFa: "ازسرگیری نشست", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "sessions", descriptionFa: "نشست‌های قبلی", ownerOnly: true, group: "session" },
+  { name: "status", descriptionFa: "وضعیت", ownerOnly: true, group: "session" },
+  { name: "context", descriptionFa: "وضعیت حافظهٔ زمینه", ownerOnly: true, group: "session" },
+  { name: "busy", descriptionFa: "رفتار هنگام مشغولی", ownerOnly: true, group: "session", exampleFa: "queue", exampleEn: "queue" },
+  { name: "whoami", descriptionFa: "نقش من", ownerOnly: true, group: "session" },
+  { name: "footer", descriptionFa: "پانویس فنی", ownerOnly: true, group: "session", exampleFa: "on", exampleEn: "on" },
+  { name: "version", descriptionFa: "نسخهٔ بابی", ownerOnly: true, group: "session" },
+  { name: "new", descriptionFa: "شروع نشست تازه", ownerOnly: true, group: "session" },
   // ---- automation ----
-  { name: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", ownerOnly: false, group: "automation", exampleFa: "خلاصهٔ اخبار", exampleEn: "news summary" },
-  { name: "btw", descriptionFa: "پرسش جانبی", ownerOnly: false, group: "automation", exampleFa: "این چیه؟", exampleEn: "what is this?" },
-  { name: "queue", descriptionFa: "صف‌بندی پیام", ownerOnly: false, group: "automation", exampleFa: "متن پیام", exampleEn: "message text" },
-  { name: "steer", descriptionFa: "تزریق راهنمایی", ownerOnly: false, group: "automation", exampleFa: "کوتاه جواب بده", exampleEn: "keep it short" },
-  { name: "agents", descriptionFa: "ایجنت‌های فعال", ownerOnly: false, group: "automation" },
-  { name: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", ownerOnly: false, group: "automation" },
-  { name: "blueprint", descriptionFa: "اتوماسیون از قالب", ownerOnly: false, group: "automation" },
-  { name: "refine", descriptionFa: "استخراج درس از گفت‌وگو", ownerOnly: false, group: "automation" },
-  { name: "review", descriptionFa: "بازبینی مستقل", ownerOnly: false, group: "automation" },
-  { name: "plan", descriptionFa: "طرح اجرایی", ownerOnly: false, group: "automation", exampleFa: "کمپین تابستانه", exampleEn: "summer campaign" },
-  { name: "moa", descriptionFa: "اجرای چندمدلی", ownerOnly: false, group: "automation", exampleFa: "کدوم گوشی؟", exampleEn: "which phone?" },
-  { name: "memory", descriptionFa: "مدیریت حافظه", ownerOnly: false, group: "automation" },
-  { name: "bundles", descriptionFa: "بسته‌های مهارت", ownerOnly: false, group: "automation" },
+  { name: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", ownerOnly: true, group: "automation", exampleFa: "خلاصهٔ اخبار", exampleEn: "news summary" },
+  { name: "btw", descriptionFa: "پرسش جانبی", ownerOnly: true, group: "automation", exampleFa: "این چیه؟", exampleEn: "what is this?" },
+  { name: "queue", descriptionFa: "صف‌بندی پیام", ownerOnly: true, group: "automation", exampleFa: "متن پیام", exampleEn: "message text" },
+  { name: "steer", descriptionFa: "تزریق راهنمایی", ownerOnly: true, group: "automation", exampleFa: "کوتاه جواب بده", exampleEn: "keep it short" },
+  { name: "agents", descriptionFa: "ایجنت‌های فعال", ownerOnly: true, group: "automation" },
+  { name: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", ownerOnly: true, group: "automation" },
+  { name: "blueprint", descriptionFa: "اتوماسیون از قالب", ownerOnly: true, group: "automation" },
+  { name: "refine", descriptionFa: "استخراج درس از گفت‌وگو", ownerOnly: true, group: "automation" },
+  { name: "review", descriptionFa: "بازبینی مستقل", ownerOnly: true, group: "automation" },
+  { name: "plan", descriptionFa: "طرح اجرایی", ownerOnly: true, group: "automation", exampleFa: "کمپین تابستانه", exampleEn: "summer campaign" },
+  { name: "moa", descriptionFa: "اجرای چندمدلی", ownerOnly: true, group: "automation", exampleFa: "کدوم گوشی؟", exampleEn: "which phone?" },
+  { name: "memory", descriptionFa: "مدیریت حافظه", ownerOnly: true, group: "automation" },
+  { name: "bundles", descriptionFa: "بسته‌های مهارت", ownerOnly: true, group: "automation" },
+  { name: "digest", descriptionFa: "خلاصهٔ تعاملی امروز", ownerOnly: true, group: "automation" },
   // ---- owner ----
   { name: "admin", descriptionFa: "پنل مدیریت ربات", ownerOnly: true, group: "owner" },
   { name: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", ownerOnly: true, group: "owner" },
@@ -681,6 +949,10 @@ export const COMMAND_HELP: readonly CommandHelpEntry[] = [
   { name: "loop", descriptionFa: "تکرار خودکار", ownerOnly: true, group: "owner" },
   { name: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", ownerOnly: true, group: "owner" },
   { name: "learn", descriptionFa: "آموزش مهارت", ownerOnly: true, group: "owner" },
+  { name: "ban", descriptionFa: "مسدود کردن کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
+  { name: "unban", descriptionFa: "رفع مسدودیت کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
+  { name: "mute", descriptionFa: "نادیده گرفتن پیام‌های کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
+  { name: "unmute", descriptionFa: "رفع نادیده گرفتن کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
 ];
 
 /**
@@ -716,7 +988,7 @@ export function formatCommandHelp(
 /**
  * Whether the sender is the owner, for help filtering.
  *
- * Mirrors the owner check in takeMessageBudget: the owner is proven from the
+ * Delegates to the two-tier access module: the owner is proven from the
  * trusted numeric id, never from message text. Fail-closed: without auth (or
  * without a sender) nobody counts as the owner.
  */
@@ -724,10 +996,38 @@ export function isOwnerSender(
   ctx: Context,
   deps: { auth?: AuthorizationService },
 ): boolean {
-  const { auth } = deps;
-  if (!auth || !ctx.from) return false;
-  const actor = auth.actorFromTelegramUser(ctx.from);
-  return actor !== undefined && auth.isOwner(actor);
+  return isOwnerCtx(ctx, deps);
+}
+
+/**
+ * Build the onboarding wizard's environment for one update, or undefined when
+ * the wizard cannot run (no per-user pref store — the wizard's state would
+ * not survive a restart).
+ *
+ * Ownership is resolved server-side here via isOwnerSender; the wizard module
+ * re-checks it on every entry point, so a non-owner can never reach the
+ * provider-key steps even with a forged callback.
+ */
+function onboardingEnv(ctx: Context, deps: BotDeps): OnboardingEnv | undefined {
+  if (deps.prefs === undefined) return undefined;
+  const aiAdmin = deps.aiAdmin;
+  return {
+    prefs: deps.prefs,
+    isOwner: isOwnerSender(ctx, deps),
+    ai:
+      aiAdmin === undefined
+        ? undefined
+        : {
+            hasConfiguredProvider: () => aiAdmin.hasConfiguredProvider(),
+            activeProviderLabel: () => aiAdmin.activeProviderLabel(),
+            wizardSetupPreset: (from, presetId, apiKey, baseUrl) =>
+              aiAdmin.wizardSetupPreset(from, presetId, apiKey, baseUrl),
+            wizardProbeProvider: (from, providerId) =>
+              aiAdmin.wizardProbeProvider(from, providerId),
+          },
+    runDemo: (c, text) => runWizardDemo(c, deps, text),
+    isGroupChat: ctx.chat?.type === "group" || ctx.chat?.type === "supergroup",
+  };
 }
 
 /** /help: list the commands the sender may use. Never throws. */
@@ -1189,6 +1489,44 @@ async function runTurn(
 }
 
 /**
+ * Run one wizard starter prompt as a real agent turn, from a button tap.
+ *
+ * Exported for the onboarding wizard (`src/bot/onboarding.ts`). Same gates as
+ * the message path — group gate, user gate, per-user message budget. The
+ * bot-mention check is skipped on purpose: a button tap is explicit intent,
+ * not ambient chat. Callback queries carry no `ctx.message`, so the tapped
+ * message stands in for it (shadowed, not mutated) to satisfy runTurnInner's
+ * guards; every reply still goes through the real context.
+ */
+export async function runWizardDemo(ctx: Context, deps: BotDeps, text: string): Promise<void> {
+  const lang = senderLang(ctx, deps.prefs);
+  if (!(await gateGroup(ctx, deps.groups, lang))) return;
+  if (!(await gateUser(ctx, deps))) return;
+  if (!(await takeMessageBudget(ctx, deps))) return;
+  if (!ctx.from || !ctx.chat) return;
+  const message = ctx.message ?? ctx.callbackQuery?.message;
+  if (
+    message === undefined ||
+    message === null ||
+    typeof message !== "object" ||
+    !("message_id" in message)
+  ) {
+    return;
+  }
+  const userId = String(ctx.from.id);
+  const conversationId = String(ctx.chat.id);
+  const msgCtx = Object.create(ctx, {
+    message: { value: message, enumerable: true, configurable: true },
+  }) as Context;
+  enterTurn(conversationId);
+  try {
+    await runTurnInner(msgCtx, deps, { text }, conversationId, userId);
+  } finally {
+    exitTurn(conversationId);
+  }
+}
+
+/**
  * The body of one user turn, split out so runTurn can own the /stop
  * registration lifecycle around it.
  */
@@ -1260,6 +1598,9 @@ async function runTurnInner(
       conversationId,
       userId,
       userText: text,
+      // Bilingual agent output: the sender's UI language reaches the agent's
+      // own system prompt, so its replies follow /lang (fa default).
+      lang,
       ...(actor !== undefined ? { actor } : {}),
       ...(finalParts.length > 0 ? { parts: finalParts } : {}),
       onProgress: (step) => {
@@ -1277,9 +1618,14 @@ async function runTurnInner(
     const note = describeSkipped(media.skipped, lang);
     if (note.length > 0) await ctx.reply(note);
 
-    // The reply goes out as voice messages when the sender enabled voice
-    // mode (Phase B3); otherwise as text. Failures fall back to text inside.
-    await deliverReply(ctx, deps, userId, out.chunks);
+    // Phase-2 item 5 (voice-first): the reply modality mirrors the input —
+    // a voice note gets a voice answer automatically in private chats (the
+    // sender can override with /voice). Text in → text out, unchanged.
+    // Failures fall back to text inside.
+    await deliverReply(ctx, deps, userId, out.chunks, synthesizeSpeech, {
+      inputWasVoice: ctx.message?.voice !== undefined || ctx.message?.audio !== undefined,
+      chatType: ctx.chat?.type ?? "private",
+    });
     // Media a tool produced for the user (a generated image, say) follows the
     // text. It never entered the prompt or history — this is its only trip.
     for (const part of out.media.slice(0, MAX_MEDIA_PER_REPLY)) {
@@ -1322,9 +1668,11 @@ export function describeSkipped(
   const lines = skipped.map((s) =>
     s.reason === "too_large"
       ? t("media.skipped_too_large", lang, { kind: s.kind })
-      : s.reason === "unsupported"
-        ? t("media.skipped_unsupported", lang, { kind: s.kind })
-        : t("media.skipped_other", lang, { kind: s.kind }),
+      : s.reason === "too_long"
+        ? t("media.skipped_too_long", lang, { kind: s.kind })
+        : s.reason === "unsupported"
+          ? t("media.skipped_unsupported", lang, { kind: s.kind })
+          : t("media.skipped_other", lang, { kind: s.kind }),
   );
   return [t("media.skipped_title", lang), ...lines].join("\n");
 }
@@ -1372,10 +1720,24 @@ export function createBot(token: string, deps: BotDeps): Bot {
   // Deliberately NOT gated: a greeting in any chat is harmless and carries no
   // reasoning, tool access, or stored content. Every entry that does — the
   // tools menu button and the conversation engine — is gated separately.
+  //
+  // The onboarding wizard may take over this /start for the OWNER: fresh
+  // owners (no provider configured) get the 4-step wizard; returning owners
+  // keep this phase-1 screen. Non-owners never see the wizard.
   bot.command("start", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
+    const onb = onboardingEnv(ctx, deps);
+    if (onb !== undefined) {
+      const arg =
+        ctx.message?.text !== undefined ? commandArg(ctx.message.text) : undefined;
+      if ((await maybeStartOnboarding(ctx, onb, lang, arg)).handled) return;
+    }
     await ctx.reply(startScreenText(lang), {
-      reply_markup: buildMainMenu(lang),
+      // Two-tier menus: the owner keeps the full 6-button menu; the public
+      // gets a smaller menu with no owner-only buttons rendered at all.
+      reply_markup: isOwnerSender(ctx, deps)
+        ? buildMainMenu(lang)
+        : buildPublicMainMenu(lang),
     });
   });
 
@@ -1389,41 +1751,69 @@ export function createBot(token: string, deps: BotDeps): Bot {
     if (aiAdmin) await aiAdmin.open(ctx);
   });
 
-  // ---- /voice — toggle voice replies for the sender ----
-  // Same gates as the message path: an unapproved group or user never reaches
-  // the preference write. The toggle itself lives in handleVoiceCommand so it
-  // is unit-testable without Telegram.
+  // ---- /voice — show or set the sender's voice-mode preference ----
+  // Public under the two-tier model (voice is conversation): the group/user
+  // gates run, the tier gate does not. The picker write itself lives in
+  // handleVoiceCommand/handleVoiceCallback so it is unit-testable without
+  // Telegram.
   bot.command("voice", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
-    await handleVoiceCommand(ctx, deps, lang);
+    const arg =
+      ctx.message?.text !== undefined ? commandArg(ctx.message.text) : undefined;
+    await handleVoiceCommand(ctx, deps, lang, arg);
   });
 
-  // ---- /help — list commands the sender may use ----
+  // ---- /help — open the command palette ----
+  // The palette is the primary command browser now: it renders from the same
+  // COMMAND_HELP source as the old text wall (same grouping, same
+  // owner-filtering), categorized and paginated instead of one long message.
   // Deliberately ungated like /start: the listing is harmless (owner-only
-  // entries are hidden from non-owners by handleHelpCommand).
+  // entries are hidden from non-owners by visibleCommandHelp).
   bot.command("help", async (ctx) => {
-    await handleHelpCommand(ctx, isOwnerSender(ctx, deps), senderLang(ctx, deps.prefs));
+    await openPaletteMessage(
+      ctx,
+      isOwnerSender(ctx, deps),
+      senderLang(ctx, deps.prefs),
+    );
   });
+
+  // ---- /commands — the categorized, paginated command browser ----
+  // Same entry point as /help, for users who reach for the explicit name.
+  registerPaletteCommands(
+    bot,
+    { deps, sysOpts: deps.systemOpts ?? {} },
+  );
+
+  // ---- /digest — the interactive daily digest (Phase-2 item 3) ----
+  // Owner-only: the digest aggregates the owner's private data (tasks,
+  // reminders, memories, usage). The tier gate runs in the command handler
+  // and again on every dgst: callback tap (see the router below).
+  registerDigestCommands(
+    bot,
+    { deps, sysOpts: deps.systemOpts ?? {} },
+  );
 
   // ---- /reset — clear THIS conversation's history ----
-  // Same gates as the message path. The destructive scope is the current chat
+  // Owner-only (two-tier model). The destructive scope is the current chat
   // only (storage deletes by user+chat pair); the handler cancels any
   // in-flight turn first.
   bot.command("reset", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     await handleResetCommand(ctx, deps, lang);
   });
 
   // ---- /personality — show/set the sender's tone skin ----
-  // Same gates as the message path; the preference is per-user.
+  // Owner-only (two-tier model); the preference is per-user.
   bot.command("personality", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     await handlePersonalityCommand(ctx, deps, lang);
   });
 
@@ -1438,22 +1828,24 @@ export function createBot(token: string, deps: BotDeps): Bot {
   });
 
   // ---- /compress — immediate summary compression of this conversation ----
-  // Same gates as the message path. The reply is a confirmation only, never
+  // Owner-only (two-tier model). The reply is a confirmation only, never
   // the summary text itself.
   bot.command("compress", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     await handleCompressCommand(ctx, deps, lang);
   });
 
   // ---- /stop — abort the in-flight turn for this chat ----
-  // Same gates as the message path; aborts only the turn registered for this
+  // Owner-only (two-tier model); aborts only the turn registered for this
   // conversation (see enterTurn/stopTurn above).
   bot.command("stop", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     await handleStopCommand(ctx, deps, lang);
   });
 
@@ -1532,13 +1924,28 @@ export function createBot(token: string, deps: BotDeps): Bot {
       await handleLangCallback(ctx, deps, data, lang);
       return;
     }
+    // The /voice picker (voice:) — its own namespace, like the lang: picker.
+    // Public under the two-tier model (voice is conversation): clicks re-run
+    // the same group/user gates as the /voice command, junk picker data is
+    // rejected by handleVoiceCallback rather than falling through to the
+    // menu, and no tier gate runs here either.
+    if (isVoiceCallback(data)) {
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      await handleVoiceCallback(ctx, deps, data, lang);
+      return;
+    }
     // The personality picker (tap-to-pick skins from /personality). Its own
     // namespace; the payload is re-validated against the built-in skins and
     // the gates re-run, so a forged callback can't set anything invalid.
+    // /personality is owner-only under the two-tier model, so the tier gate
+    // runs here too — a non-owner tap is refused, never applied.
     if (data.startsWith(PERSONALITY_CALLBACK_PREFIX)) {
       const lang = senderLang(ctx, deps.prefs);
       if (!(await gateGroup(ctx, groups, lang))) return;
       if (!(await gateUser(ctx, deps))) return;
+      if (!(await requireOwnerTier(ctx, deps, lang))) return;
       const name = parsePersonalityCallback(data);
       await ctx.answerCallbackQuery().catch(() => undefined);
       if (name === undefined || deps.prefs === undefined) return;
@@ -1555,26 +1962,89 @@ export function createBot(token: string, deps: BotDeps): Bot {
       await safeReply(ctx, t("personality.changed", lang, { label }));
       return;
     }
+    // The command palette (pal:) — its own namespace, like the lang: picker.
+    // Clicks re-run the same group/user gates as the menu buttons; the
+    // payload is strictly validated by parsePaletteCallback and owner-only
+    // entries re-check ownership server-side per tap, so a forged callback
+    // can neither run nor reveal anything hidden.
+    if (data.startsWith(PALETTE_CALLBACK_PREFIX)) {
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      await handlePaletteCallback(
+        ctx,
+        { deps, sysOpts: deps.systemOpts ?? {} },
+        data,
+        lang,
+      );
+      return;
+    }
+    // The interactive digest (dgst:) — its own namespace, like the palette.
+    // Clicks re-run the same group/user gates as the menu buttons, then the
+    // owner tier gate: the digest aggregates the owner's private data, so a
+    // non-owner tap is refused, never executed. The payload is strictly
+    // validated by parseDigestCallback and ownership is re-checked
+    // server-side on every tap inside handleDigestCallback, so a forged
+    // callback can neither mutate state nor reveal anything.
+    if (data.startsWith(DIGEST_CALLBACK_PREFIX)) {
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      if (!(await requireOwnerTier(ctx, deps, lang))) return;
+      await handleDigestCallback(
+        ctx,
+        { deps, sysOpts: deps.systemOpts ?? {} },
+        data,
+        lang,
+      );
+      return;
+    }
+    // The onboarding wizard (onb:) — its own namespace, like the palette.
+    // Owner-only by design (provider keys are involved): ownership is
+    // re-checked server-side inside the handler, so a forged callback from a
+    // non-owner is silently ignored and can never reach the key steps.
+    if (data.startsWith(ONBOARDING_CALLBACK_PREFIX)) {
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      const onb = onboardingEnv(ctx, deps);
+      if (onb !== undefined) await handleOnboardingCallback(ctx, onb, data, lang);
+      return;
+    }
     // Ordinary menu buttons DO depend on group approval, so the gate applies.
+    // Two-tier invisibility: the tools and settings buttons are never
+    // rendered for the public (see buildPublicMainMenu), so a non-owner tap
+    // on either is a forged callback — refused politely, never rendered.
     for (const cb of Object.values(CALLBACKS)) {
       if (data !== cb) continue;
       const lang = senderLang(ctx, deps.prefs);
       if (!(await gateGroup(ctx, groups, lang))) return;
       if (!(await gateUser(ctx, deps))) return;
+      const owner = isOwnerSender(ctx, deps);
+      if (!owner && (cb === CALLBACKS.tools || cb === CALLBACKS.settings)) {
+        await ctx.answerCallbackQuery();
+        await safeReply(ctx, t("tier.refused", lang));
+        return;
+      }
       await ctx.answerCallbackQuery();
-      // The help button renders the same grouped, owner-filtered listing as
-      // /help — owner-only commands never leak through the menu.
-      // Sub-screens edit the message in place instead of stacking replies;
-      // every sub-screen carries a back button, so there are no dead ends.
-      const text =
-        cb === CALLBACKS.help
-          ? formatCommandHelp(visibleCommandHelp(isOwnerSender(ctx, deps)), lang)
-          : replyForCallback(
-              cb,
-              cb === CALLBACKS.tools ? deps.tools?.listActiveNames() : undefined,
-              lang,
-            );
-      await editMenuMessage(ctx, text, menuKeyboardFor(cb, lang));
+      // The commands and help buttons open the palette — the categorized,
+      // paginated command browser. It renders from the same COMMAND_HELP
+      // source as /help (same owner filtering), so nothing leaks and the
+      // two can never drift apart. Every palette screen carries its own
+      // back button, so there are no dead ends.
+      if (cb === CALLBACKS.commands || cb === CALLBACKS.help) {
+        const render = paletteCategoriesRender(isOwnerSender(ctx, deps), lang);
+        await editMenuMessage(ctx, render.text, render.keyboard);
+        return;
+      }
+      const text = replyForCallback(
+        cb,
+        cb === CALLBACKS.tools ? deps.tools?.listActiveNames() : undefined,
+        lang,
+      );
+      await editMenuMessage(ctx, text, menuKeyboardFor(cb, lang, owner));
       return;
     }
 
@@ -1622,6 +2092,17 @@ export function createBot(token: string, deps: BotDeps): Bot {
     }
 
     const text = ctx.message.text;
+
+    // The onboarding wizard's provider-key step consumes the owner's next
+    // message as an API key (the same one-message shape as the /ai setup
+    // flow). Owner-only and state-gated inside handleOnboardingText; anything
+    // else falls through to the /ai forms and the engine below.
+    {
+      const onb = onboardingEnv(ctx, deps);
+      if (onb !== undefined && !text.startsWith("/")) {
+        if (await handleOnboardingText(ctx, onb, text, senderLang(ctx, deps.prefs))) return;
+      }
+    }
 
     // An owner mid-way through an AI form has their reply consumed here rather
     // than sent to the model. Consuming is gated on the owner's own pending

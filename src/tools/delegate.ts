@@ -37,6 +37,7 @@
 import { AgentCancelled, AgentLoop } from "../agent/loop";
 import { AiError } from "../ai/provider";
 import type { AiProvider } from "../ai/provider";
+import type { Lang } from "../i18n/types";
 import { DEFAULT_TOOLS, ToolService } from "./service";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
@@ -73,11 +74,36 @@ export interface DelegateToolDeps {
   provider: AiProvider;
   /** Model id the child loop requests. */
   model: string;
+  /**
+   * Bilingual agent output: resolve the delegating user's reply language.
+   *
+   * Called with `ctx.actor.userId`. Absent (or throwing) means Persian —
+   * the pre-existing behaviour. Same trust shape as the engine's `langFor`:
+   * server-side pref only, never model text.
+   */
+  langFor?: (userId: string) => Lang | undefined;
 }
 
 const CHILD_SYSTEM_PROMPT =
   "You are a focused subagent. Complete ONLY this task, answer concisely in Persian. " +
   "Use the tools available to you. Do not ask clarifying questions.";
+
+/**
+ * The child agent's reply language follows the DELEGATING user's `/lang`
+ * pref (bilingual agent output): a user whose UI is English gets the child's
+ * summary in English. Anything but "en" resolves to Persian — the pre-existing
+ * behaviour. The value comes from the server-side pref, never from the task
+ * text, so the parent model cannot steer the child's language by phrasing.
+ */
+function childSystemPrompt(lang: Lang): string {
+  if (lang === "en") {
+    return (
+      "You are a focused subagent. Complete ONLY this task, answer concisely in English. " +
+      "Use the tools available to you. Do not ask clarifying questions."
+    );
+  }
+  return CHILD_SYSTEM_PROMPT;
+}
 
 /**
  * Build the child's registry view: every tool the parent registry holds,
@@ -98,7 +124,7 @@ export function createChildToolService(parent: ToolService): ToolService {
   });
 }
 
-/** Build the delegate tool. Not ownerOnly: approved users may delegate. */
+/** Build the delegate tool. Two-tier access: owner-only — the public chats, it never delegates. */
 export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, DelegateOutput> {
   return {
     name: DELEGATE_TOOL_NAME,
@@ -107,6 +133,8 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
       "برای کارهای فرعی که نباید زمینهٔ گفتگوی اصلی را شلوغ کند استفاده کن؛ خلاصهٔ فارسی برمی‌گرداند.",
     enabled: true,
     permission: { requires: [DELEGATE_PERMISSION] },
+    // Withheld from public actors by the authorization bridge.
+    ownerOnly: true,
     toolset: "agents",
     input: {
       fields: {
@@ -157,7 +185,7 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
 
       try {
         const result = await loop.run({
-          systemPrompt: CHILD_SYSTEM_PROMPT,
+          systemPrompt: childSystemPrompt(resolveDelegateLang(deps, ctx.actor.userId)),
           messages: [{ role: "user", content: task }],
           // The SAME actor as the parent call: no privilege escalation. The
           // child's tool visibility and every execution are authorized against
@@ -176,6 +204,21 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
       }
     },
   };
+}
+
+/**
+ * Resolve the child's reply language for the delegating user. Fail-closed to
+ * Persian on a missing, throwing, or misbehaving resolver — the child answer
+ * must never be missing or in an unselected language.
+ */
+function resolveDelegateLang(deps: DelegateToolDeps, userId: string): Lang {
+  try {
+    const resolved = deps.langFor?.(userId);
+    if (resolved === "en" || resolved === "fa") return resolved;
+  } catch {
+    // fall through to the Persian default
+  }
+  return "fa";
 }
 
 /** Cap the child's answer; the cut is marked with a named note. */

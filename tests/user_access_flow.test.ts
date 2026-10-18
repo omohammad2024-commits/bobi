@@ -1,11 +1,10 @@
 /**
- * The user-approval workflow end to end, through the real controllers.
+ * The two-tier access flow end to end, through the real controllers.
  *
- * The unit suite proves the state machine. This proves the integration the bot
- * actually performs: an unknown account's first message creates a pending row
- * and notifies the owner, the owner's decision is authorized and audited, and
- * the account's access changes accordingly — with no path that lets a stranger
- * reach the engine or run a tool.
+ * Public chat is OPEN: a stranger is allowed immediately, no pending row, no
+ * owner notification. The owner's persisted controls are ban (polite refusal)
+ * and mute (silent drop), both effective on the very next message. The unit
+ * suite proves the state machine; this proves the integration.
  */
 import { describe, expect, test } from "bun:test";
 import { Storage } from "../src/storage/storage";
@@ -74,79 +73,74 @@ function harness() {
   return { storage, auth, admin, users, panel, notifications, audit };
 }
 
-describe("unknown account → owner approval", () => {
-  test("first contact creates a pending row and notifies the owner once", async () => {
+describe("public chat is open — no approval queue", () => {
+  test("a stranger is allowed on first contact; nothing is recorded, nobody is notified", async () => {
     const h = harness();
     const stranger = { userId: String(STRANGER_ID), isOwner: false, chatType: "private" };
 
-    // Before anything, the stranger is denied.
-    expect(checkUserAccess(h.users, stranger).allowed).toBe(false);
-
-    // The bot records the request (this is what gateUser does on first contact).
-    expect(h.users.registerUser({ userId: stranger.userId, firstName: "مهمان" }).created).toBe(true);
-    expect(await h.panel.notifyOwnerRequest({ userId: stranger.userId })).toBe(true);
-
-    expect(h.notifications).toHaveLength(1);
-    expect(h.notifications[0]!.chatId).toBe(String(OWNER_ID));
-    expect(h.notifications[0]!.text).toContain(stranger.userId);
-
-    // Still denied until the owner actually decides.
-    expect(checkUserAccess(h.users, stranger).allowed).toBe(false);
+    // Allowed immediately — the gate no longer needs a row.
+    expect(checkUserAccess(h.users, stranger)).toEqual({ allowed: true });
+    expect(h.users.stateOf(stranger.userId)).toBeUndefined();
+    expect(h.notifications).toHaveLength(0);
 
     h.storage.close();
   });
 
-  test("a second message does not notify the owner again", async () => {
+  test("the owner bans, and the stranger is refused from the next message", async () => {
     const h = harness();
     const userId = String(STRANGER_ID);
-    h.users.registerUser({ userId });
-    await h.panel.notifyOwnerRequest({ userId });
+    const subject = { userId, isOwner: false, chatType: "private" };
+    expect(checkUserAccess(h.users, subject).allowed).toBe(true);
 
-    // The same account messages again: no new row, no second notification.
-    expect(h.users.registerUser({ userId }).created).toBe(false);
-    expect(await h.panel.notifyOwnerRequest({ userId })).toBe(false);
-    expect(h.notifications).toHaveLength(1);
+    expect(h.users.ban(userId, String(OWNER_ID)).ok).toBe(true);
+    const d = checkUserAccess(h.users, subject);
+    expect(d.allowed).toBe(false);
+    expect(d.allowed === false && d.state).toBe("rejected");
 
     h.storage.close();
   });
 
-  test("a failed notification leaves the user pending and retries later", async () => {
-    const storage = Storage.open(":memory:");
-    const auth = new AuthorizationService(OwnerIdentity.fromNumber(OWNER_ID));
-    const admin = new AdminBoundary({ auth, audit: new AuditLogger({ storage }) });
-    const users = new UserAccessService(storage);
-    let sendOk = false;
-    let attempts = 0;
-    const panel = new UserPanelController({
-      auth,
-      admin,
-      users,
-      notify: async () => {
-        attempts++;
-        return sendOk;
-      },
-    });
-
+  test("the owner mutes, and the stranger's messages are silently dropped", async () => {
+    const h = harness();
     const userId = String(STRANGER_ID);
-    users.registerUser({ userId });
+    const subject = { userId, isOwner: false, chatType: "private" };
 
-    // A delivery failure must never be read as an approval.
-    expect(await panel.notifyOwnerRequest({ userId })).toBe(false);
-    expect(users.isApproved(userId)).toBe(false);
-    expect(users.stateOf(userId)).toBe("pending");
-    // ...and the row stays unnotified, so a later attempt retries.
-    expect(users.needsNotification(userId)).toBe(true);
+    expect(h.users.mute(userId, String(OWNER_ID)).ok).toBe(true);
+    const d = checkUserAccess(h.users, subject);
+    expect(d.allowed).toBe(false);
+    expect(d.allowed === false && d.state).toBe("revoked");
 
-    sendOk = true;
-    expect(await panel.notifyOwnerRequest({ userId })).toBe(true);
-    expect(attempts).toBe(2);
-    // Once delivered, it is not sent again.
-    expect(await panel.notifyOwnerRequest({ userId })).toBe(false);
+    // Unmute restores open chat.
+    expect(h.users.unmute(userId, String(OWNER_ID)).ok).toBe(true);
+    expect(checkUserAccess(h.users, subject)).toEqual({ allowed: true });
 
-    storage.close();
+    h.storage.close();
   });
 
-  test("the owner approves, and access is granted", async () => {
+  test("unban restores open chat", async () => {
+    const h = harness();
+    const userId = String(STRANGER_ID);
+    const subject = { userId, isOwner: false, chatType: "private" };
+    h.users.ban(userId, String(OWNER_ID));
+    expect(checkUserAccess(h.users, subject).allowed).toBe(false);
+
+    expect(h.users.unban(userId, String(OWNER_ID)).ok).toBe(true);
+    expect(checkUserAccess(h.users, subject)).toEqual({ allowed: true });
+
+    h.storage.close();
+  });
+
+  test("ban/mute are idempotent — a double ban is not an error", async () => {
+    const h = harness();
+    const userId = String(STRANGER_ID);
+    expect(h.users.ban(userId, String(OWNER_ID))).toEqual({ ok: true, previous: "pending" });
+    expect(h.users.ban(userId, String(OWNER_ID))).toEqual({ ok: true, previous: "rejected" });
+    expect(h.users.mute(userId, String(OWNER_ID))).toEqual({ ok: true, previous: "rejected" });
+    expect(h.users.mute(userId, String(OWNER_ID))).toEqual({ ok: true, previous: "revoked" });
+    h.storage.close();
+  });
+
+  test("legacy approve/reject panel actions still work on existing rows", async () => {
     const h = harness();
     const userId = String(STRANGER_ID);
     h.users.registerUser({ userId });
@@ -167,7 +161,7 @@ describe("unknown account → owner approval", () => {
     h.storage.close();
   });
 
-  test("the owner rejects, and access stays closed", async () => {
+  test("legacy reject marks the row banned", async () => {
     const h = harness();
     const userId = String(STRANGER_ID);
     h.users.registerUser({ userId });
@@ -181,7 +175,7 @@ describe("unknown account → owner approval", () => {
     h.storage.close();
   });
 
-  test("revoking an approved user closes access immediately", async () => {
+  test("revoking an approved user mutes them immediately", async () => {
     const h = harness();
     const userId = String(STRANGER_ID);
     h.users.registerUser({ userId });
@@ -291,9 +285,9 @@ describe("only the owner may decide", () => {
 });
 
 describe("access gates tool use", () => {
-  test("the tools a user is offered follow from their permissions, not their approval", () => {
+  test("the tools a user is offered follow from their permissions, not their ban state", () => {
     // The registration table is the only thing that grants tool permission.
-    // The user-approval gate decides whether they reach the engine AT ALL;
+    // The user gate (ban/mute) decides whether they reach the engine AT ALL;
     // this checks the second, narrower layer still behaves.
     const auth = new AuthorizationService(OwnerIdentity.fromNumber(OWNER_ID));
     const tools = new ToolService();

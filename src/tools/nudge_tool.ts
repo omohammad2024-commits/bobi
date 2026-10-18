@@ -62,6 +62,9 @@ export function createNoteFollowupTool(deps: NudgeToolDeps): Tool<NoteFollowupIn
       "یک پیگیری ثبت کن تا بات بعداً خودش یادآوری‌اش کند؛ تا وقتی کاربر صراحتاً نبنددش، یادآوری تکرار می‌شود. زمان را می‌توان به فارسی طبیعی («فردا ساعت ۹») یا ISO با منطقهٔ زمانی داد.",
     enabled: true,
     permission: { requires: [NOTE_FOLLOWUP_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "schedule",
     input: {
       fields: {
@@ -127,6 +130,9 @@ export function createListNudgesTool(deps: NudgeToolDeps): Tool<Record<string, n
     description: "پیگیری‌های باز (بسته‌نشده) کاربر را فهرست کن.",
     enabled: true,
     permission: { requires: [LIST_NUDGES_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "schedule",
     input: { fields: {} },
 
@@ -166,6 +172,9 @@ export function createAckNudgeTool(deps: NudgeToolDeps): Tool<AckNudgeInput, Ack
     description: "یک پیگیری را با شناسه‌اش ببند (انجام شد).",
     enabled: true,
     permission: { requires: [ACK_NUDGE_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "schedule",
     input: {
       fields: {
@@ -209,6 +218,9 @@ export function createSnoozeNudgeTool(deps: NudgeToolDeps): Tool<SnoozeNudgeInpu
     description: "یک پیگیری را به زمان دیگری موکول کن.",
     enabled: true,
     permission: { requires: [SNOOZE_NUDGE_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
     toolset: "schedule",
     input: {
       fields: {

@@ -427,6 +427,45 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
     fa: "❌ استفاده: /pause on | /pause off",
     en: "❌ Usage: /pause on | /pause off",
   },
+
+  // ---------- /ban /unban /mute /unmute ----------
+
+  "cmd_system.restrict.usage": {
+    fa: "❌ شناسهٔ عددی کاربر را بده. مثال: /{cmd} 123456",
+    en: "❌ Provide the numeric user id. Example: /{cmd} 123456",
+  },
+  "cmd_system.restrict.bad_target": {
+    fa: "❌ شناسهٔ کاربر معتبر نیست؛ فقط عدد.",
+    en: "❌ Invalid user id; digits only.",
+  },
+  "cmd_system.restrict.no_users": {
+    fa: "❌ سرویس دسترسی کاربر در دسترس نیست.",
+    en: "❌ User access service is unavailable.",
+  },
+  "cmd_system.restrict.self": {
+    fa: "❌ نمی‌توانی خودت را {what} کنی.",
+    en: "❌ You cannot {what} yourself.",
+  },
+  "cmd_system.restrict.failed": {
+    fa: "❌ عملیات انجام نشد.",
+    en: "❌ The operation failed.",
+  },
+  "cmd_system.ban.ok": {
+    fa: "🚫 کاربر {id} مسدود شد.",
+    en: "🚫 User {id} has been blocked.",
+  },
+  "cmd_system.unban.ok": {
+    fa: "✅ مسدودیت کاربر {id} برداشته شد.",
+    en: "✅ User {id} has been unblocked.",
+  },
+  "cmd_system.mute.ok": {
+    fa: "🔇 پیام‌های کاربر {id} از این به بعد نادیده گرفته می‌شود.",
+    en: "🔇 Messages from user {id} will now be silently ignored.",
+  },
+  "cmd_system.unmute.ok": {
+    fa: "✅ نادیده گرفتن کاربر {id} برداشته شد.",
+    en: "✅ User {id} is no longer ignored.",
+  },
 };
 
 /**

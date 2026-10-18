@@ -1,6 +1,7 @@
 import type { AiProvider, ChatMessage, ContentPart } from "../ai/provider";
 import { AiError } from "../ai/provider";
 import type { Storage } from "../storage/storage";
+import type { Lang } from "../i18n/types";
 import { AgentCancelled, AgentLoop } from "../agent/loop";
 import type { AgentBudgets, AgentRunInput } from "../agent/loop";
 import { raceDeadline, withDeadline } from "../core/deadline";
@@ -49,6 +50,16 @@ export interface ConversationInput {
   userId?: string;
   /** Raw text the user sent. */
   userText: string;
+  /**
+   * Reply language for this turn, resolved server-side by the caller.
+   *
+   * The bot layer passes the sender's UI pref (`senderLang`); background
+   * paths pass whatever `lang` they already carry. When absent, the engine
+   * falls back to the constructor's `langFor` resolver for the turn's user,
+   * then to Persian — the pre-bilingual behaviour. The value never comes
+   * from chat text, so a user cannot set it by asking.
+   */
+  lang?: Lang;
   /** Optional per-request timeout override. */
   timeoutMs?: number;
   /**
@@ -130,6 +141,16 @@ export interface EngineOptions {  provider: AiProvider;
    * Absent means the `default` skin (no addition).
    */
   personalityFor?: (userId: string) => string | undefined;
+  /**
+   * Bilingual agent output: resolve the turn's user's reply language.
+   *
+   * Called with the turn's user id when `ConversationInput.lang` is absent;
+   * an explicit `lang` on the input always wins. The resolver must read the
+   * server-side `/lang` pref (see `resolveLang`) and return only "fa"|"en" —
+   * a throwing resolver falls back to Persian, like a missing pref. Absent
+   * means every turn is Persian, exactly the pre-bilingual behaviour.
+   */
+  langFor?: (userId: string) => Lang | undefined;
   /** Injectable clock, for deterministic tests. */
   now?: () => Date;
   /** Progress sink, forwarded from the agent loop. */
@@ -261,6 +282,7 @@ export class ConversationEngine {
   private readonly contextFiles: ContextFileCache | undefined;
   private readonly hooks: HookRunnerLike | undefined;
   private readonly personalityFor: ((userId: string) => string | undefined) | undefined;
+  private readonly langFor: ((userId: string) => Lang | undefined) | undefined;
 
   // in-memory fallback (conversationId -> turns)
   private readonly histories = new Map<string, ChatMessage[]>();
@@ -291,6 +313,7 @@ export class ConversationEngine {
     this.contextFiles = opts.contextFiles;
     this.hooks = opts.hooks;
     this.personalityFor = opts.personalityFor;
+    this.langFor = opts.langFor;
   }
 
   /**
@@ -428,6 +451,28 @@ export class ConversationEngine {
     }
     if (name === undefined) return undefined;
     return getPersonality(name);
+  }
+
+  /**
+   * Bilingual agent output: the reply language for this turn's user.
+   *
+   * Precedence: explicit `ConversationInput.lang` (the bot layer passes the
+   * sender's resolved UI pref) > the constructor's `langFor` resolver >
+   * Persian. A throwing or misbehaving resolver cannot break the turn — it
+   * falls back to Persian, the same fail-closed shape as `resolveLang`.
+   */
+  private resolveTurnLang(input: ConversationInput): Lang {
+    if (input.lang === "en" || input.lang === "fa") return input.lang;
+    const userId = input.userId ?? input.conversationId;
+    if (this.langFor !== undefined) {
+      try {
+        const resolved = this.langFor(userId);
+        if (resolved === "en" || resolved === "fa") return resolved;
+      } catch {
+        // fall through to the Persian default
+      }
+    }
+    return "fa";
   }
 
   private async runOnce(
@@ -698,6 +743,10 @@ export class ConversationEngine {
         tools: specs,
         now: this.now(),
         timezone: this.timezone,
+        // Bilingual agent output: the TURN's user's language — never the
+        // owner's, never chat text — so a public user's `en` pref answers
+        // them in English while the owner keeps Persian.
+        lang: this.resolveTurnLang(input),
         ...(memoryCount !== undefined ? { memoryCount } : {}),
         ...(skillContext !== undefined ? { skillContext } : {}),
         ...(contextFiles !== undefined ? { contextFiles } : {}),

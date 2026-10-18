@@ -10,6 +10,7 @@ import {
   stopTurn,
   type UserPrefStore,
 } from "./bot";
+import { requireOwnerTier } from "./access";
 import {
   buildSessionsKeyboard,
   parseSessionResumeCallback,
@@ -530,6 +531,9 @@ export async function handleRetryCommand(
     conversationId: ids.chatId,
     userId: ids.userId,
     userText: lastUser.content,
+    // Bilingual agent output: the retry replays the original turn, so it
+    // answers in the replier's current UI language.
+    lang,
   };
   let out: ConversationOutput;
   try {
@@ -1249,23 +1253,23 @@ export async function handleNewCommand(
 
 // ---------------------------------------------------------- command defs ----
 
-/** Menu entries for setMyCommands; merged by createBot. None are owner-only. */
+/** Menu entries for setMyCommands; merged by createBot. Two-tier access: all are owner-only. */
 export const COMMAND_DEFS: HermesCommandDef[] = [
-  { command: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", descriptionEn: "Show conversation history", ownerOnly: false },
-  { command: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", descriptionEn: "Export the conversation to a file", ownerOnly: false },
-  { command: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", descriptionEn: "Retry the last message", ownerOnly: false },
-  { command: "undo", descriptionFa: "بازگشت و بازنویسی", descriptionEn: "Undo the last turns", ownerOnly: false },
-  { command: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", descriptionEn: "Set the conversation title", ownerOnly: false },
-  { command: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", descriptionEn: "Branch the conversation", ownerOnly: false },
-  { command: "resume", descriptionFa: "ازسرگیری نشست", descriptionEn: "Resume a past session", ownerOnly: false },
-  { command: "sessions", descriptionFa: "نشست‌های قبلی", descriptionEn: "List past sessions", ownerOnly: false },
-  { command: "status", descriptionFa: "وضعیت", descriptionEn: "Session status", ownerOnly: false },
-  { command: "context", descriptionFa: "وضعیت حافظهٔ زمینه", descriptionEn: "Context window status", ownerOnly: false },
-  { command: "busy", descriptionFa: "رفتار هنگام مشغولی", descriptionEn: "Busy-behavior preference", ownerOnly: false },
-  { command: "whoami", descriptionFa: "نقش من", descriptionEn: "Show my role", ownerOnly: false },
-  { command: "footer", descriptionFa: "پانویس فنی", descriptionEn: "Technical footer preference", ownerOnly: false },
-  { command: "version", descriptionFa: "نسخهٔ بابی", descriptionEn: "Show the BOBI version", ownerOnly: false },
-  { command: "new", descriptionFa: "شروع نشست تازه", descriptionEn: "Start a fresh session", ownerOnly: false },
+  { command: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", descriptionEn: "Show conversation history", ownerOnly: true },
+  { command: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", descriptionEn: "Export the conversation to a file", ownerOnly: true },
+  { command: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", descriptionEn: "Retry the last message", ownerOnly: true },
+  { command: "undo", descriptionFa: "بازگشت و بازنویسی", descriptionEn: "Undo the last turns", ownerOnly: true },
+  { command: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", descriptionEn: "Set the conversation title", ownerOnly: true },
+  { command: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", descriptionEn: "Branch the conversation", ownerOnly: true },
+  { command: "resume", descriptionFa: "ازسرگیری نشست", descriptionEn: "Resume a past session", ownerOnly: true },
+  { command: "sessions", descriptionFa: "نشست‌های قبلی", descriptionEn: "List past sessions", ownerOnly: true },
+  { command: "status", descriptionFa: "وضعیت", descriptionEn: "Session status", ownerOnly: true },
+  { command: "context", descriptionFa: "وضعیت حافظهٔ زمینه", descriptionEn: "Context window status", ownerOnly: true },
+  { command: "busy", descriptionFa: "رفتار هنگام مشغولی", descriptionEn: "Busy-behavior preference", ownerOnly: true },
+  { command: "whoami", descriptionFa: "نقش من", descriptionEn: "Show my role", ownerOnly: true },
+  { command: "footer", descriptionFa: "پانویس فنی", descriptionEn: "Technical footer preference", ownerOnly: true },
+  { command: "version", descriptionFa: "نسخهٔ بابی", descriptionEn: "Show the BOBI version", ownerOnly: true },
+  { command: "new", descriptionFa: "شروع نشست تازه", descriptionEn: "Start a fresh session", ownerOnly: true },
 ];
 
 // ------------------------------------------------------------- registration ----
@@ -1273,22 +1277,31 @@ export const COMMAND_DEFS: HermesCommandDef[] = [
 /**
  * Register the fifteen session commands on the bot.
  *
- * Gating mirrors createBot in bot.ts: every state-changing command runs
- * gateGroup + gateUser first. /whoami, /version and /status are read-only
- * and stay ungated, exactly like /help.
+ * Two-tier access: every session command is owner-only. Gating mirrors
+ * createBot in bot.ts — gateGroup + gateUser first, then the tier gate
+ * (requireOwnerTier) which refuses non-owners politely.
  */
 export function registerSessionCommands(bot: Bot, deps: HermesCommandDeps): void {
+  // Two-tier access: every session command is owner-only. The tier gate
+  // runs after the group/user gates; a non-owner gets the polite refusal.
   const gated = (name: string, run: (ctx: Context, lang: Lang) => Promise<void>): void => {
     bot.command(name, async (ctx) => {
       const lang = senderLang(ctx, deps.prefs);
       if (!(await gateGroup(ctx, deps.groups, lang))) return;
       if (!(await gateUser(ctx, deps))) return;
+      if (!(await requireOwnerTier(ctx, deps, lang))) return;
       await run(ctx, lang);
     });
   };
+  // whoami/version/status were historically open; the two-tier model makes
+  // them owner-only too — they reveal session and identity state.
   const open = (name: string, run: (ctx: Context, lang: Lang) => Promise<void>): void => {
     bot.command(name, async (ctx) => {
-      await run(ctx, senderLang(ctx, deps.prefs));
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, deps.groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      if (!(await requireOwnerTier(ctx, deps, lang))) return;
+      await run(ctx, lang);
     });
   };
 
@@ -1311,16 +1324,18 @@ export function registerSessionCommands(bot: Bot, deps: HermesCommandDeps): void
 
   // ---- sess: tap-to-resume buttons (from /sessions) ----
   // Its own namespace, like the lang: picker in bot.ts: clicks re-run the
-  // same group/user gates as the /sessions command, and the id is validated
-  // against the caller's own conversations before anything happens. Other
-  // namespaces fall through untouched (bot.ts's own callback router also
-  // runs and simply answers them).
+  // same group/user gates as the /sessions command, plus the tier gate
+  // (/sessions is owner-only), and the id is validated against the caller's
+  // own conversations before anything happens. Other namespaces fall through
+  // untouched (bot.ts's own callback router also runs and simply answers
+  // them).
   bot.on("callback_query:data", async (ctx) => {
     const data = ctx.callbackQuery.data;
     if (!data.startsWith(SESSION_CALLBACK_PREFIX)) return;
     const lang = senderLang(ctx, deps.prefs);
     if (!(await gateGroup(ctx, deps.groups, lang))) return;
     if (!(await gateUser(ctx, deps))) return;
+    if (!(await requireOwnerTier(ctx, deps, lang))) return;
     await handleSessionResumeCallback(ctx, deps, data, lang);
   });
 }

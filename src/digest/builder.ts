@@ -1,9 +1,9 @@
 /**
- * Morning digest builder — a proactive Persian morning briefing (Stage-3
+ * Morning digest builder — a proactive morning briefing (Stage-3
  * differentiator; Hermes has nothing like it).
  *
  * The builder composes a digest from REAL in-repo sources only:
- *  - Persian date/time (Intl "fa-IR", Asia/Tehran)
+ *  - date/time (Intl, Asia/Tehran)
  *  - today's scheduled tasks (Storage.listTasks)
  *  - pending reminders due today (Storage.listReminders)
  *  - pending curator proposals (ProposalStore.countPending)
@@ -12,28 +12,43 @@
  *  - newest 3 long-term memories (Storage.listMemories)
  *
  * Every section is built inside its own try/catch: one failing source is
- * logged and skipped, and can never kill the digest. The formatted digest is
- * capped at MAX_DIGEST_CHARS so it always fits a Telegram message.
+ * logged and skipped, and can never kill the digest.
+ *
+ * BILINGUAL (Phase-2 item 3 — interactive digest): section gathering is
+ * language-neutral (`buildDigestData`); text rendering is per-language
+ * (`renderDigestSection`, `renderDigestText`) through the central i18n
+ * packs, in the owner's `Lang`. The legacy Persian API (`buildDigest`,
+ * `formatDigest`, `DigestSection`) is preserved byte-for-byte on top of the
+ * new core, so the scheduled 08:00 text delivery and its tests are
+ * unaffected.
  *
  * SECURITY (attack-surface review):
  * - The digest aggregates the OWNER's private data (tasks, reminders,
  *   memories, usage). It must only ever be delivered to the owner's chat.
  *   The tool layer enforces this twice (ownerOnly + run()-level isOwner
  *   check); the delivery path is the scheduler's owner delivery — see
- *   docs/phase-digest.md and src/tools/digest_tool.ts.
+ *   docs/phase-digest.md and src/tools/digest_tool.ts. The interactive
+ *   /digest command and every dgst: callback re-check the owner tier
+ *   server-side (see src/bot/digest_cmd.ts).
  * - Web headlines are UNTRUSTED third-party text. They are rendered in a
  *   clearly labelled "external content" section, never presented as the
  *   owner's own data, and URLs are reduced to their hostname so a query
  *   string carrying a session id or token can never leak into the chat
  *   (the same scrub instinct as /debug's secret scrubbing).
+ * - User content (task names, reminder text, memory content) is rendered as
+ *   PLAIN TEXT with no parse_mode: markdown/HTML control characters cannot
+ *   break the message. Whitespace is collapsed (oneLine) and each item is
+ *   clipped, so hostile content cannot break the layout or fake a section.
+ *   Callback data never contains user text — only server-side numeric ids,
+ *   small indexes, and store-generated proposal ids.
  * - No secrets: sources here never include credentials, and the builder
  *   never logs section content at a level above a short failure note.
  */
-import { ProposalStore } from "../curator/proposals";
 import { Storage } from "../storage/storage";
 import { UsageTracker } from "../ai/usage";
+import { t, type Lang } from "../i18n";
 
-/** One rendered digest block: Persian title + Persian body. */
+/** One rendered digest block (legacy Persian API): Persian title + Persian body. */
 export interface DigestSection {
   titleFa: string;
   bodyFa: string;
@@ -60,7 +75,8 @@ export type SearchHeadlinesFn = (
 
 export interface DigestDeps {
   storage: Storage;
-  proposalStore: ProposalStore;
+  /** Minimal proposal-store surface (the real ProposalStore satisfies it). */
+  proposalStore: DigestProposalStore;
   /** Owner's user id (Telegram numeric id as string). All reads are scoped to it. */
   userId: string;
   /** Injectable clock, unix ms. Tests pass a fixed time. */
@@ -71,17 +87,90 @@ export interface DigestDeps {
   log?: (message: string) => void;
 }
 
+/** Minimal proposal-store surface the digest needs. */
+export interface DigestProposalStore {
+  countPending(userId: string): number;
+}
+
 /** Hard cap on the formatted digest, sized for a Telegram message. */
 export const MAX_DIGEST_CHARS = 2500;
+
+// ---------------------------------------------------------------------------
+// Language-neutral section data
+// ---------------------------------------------------------------------------
+
+export type DigestSectionKind =
+  | "date"
+  | "tasks"
+  | "reminders"
+  | "proposals"
+  | "usage"
+  | "headlines"
+  | "memories";
+
+/** One scheduled task due today, with its stable storage id for callbacks. */
+export interface DigestTaskItem {
+  id: number;
+  name: string;
+  runAtMs: number;
+}
+
+/** One pending reminder due today, with its stable storage id. */
+export interface DigestReminderItem {
+  id: number;
+  text: string;
+  dueAt: number;
+  overdue: boolean;
+}
+
+/** One web headline (hostname only — never the full URL). */
+export interface DigestHeadlineItem {
+  title: string;
+  host?: string;
+}
+
+/** One long-term memory (newest first). */
+export interface DigestMemoryItem {
+  key: string;
+  content: string;
+}
+
+/** Language-neutral digest section data. Rendering is per-language. */
+export type DigestSectionData =
+  | { kind: "date"; nowMs: number }
+  | { kind: "tasks"; items: DigestTaskItem[] }
+  | { kind: "reminders"; items: DigestReminderItem[] }
+  | { kind: "proposals"; count: number }
+  | {
+      kind: "usage";
+      runs: number;
+      inputTokens: number;
+      outputTokens: number;
+      estimatedUsd: number;
+    }
+  | { kind: "headlines"; items: DigestHeadlineItem[] }
+  | { kind: "memories"; items: DigestMemoryItem[] };
+
+// ---------------------------------------------------------------------------
+// Formatting helpers (per language)
+// ---------------------------------------------------------------------------
 
 const TEHRAN = "Asia/Tehran";
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Iran has no DST since 2022: Tehran is a fixed UTC+3:30. */
 const TEHRAN_OFFSET_MS = 3.5 * 60 * 60 * 1000;
 
-/** Persian digits for every number the owner reads. */
+/** Persian digits for every number the owner reads (fa); grouped Latin (en). */
 function faNum(n: number): string {
   return new Intl.NumberFormat("fa-IR").format(Math.round(n));
+}
+
+function enNum(n: number): string {
+  return new Intl.NumberFormat("en-US").format(Math.round(n));
+}
+
+function fmtNum(n: number, lang: Lang): string {
+  return lang === "fa" ? faNum(n) : enNum(n);
 }
 
 /** Collapse whitespace runs so external text cannot break the layout. */
@@ -111,7 +200,13 @@ function hostOf(url: string): string | undefined {
   }
 }
 
-function faDateTime(nowMs: number): { date: string; time: string; hour: number } {
+interface DigestDateTime {
+  date: string;
+  time: string;
+  hour: number;
+}
+
+function faDateTime(nowMs: number): DigestDateTime {
   const d = new Date(nowMs);
   const date = new Intl.DateTimeFormat("fa-IR", {
     timeZone: TEHRAN,
@@ -131,11 +226,36 @@ function faDateTime(nowMs: number): { date: string; time: string; hour: number }
   return { date, time, hour };
 }
 
-function greeting(hour: number): string {
-  if (hour >= 5 && hour < 12) return "صبح بخیر";
-  if (hour >= 12 && hour < 17) return "ظهر بخیر";
-  if (hour >= 17 && hour < 21) return "عصر بخیر";
-  return "شب بخیر";
+function enDateTime(nowMs: number): DigestDateTime {
+  const d = new Date(nowMs);
+  const date = new Intl.DateTimeFormat("en-US", {
+    timeZone: TEHRAN,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(d);
+  const time = new Intl.DateTimeFormat("en-US", {
+    timeZone: TEHRAN,
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(d);
+  const hour = Number(
+    new Intl.DateTimeFormat("en-US", { timeZone: TEHRAN, hour: "numeric", hour12: false }).format(d),
+  );
+  return { date, time, hour };
+}
+
+function fmtDateTime(nowMs: number, lang: Lang): DigestDateTime {
+  return lang === "fa" ? faDateTime(nowMs) : enDateTime(nowMs);
+}
+
+/** i18n key for the time-of-day greeting; same hour ranges in both languages. */
+function greetingKey(hour: number): string {
+  if (hour >= 5 && hour < 12) return "digest.greeting.morning";
+  if (hour >= 12 && hour < 17) return "digest.greeting.afternoon";
+  if (hour >= 17 && hour < 21) return "digest.greeting.evening";
+  return "digest.greeting.night";
 }
 
 /** Start/end of "today" in Tehran, as unix ms. */
@@ -159,43 +279,64 @@ function faTimeOf(ms: number): string {
   }).format(new Date(ms));
 }
 
-/** Format an approximate USD amount in Persian (same voice as usage_report). */
-function faCost(usd: number): string {
-  if (usd <= 0) return "۰ دلار";
-  if (usd < 0.01) return "کمتر از ۰٫۰۱ دلار";
-  const digits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
-  return `${usd
-    .toFixed(2)
-    .replace(/[0-9]/g, (d) => digits[Number(d)]!)
-    .replace(".", "٫")} دلار`;
+function enTimeOf(ms: number): string {
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: TEHRAN,
+    hour: "numeric",
+    minute: "2-digit",
+  }).format(new Date(ms));
 }
 
+function fmtTimeOf(ms: number, lang: Lang): string {
+  return lang === "fa" ? faTimeOf(ms) : enTimeOf(ms);
+}
+
+/** Approximate USD amount, in the owner's language (fa keeps its exact voice). */
+function fmtCost(usd: number, lang: Lang): string {
+  if (usd <= 0) return t("digest.cost.zero", lang);
+  if (usd < 0.01) return t("digest.cost.tiny", lang);
+  let amount: string;
+  if (lang === "fa") {
+    const digits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
+    amount = usd
+      .toFixed(2)
+      .replace(/[0-9]/g, (d) => digits[Number(d)]!)
+      .replace(".", "٫");
+  } else {
+    amount = usd.toFixed(2);
+  }
+  return t("digest.cost.value", lang, { amount });
+}
+
+// ---------------------------------------------------------------------------
+// Section data gathering (language-neutral)
+// ---------------------------------------------------------------------------
+
 /**
- * Compose the digest sections.
+ * Compose the digest sections as language-neutral data.
  *
  * Order: date header (always), tasks, reminders, curator proposals, usage,
  * headlines, memories. Each section builder is guarded so a failing source
  * is skipped with a log line instead of killing the digest.
  */
-export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
+export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionData[]> {
   const nowMs = deps.now !== undefined ? deps.now() : Date.now();
   const log = deps.log ?? (() => {});
-  const sections: DigestSection[] = [];
+  const sections: DigestSectionData[] = [];
 
   // --- Header: always present, never depends on storage. -------------------
-  sections.push(dateSection(nowMs));
+  sections.push({ kind: "date", nowMs });
 
   // --- Today's scheduled tasks ----------------------------------------------
   try {
-    const s = taskSection(deps, nowMs);
-    if (s) sections.push(s);
+    sections.push(taskData(deps, nowMs));
   } catch (err) {
     log(`digest: tasks section skipped (${shortErr(err)})`);
   }
 
   // --- Pending reminders due today ------------------------------------------
   try {
-    const s = reminderSection(deps, nowMs);
+    const s = reminderData(deps, nowMs);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: reminders section skipped (${shortErr(err)})`);
@@ -203,7 +344,7 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
 
   // --- Pending curator proposals ---------------------------------------------
   try {
-    const s = proposalSection(deps);
+    const s = proposalData(deps);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: proposals section skipped (${shortErr(err)})`);
@@ -211,7 +352,7 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
 
   // --- Yesterday's usage ------------------------------------------------------
   try {
-    const s = usageSection(deps, nowMs);
+    const s = usageData(deps, nowMs);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: usage section skipped (${shortErr(err)})`);
@@ -219,7 +360,7 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
 
   // --- Web headlines (untrusted external content) -----------------------------
   try {
-    const s = await headlineSection(deps, nowMs);
+    const s = await headlineData(deps);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: headlines section skipped (${shortErr(err)})`);
@@ -227,7 +368,7 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
 
   // --- Memory highlights -------------------------------------------------------
   try {
-    const s = memorySection(deps);
+    const s = memoryData(deps);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: memories section skipped (${shortErr(err)})`);
@@ -236,82 +377,47 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
   return sections;
 }
 
-/** Date header: greeting + full Persian date + Tehran time. */
-function dateSection(nowMs: number): DigestSection {
-  const { date, time, hour } = faDateTime(nowMs);
-  return {
-    titleFa: `☀️ ${greeting(hour)}!`,
-    bodyFa: `امروز ${date} است — ساعت ${time} به وقت تهران.`,
-  };
-}
-
 /** Today's enabled scheduled tasks (next run inside the Tehran day). Always rendered. */
-function taskSection(deps: DigestDeps, nowMs: number): DigestSection {
+function taskData(deps: DigestDeps, nowMs: number): DigestSectionData {
   const { start, end } = tehranDayBounds(nowMs);
-  const today = deps.storage
+  const items = deps.storage
     .listTasks(deps.userId, 50)
-    .filter((t) => t.enabled && t.nextRunAtMs >= start && t.nextRunAtMs < end)
-    .slice(0, 5);
-
-  if (today.length === 0) {
-    return {
-      titleFa: "✅ کارهای امروز",
-      bodyFa: "امروز کار زمان‌بندی‌شده‌ای نداری؛ روز آرومی پیش روئه.",
-    };
-  }
-
-  const lines = today.map((t) => `• ${clip(t.name, 60)} — ساعت ${faTimeOf(t.nextRunAtMs)}`);
-  return {
-    titleFa: "✅ کارهای امروز",
-    bodyFa:
-      today.length === 1
-        ? `یک کار زمان‌بندی‌شده داری:\n${lines.join("\n")}`
-        : `${faNum(today.length)} کار زمان‌بندی‌شده داری:\n${lines.join("\n")}`,
-  };
+    .filter((task) => task.enabled && task.nextRunAtMs >= start && task.nextRunAtMs < end)
+    .slice(0, 5)
+    .map((task) => ({ id: task.id, name: task.name, runAtMs: task.nextRunAtMs }));
+  return { kind: "tasks", items };
 }
 
 /** Pending reminders due by end of today (Tehran), overdue first. Skipped when empty. */
-function reminderSection(deps: DigestDeps, nowMs: number): DigestSection | undefined {
+function reminderData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
   const { end } = tehranDayBounds(nowMs);
-  const due = deps.storage
+  const items = deps.storage
     .listReminders(deps.userId, 50)
     .filter((r) => r.dueAt <= end)
-    .slice(0, 4);
-  if (due.length === 0) return undefined;
-
-  const lines = due.map((r) => {
-    const late = r.dueAt < nowMs ? " (عقب‌افتاده)" : "";
-    return `• ${clip(r.text, 90)} — ${faTimeOf(r.dueAt)}${late}`;
-  });
-  return {
-    titleFa: "⏰ یادآورها",
-    bodyFa: `${faNum(due.length)} یادآور برای امروز داری:\n${lines.join("\n")}`,
-  };
+    .slice(0, 4)
+    .map((r) => ({ id: r.id, text: r.text, dueAt: r.dueAt, overdue: r.dueAt < nowMs }));
+  if (items.length === 0) return undefined;
+  return { kind: "reminders", items };
 }
 
 /** Pending curator proposals awaiting the owner's decision. Skipped when none. */
-function proposalSection(deps: DigestDeps): DigestSection | undefined {
+function proposalData(deps: DigestDeps): DigestSectionData | undefined {
   const count = deps.proposalStore.countPending(deps.userId);
   if (count === 0) return undefined;
-  return {
-    titleFa: "🧠 پیشنهادهای حافظه",
-    bodyFa:
-      count === 1
-        ? "یک پیشنهاد برای مرتب‌سازی حافظه‌ات منتظر تصمیم توئه."
-        : `${faNum(count)} پیشنهاد برای مرتب‌سازی حافظه‌ات منتظر تصمیم توئه؛ هر وقت خواستی بررسی‌شون کن.`,
-  };
+  return { kind: "proposals", count };
 }
 
 /** Usage over the last 24h, from the ledger (metadata only, never content). */
-function usageSection(deps: DigestDeps, nowMs: number): DigestSection | undefined {
+function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
   const tracker = new UsageTracker(deps.storage);
-  const t = tracker.totals(deps.userId, nowMs - DAY_MS);
-  if (t.runs === 0) return undefined;
+  const totals = tracker.totals(deps.userId, nowMs - DAY_MS);
+  if (totals.runs === 0) return undefined;
   return {
-    titleFa: "📊 مصرف ۲۴ ساعت اخیر",
-    bodyFa:
-      `• درخواست‌ها: ${faNum(t.runs)} — توکن ورودی: ${faNum(t.inputTokens)}، خروجی: ${faNum(t.outputTokens)}\n` +
-      `• هزینهٔ تقریبی: ${faCost(t.estimatedUsd)} (تخمینی، نه صورتحساب)`,
+    kind: "usage",
+    runs: totals.runs,
+    inputTokens: totals.inputTokens,
+    outputTokens: totals.outputTokens,
+    estimatedUsd: totals.estimatedUsd,
   };
 }
 
@@ -323,10 +429,7 @@ function usageSection(deps: DigestDeps, nowMs: number): DigestSection | undefine
  * is explicitly labelled as EXTERNAL content so the owner never mistakes
  * third-party text for the bot's (or their own) words.
  */
-async function headlineSection(
-  deps: DigestDeps,
-  _nowMs: number,
-): Promise<DigestSection | undefined> {
+async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undefined> {
   if (deps.searchHeadlines === undefined) return undefined;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
@@ -336,34 +439,182 @@ async function headlineSection(
   } finally {
     clearTimeout(timer);
   }
-  const items = hits
-    .slice(0, 3)
-    .map((h) => ({ title: oneLine(h.title), host: hostOf(h.url) }))
-    .filter((h) => h.title.length > 0);
+  const items: DigestHeadlineItem[] = [];
+  for (const h of hits.slice(0, 3)) {
+    const title = oneLine(h.title);
+    if (title.length === 0) continue;
+    const host = hostOf(h.url);
+    items.push(host !== undefined ? { title, host } : { title });
+  }
   if (items.length === 0) return undefined;
-
-  const lines = items.map(
-    (h) => `• ${clip(h.title, 110)}${h.host !== undefined ? ` (${h.host})` : ""}`,
-  );
-  return {
-    titleFa: "📰 سرخط خبرها — محتوای بیرونی",
-    bodyFa: `⚠️ این‌ها از جستجوی وب آمده‌اند و حرف من نیستند:\n${lines.join("\n")}`,
-  };
+  return { kind: "headlines", items };
 }
 
 /** Newest 3 memories, as a gentle "on your mind" closer. Skipped when none. */
-function memorySection(deps: DigestDeps): DigestSection | undefined {
-  const mems = deps.storage.listMemories(deps.userId, 3);
-  if (mems.length === 0) return undefined;
-  const lines = mems.map((m) => `• ${clip(m.content, 140)}`);
-  return {
-    titleFa: "💭 از حافظه‌ات",
-    bodyFa: `تازه‌ترین چیزهایی که سپردی به من:\n${lines.join("\n")}`,
-  };
+function memoryData(deps: DigestDeps): DigestSectionData | undefined {
+  const items = deps.storage
+    .listMemories(deps.userId, 3)
+    .map((m) => ({ key: m.key, content: m.content }));
+  if (items.length === 0) return undefined;
+  return { kind: "memories", items };
 }
 
 function shortErr(err: unknown): string {
   return err instanceof Error ? err.message.slice(0, 120) : String(err).slice(0, 120);
+}
+
+// ---------------------------------------------------------------------------
+// Per-language rendering
+// ---------------------------------------------------------------------------
+
+/** Render one section's title + body in the owner's language. Pure. */
+export function renderDigestSection(
+  section: DigestSectionData,
+  lang: Lang = "fa",
+): { title: string; body: string } {
+  switch (section.kind) {
+    case "date": {
+      const { date, time, hour } = fmtDateTime(section.nowMs, lang);
+      return {
+        title: `☀️ ${t(greetingKey(hour), lang)}!`,
+        body: t("digest.date.body", lang, { date, time }),
+      };
+    }
+    case "tasks": {
+      const title = t("digest.sec.tasks", lang);
+      if (section.items.length === 0) {
+        return { title, body: t("digest.tasks.empty", lang) };
+      }
+      const lines = section.items.map(
+        (item) =>
+          `• ${clip(item.name, 60)} — ${t("digest.tasks.time", lang, {
+            time: fmtTimeOf(item.runAtMs, lang),
+          })}`,
+      );
+      const head =
+        section.items.length === 1
+          ? t("digest.tasks.one", lang)
+          : t("digest.tasks.many", lang, { count: fmtNum(section.items.length, lang) });
+      return { title, body: `${head}\n${lines.join("\n")}` };
+    }
+    case "reminders": {
+      const lines = section.items.map((item) => {
+        const late = item.overdue ? t("digest.reminders.overdue", lang) : "";
+        return `• ${clip(item.text, 90)} — ${fmtTimeOf(item.dueAt, lang)}${late}`;
+      });
+      return {
+        title: t("digest.sec.reminders", lang),
+        body: `${t("digest.reminders.many", lang, {
+          count: fmtNum(section.items.length, lang),
+        })}\n${lines.join("\n")}`,
+      };
+    }
+    case "proposals": {
+      const body =
+        section.count === 1
+          ? t("digest.proposals.one", lang)
+          : t("digest.proposals.many", lang, { count: fmtNum(section.count, lang) });
+      return { title: t("digest.sec.proposals", lang), body };
+    }
+    case "usage": {
+      return {
+        title: t("digest.sec.usage", lang),
+        body: t("digest.usage.body", lang, {
+          runs: fmtNum(section.runs, lang),
+          input: fmtNum(section.inputTokens, lang),
+          output: fmtNum(section.outputTokens, lang),
+          cost: fmtCost(section.estimatedUsd, lang),
+        }),
+      };
+    }
+    case "headlines": {
+      const lines = section.items.map(
+        (h) => `• ${clip(h.title, 110)}${h.host !== undefined ? ` (${h.host})` : ""}`,
+      );
+      return {
+        title: t("digest.sec.headlines", lang),
+        body: `${t("digest.headlines.warn", lang)}\n${lines.join("\n")}`,
+      };
+    }
+    case "memories": {
+      const lines = section.items.map((m) => `• ${clip(m.content, 140)}`);
+      return {
+        title: t("digest.sec.memories", lang),
+        body: `${t("digest.memories.body", lang)}\n${lines.join("\n")}`,
+      };
+    }
+  }
+}
+
+/**
+ * Fit sections into the char budget: the date header always survives,
+ * trailing sections are dropped first (headlines and memories are the least
+ * critical). Pure, for tests and for the interactive renderer — the keyboard
+ * is built from the SAME surviving list, so buttons never point at dropped
+ * content.
+ */
+export function fitDigestSections(
+  sections: readonly DigestSectionData[],
+  lang: Lang,
+  maxChars: number,
+): DigestSectionData[] {
+  const kept: DigestSectionData[] = sections[0] !== undefined ? [sections[0]] : [];
+  for (const s of sections.slice(1)) {
+    const candidate = [...kept, s].map((d) => renderDigestSection(d, lang));
+    if (joinExact(candidate, lang).length > maxChars) break;
+    kept.push(s);
+  }
+  return kept;
+}
+
+/** Exact join of pre-rendered sections with the closer (no dropping). */
+function joinExact(parts: ReadonlyArray<{ title: string; body: string }>, lang: Lang): string {
+  const rendered = parts.map((p) => `${p.title}\n${p.body}`);
+  return `${rendered.join("\n\n")}\n\n${t("digest.closer", lang)}`;
+}
+
+/** Join pre-rendered section parts with the closer, enforcing the char cap. */
+function joinDigestParts(
+  parts: ReadonlyArray<{ title: string; body: string }>,
+  lang: Lang,
+  maxChars: number,
+): string {
+  let text = joinExact(parts, lang);
+  if (text.length > maxChars) {
+    // Last resort for a pathological single section: hard cut.
+    text = text.slice(0, maxChars - 1) + "…";
+  }
+  return text;
+}
+
+/**
+ * Format section data into the final digest text, enforcing the char cap.
+ * The interactive digest passes its own (larger) budget; the legacy text
+ * digest keeps MAX_DIGEST_CHARS.
+ */
+export function renderDigestText(
+  sections: readonly DigestSectionData[],
+  lang: Lang = "fa",
+  maxChars: number = MAX_DIGEST_CHARS,
+): string {
+  return joinDigestParts(
+    fitDigestSections(sections, lang, maxChars).map((s) => renderDigestSection(s, lang)),
+    lang,
+    maxChars,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Legacy Persian API (byte-identical, on top of the new core)
+// ---------------------------------------------------------------------------
+
+/** Compose the digest sections (Persian rendering, legacy shape). */
+export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
+  const data = await buildDigestData(deps);
+  return data.map((s) => {
+    const r = renderDigestSection(s, "fa");
+    return { titleFa: r.title, bodyFa: r.body };
+  });
 }
 
 /**
@@ -375,22 +626,9 @@ function shortErr(err: unknown): string {
  * one section is pathological.
  */
 export function formatDigest(sections: DigestSection[]): string {
-  const header = sections[0];
-  const rest = sections.slice(1);
-  const kept: DigestSection[] = header !== undefined ? [header] : [];
-  for (const s of rest) {
-    const candidate = render([...kept, s]);
-    if (candidate.length > MAX_DIGEST_CHARS) break;
-    kept.push(s);
-  }
-  let text = render(kept);
-  if (text.length > MAX_DIGEST_CHARS) {
-    text = text.slice(0, MAX_DIGEST_CHARS - 1) + "…";
-  }
-  return text;
-}
-
-function render(sections: DigestSection[]): string {
-  const parts = sections.map((s) => `${s.titleFa}\n${s.bodyFa}`);
-  return `${parts.join("\n\n")}\n\nروز خوبی داشته باشی ✨`;
+  return joinDigestParts(
+    sections.map((s) => ({ title: s.titleFa, body: s.bodyFa })),
+    "fa",
+    MAX_DIGEST_CHARS,
+  );
 }

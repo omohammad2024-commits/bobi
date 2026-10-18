@@ -28,7 +28,10 @@ import {
 import type { ContentPart } from "../ai/provider";
 
 /** Why an attachment was not attached. */
-export type MediaSkipReason = "too_large" | "download_failed" | "unsupported";
+export type MediaSkipReason = "too_large" | "too_long" | "download_failed" | "unsupported";
+
+/** Voice notes / audio files longer than this are not transcribed or sent on. */
+export const MAX_VOICE_AUDIO_SECONDS = 600;
 
 export interface MediaExtraction {
   /** Attachments ready to send to the provider. */
@@ -62,6 +65,18 @@ export async function extractMedia(ctx: Context, botToken: string): Promise<Medi
   for (const candidate of candidatesIn(message)) {
     if (parts.length >= MAX_ATTACHMENTS) {
       skipped.push({ kind: candidate.kind, reason: "too_large" });
+      continue;
+    }
+
+    // A voice note or audio file past the duration cap is refused before any
+    // download: transcribing a 40-minute memo would burn the owner's budget
+    // and keep the turn hanging for minutes.
+    if (
+      (candidate.kind === "voice" || candidate.kind === "audio") &&
+      candidate.durationSec !== undefined &&
+      candidate.durationSec > MAX_VOICE_AUDIO_SECONDS
+    ) {
+      skipped.push({ kind: candidate.kind, reason: "too_long" });
       continue;
     }
 
@@ -105,6 +120,8 @@ export interface MediaCandidate {
   mediaType: string;
   /** Byte size Telegram reported, when it reported one. */
   declaredSize?: number;
+  /** Duration Telegram reported, in seconds, for voice/audio. */
+  durationSec?: number;
   name?: string;
 }
 
@@ -135,6 +152,7 @@ export function candidatesIn(message: NonNullable<Context["message"]>): MediaCan
       fileId: message.voice.file_id,
       mediaType: message.voice.mime_type ?? "audio/ogg",
       ...(message.voice.file_size !== undefined ? { declaredSize: message.voice.file_size } : {}),
+      ...(message.voice.duration !== undefined ? { durationSec: message.voice.duration } : {}),
     });
   }
 
@@ -144,6 +162,7 @@ export function candidatesIn(message: NonNullable<Context["message"]>): MediaCan
       fileId: message.audio.file_id,
       mediaType: message.audio.mime_type ?? "audio/mpeg",
       ...(message.audio.file_size !== undefined ? { declaredSize: message.audio.file_size } : {}),
+      ...(message.audio.duration !== undefined ? { durationSec: message.audio.duration } : {}),
     });
   }
 

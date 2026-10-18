@@ -19,6 +19,11 @@
  *   - buildSystemPrompt is a pure function of its PromptContext: no
  *     randomness, no ambient clock, no map-order dependence. Given the same
  *     context object it returns byte-identical text.
+ *   - The bilingual-output `lang` field keeps this discipline: it is one more
+ *     deterministic input, normalized to exactly "fa"|"en" (anything else
+ *     reads as Persian), and a language switch legitimately moves the cache
+ *     breakpoint — a turn in English and a turn in Persian never share a
+ *     cached prefix, so no stale-language prompt is ever served.
  *   - BUT src/conversation/engine.ts rebuilds the context every turn with
  *     `now: this.now()` (a fresh Date), and the time block
  *     ("زمان فعلی: ...") embeds it. Two consecutive turns therefore differ
