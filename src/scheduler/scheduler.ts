@@ -24,6 +24,14 @@ import type { ReminderRepeat } from "../storage/storage";
 export interface ReminderDelivery {
   /** Telegram chat to send to. */
   chatId: string;
+  /**
+   * Owner the reminder belongs to.
+   *
+   * Supplied so the delivery path can re-check that access is still granted.
+   * A reminder set days ago must not keep talking to a user who has since been
+   * revoked.
+   */
+  userId: string;
   text: string;
 }
 
@@ -166,12 +174,20 @@ export class ReminderScheduler {
       const ok = await this.safeDeliver(reminder);
       if (ok) {
         delivered++;
+        // A one-off is done; a repeating one continues to its next occurrence.
         this.rearmIfRepeating(reminder, now);
       } else {
-        // Delivery failed. The row is already `fired`, so it will not be
-        // retried: retrying a Telegram send that was rejected would loop
-        // forever on a chat that blocked the bot.
+        // Delivery failed — a Telegram 5xx, a network blip, a rate limit.
+        //
+        // A ONE-OFF is left fired: retrying a send that was rejected outright
+        // would loop forever on a chat that blocked the bot.
+        //
+        // A REPEATING one is still re-armed. Skipping that would end the series
+        // permanently on a single transient failure, so a user who asked for a
+        // daily reminder would silently stop receiving it — a worse outcome
+        // than one missed occurrence.
         this.report(`reminder delivery failed: id=${reminder.id}`);
+        this.rearmIfRepeating(reminder, now);
       }
     }
 
@@ -205,6 +221,7 @@ export class ReminderScheduler {
     try {
       return await this.deliver({
         chatId: reminder.chatId,
+        userId: reminder.userId,
         text: `⏰ یادآوری: ${reminder.text}`,
       });
     } catch (err) {

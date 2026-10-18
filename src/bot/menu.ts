@@ -4,7 +4,7 @@ import { InlineKeyboard } from "grammy";
 export const MAIN_MENU_LABELS = {
   chat: "گفت‌وگو",
   tools: "ابزارها",
-  about: "درباره SOL",
+  about: "درباره بابی",
 } as const;
 
 /** Callback data identifiers — stable, machine-readable. */
@@ -16,9 +16,9 @@ export const CALLBACKS = {
 
 /** Initial placeholder replies for each menu section. */
 export const MENU_REPLIES: Record<(typeof CALLBACKS)[keyof typeof CALLBACKS], string> = {
-  [CALLBACKS.chat]: "گفت‌وگو: به‌زودی می‌توانی با SOL حرف بزنی.",
+  [CALLBACKS.chat]: "گفت‌وگو: به‌زودی می‌توانی با بابی حرف بزنی.",
   [CALLBACKS.tools]: "ابزارها: فهرست ابزارها در مرحلهٔ بعد اضافه می‌شود.",
-  [CALLBACKS.about]: `SOL — ربات ایجنت همه‌کاره. نسخهٔ آزمایشی.`,
+  [CALLBACKS.about]: `بابی — ربات ایجنت همه‌کاره. نسخهٔ آزمایشی.`,
 };
 
 /** Persian display names for the built-in tools. */
@@ -50,7 +50,7 @@ export function toolListText(activeTools: readonly string[]): string {
   }
   const items = activeTools.map((name, i) => `${i + 1}. ${TOOL_LABELS[name] ?? name}`);
   return [
-    "ابزارهای فعال SOL:",
+    "ابزارهای فعال بابی:",
     ...items,
     "",
     "فهرست بالا یعنی ابزارها در دسترس‌اند؛ اجرای هر کدام به مجوز شما بستگی دارد.",

@@ -164,7 +164,7 @@ function parseRepeat(raw: string | undefined): ReminderRepeat {
 // ---------- list_reminders ----------
 
 export interface ListRemindersInput {
-  /** Include reminders that already fired. */
+  /** Reserved; the store is a queue, so only pending reminders are listed. */
   includeFired?: boolean;
 }
 
@@ -183,22 +183,18 @@ export function createListRemindersTool(
 ): Tool<ListRemindersInput, ListRemindersOutput> {
   return {
     name: "list_reminders",
-    description: "یادآورهای فعال کاربر را فهرست کن.",
+    description: "یادآورهای فعال (در انتظار اجرا) کاربر را فهرست کن.",
     enabled: true,
     permission: { requires: [LIST_REMINDERS_PERMISSION] },
     input: {
-      fields: {
-        includeFired: {
-          type: "boolean",
-          description: "یادآورهای اجراشده هم نشان داده شوند.",
-        },
-      },
+      // No `includeFired` field: the store is the scheduler's queue, so a fired
+      // reminder is not retained as history. Offering the option would tell the
+      // model it can retrieve something that does not exist.
+      fields: {},
     },
 
     async run(_input: ListRemindersInput, ctx: ToolContext): Promise<ListRemindersOutput> {
       const userId = ownerOf(ctx);
-      // Only pending reminders are listed: a fired one is history, and the
-      // table is the scheduler's queue rather than a log.
       const rows = deps.storage.listReminders(userId, MAX_PENDING_PER_USER);
 
       return {

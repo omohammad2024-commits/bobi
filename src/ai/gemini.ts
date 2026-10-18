@@ -28,6 +28,7 @@ import type {
 } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
+import { selectParts, textWithPartNotes } from "./parts";
 
 export interface GeminiTarget extends AdapterTarget {
   settings?: AdapterSettings;
@@ -138,6 +139,28 @@ export function toWireMessage(m: ChatMessage): { role: string; parts: unknown[] 
     return { role: "model", parts };
   }
 
+  // A message with attachments becomes a parts array. This service accepts
+  // images, audio, and documents as `inlineData`, so all three travel natively
+  // rather than being described in the text.
+  const { sendable, dropped } = selectParts(m);
+  if (sendable.length > 0) {
+    const parts: unknown[] = [];
+    const text = textWithPartNotes(m);
+    if (text.length > 0) parts.push({ text });
+    for (const part of sendable) {
+      parts.push({
+        inlineData: { mimeType: part.mediaType, data: part.base64 },
+      });
+    }
+    return { role: m.role === "assistant" ? "model" : "user", parts };
+  }
+  if (dropped.length > 0) {
+    return {
+      role: m.role === "assistant" ? "model" : "user",
+      parts: [{ text: textWithPartNotes(m) }],
+    };
+  }
+
   return {
     role: m.role === "assistant" ? "model" : "user",
     parts: [{ text: m.content }],
@@ -148,17 +171,28 @@ export function toWireMessage(m: ChatMessage): { role: string; parts: unknown[] 
  * Request body. Exported so the wire format can be asserted without a network.
  */
 export function buildBody(target: GeminiTarget, req: CompletionRequest): Record<string, unknown> {
-  // Gemini's roles are "user" and "model"; system turns become systemInstruction.
+  // Gemini's roles are "user" and "model"; system turns become the single
+  // systemInstruction.
+  //
+  // They are concatenated, never overwritten. A conversation can legitimately
+  // carry more than one system turn — the prompt, plus a rolling summary of
+  // older history — and last-one-wins would discard the prompt entirely,
+  // dropping the tool rules and identity while promoting model-written summary
+  // text into the trusted instruction slot.
   const contents: Array<{ role: string; parts: unknown[] }> = [];
-  let systemText: string | undefined = target.settings?.systemPrompt;
+  const systemParts: string[] = [];
+  if (target.settings?.systemPrompt !== undefined && target.settings.systemPrompt.length > 0) {
+    systemParts.push(target.settings.systemPrompt);
+  }
 
   for (const m of req.messages) {
     if (m.role === "system") {
-      systemText = m.content;
+      if (m.content.length > 0) systemParts.push(m.content);
       continue;
     }
     contents.push(toWireMessage(m));
   }
+  const systemText = systemParts.length > 0 ? systemParts.join("\n\n") : undefined;
   if (contents.length === 0) {
     throw new AiError("invalid_response", "درخواست پیامی نداشت.");
   }

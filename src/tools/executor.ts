@@ -212,7 +212,7 @@ export class ToolExecutor {
     req: ExecuteRequest,
     started: number,
     err: unknown,
-    status: "invalid_input" | "not_allowed" | "error",
+    status: "invalid_input" | "not_allowed" | "not_found" | "error",
   ): ToolRunResult {
     this.report(req, started, err);
     const message =
@@ -246,17 +246,27 @@ function hasPermission(
 /**
  * Map an error kind a tool threw onto the status a caller sees.
  *
- * Only the kinds with a caller-facing meaning are preserved. Anything else —
- * a timeout, a rejected result, an internal fault — is reported as "error",
- * because the distinction between them is a diagnostic concern that belongs in
- * the log, not in a status the model would try to act on.
+ * The kinds preserved here are the ones a MODEL can act on: a request it
+ * malformed ("invalid_input"), something it may not do ("not_allowed"), and
+ * something that does not exist ("not_found" — how an adapter reports that the
+ * model named a tool the remote service never offered). Collapsing those into a
+ * generic "error" would tell the model "something broke, try again" when the
+ * truth is "you asked wrongly, change the request".
+ *
+ * Everything else — a timeout, a rejected result, an internal fault — stays
+ * "error", because the distinction is diagnostic and belongs in the log rather
+ * than in a status the model would try to act on.
  */
-function statusForKind(kind: ToolErrorKind): "invalid_input" | "not_allowed" | "error" {
+function statusForKind(
+  kind: ToolErrorKind,
+): "invalid_input" | "not_allowed" | "not_found" | "error" {
   switch (kind) {
     case "invalid_input":
       return "invalid_input";
     case "not_allowed":
       return "not_allowed";
+    case "not_found":
+      return "not_found";
     default:
       return "error";
   }

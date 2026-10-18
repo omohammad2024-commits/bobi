@@ -242,6 +242,44 @@ describe("Anthropic wire format", () => {
     expect(res.text).toBe("خب");
     expect(res.toolCalls).toBeUndefined();
   });
+
+  test("MULTIPLE system turns are concatenated, never overwritten", () => {
+    // A conversation legitimately carries more than one system turn: the prompt
+    // plus a rolling summary of older history. This service hoists them into a
+    // single `system` field, and an earlier version assigned rather than
+    // appended — so the prompt (identity, tool rules, tool list) was silently
+    // replaced by model-written summary text, which is also an injection
+    // escalation because that text derives from user content.
+    const body = buildAnthropicBody(TARGET, {
+      ...REQ,
+      messages: [
+        { role: "system", content: "PROMPT" },
+        { role: "system", content: "SUMMARY" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    const system = body["system"] as string;
+    expect(system).toContain("PROMPT");
+    expect(system).toContain("SUMMARY");
+    // The system turns must not also appear as messages.
+    expect((body["messages"] as unknown[]).length).toBe(1);
+  });
+
+  test("a configured systemPrompt is preserved alongside message system turns", () => {
+    const body = buildAnthropicBody(
+      { ...TARGET, settings: { systemPrompt: "OWNER_PROMPT" } },
+      {
+        ...REQ,
+        messages: [
+          { role: "system", content: "SUMMARY" },
+          { role: "user", content: "hi" },
+        ],
+      },
+    );
+    const system = body["system"] as string;
+    expect(system).toContain("OWNER_PROMPT");
+    expect(system).toContain("SUMMARY");
+  });
 });
 
 // ---------- Gemini ----------
@@ -301,6 +339,40 @@ describe("Gemini wire format", () => {
     const res = parseGemini({ candidates: [{ content: { parts: [{ text: "سلام" }] } }] }, "m");
     expect(res.text).toBe("سلام");
     expect(res.toolCalls).toBeUndefined();
+  });
+
+  test("MULTIPLE system turns are concatenated, never overwritten", () => {
+    // Same failure mode as the Anthropic adapter: this service has one
+    // systemInstruction slot, and assigning per system turn would discard the
+    // real prompt in favour of a history summary.
+    const body = buildGeminiBody(TARGET, {
+      ...REQ,
+      messages: [
+        { role: "system", content: "PROMPT" },
+        { role: "system", content: "SUMMARY" },
+        { role: "user", content: "hi" },
+      ],
+    });
+    const instruction = body["systemInstruction"] as { parts: Array<{ text: string }> };
+    expect(instruction.parts[0]!.text).toContain("PROMPT");
+    expect(instruction.parts[0]!.text).toContain("SUMMARY");
+    expect((body["contents"] as unknown[]).length).toBe(1);
+  });
+
+  test("a configured systemPrompt is preserved alongside message system turns", () => {
+    const body = buildGeminiBody(
+      { ...TARGET, settings: { systemPrompt: "OWNER_PROMPT" } },
+      {
+        ...REQ,
+        messages: [
+          { role: "system", content: "SUMMARY" },
+          { role: "user", content: "hi" },
+        ],
+      },
+    );
+    const instruction = body["systemInstruction"] as { parts: Array<{ text: string }> };
+    expect(instruction.parts[0]!.text).toContain("OWNER_PROMPT");
+    expect(instruction.parts[0]!.text).toContain("SUMMARY");
   });
 });
 

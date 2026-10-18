@@ -1,5 +1,5 @@
 /**
- * ToolService — the central place SOL registers its default tools and the
+ * ToolService — the central place BOBI registers its default tools and the
  * internal API used to run them.
  *
  * Design notes:

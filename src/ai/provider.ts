@@ -2,7 +2,7 @@
  * Stable contract for an AI provider — independent of any vendor SDK.
  * The conversation engine depends only on this interface.
  *
- * Tool calling is part of this contract because every service SOL talks to
+ * Tool calling is part of this contract because every service BOBI talks to
  * expresses it differently on the wire: OpenAI-compatible endpoints nest a
  * JSON *string* under `tool_calls`, Anthropic emits typed content blocks, and
  * Gemini uses `functionCall` parts. Keeping one neutral shape here means the
@@ -34,15 +34,93 @@ export interface ToolCall {
   arguments: unknown;
 }
 
+/**
+ * One piece of a message that is not plain text.
+ *
+ * Deliberately additive: `ChatMessage.content` stays a string, so every existing
+ * path — history storage, the transcript, tool results — keeps working
+ * unchanged. Attachments ride alongside as `parts`, which is what makes a photo
+ * or a voice note expressible without rewriting the conversation model.
+ *
+ * Binary data is carried as base64 rather than a Buffer because this shape has
+ * to survive being JSON-serialised between the bot and an adapter; a Buffer
+ * would silently become an object with numeric keys.
+ */
+export type ContentPart =
+  | { type: "text"; text: string }
+  | { type: "image"; mediaType: string; base64: string }
+  /** Raw audio, for a provider that transcribes or reasons over it directly. */
+  | { type: "audio"; mediaType: string; base64: string }
+  | { type: "document"; mediaType: string; base64: string; name?: string };
+
 export interface ChatMessage {
   role: ChatRole;
+  /**
+   * The message's text.
+   *
+   * Always present, possibly empty when the turn is only an attachment — a
+   * caption-less photo is a real case, and a union type would force every
+   * consumer to narrow before reading it.
+   */
   content: string;
+  /**
+   * Non-text attachments, in order.
+   *
+   * Absent means "text only". When present, `content` still holds the text, so a
+   * consumer that cannot handle attachments still sees the words.
+   */
+  parts?: readonly ContentPart[];
   /** Set on an assistant turn that requested tools instead of answering. */
   toolCalls?: readonly ToolCall[];
   /** Set on a "tool" turn: which call this result answers. */
   toolCallId?: string;
   /** Set on a "tool" turn: the tool that produced it. */
   toolName?: string;
+}
+
+/**
+ * The parts of a message, as an explicit list.
+ *
+ * A text-only message yields one text part, so an adapter can iterate
+ * uniformly instead of special-casing the common shape.
+ */
+export function partsOf(message: ChatMessage): ContentPart[] {
+  if (message.parts !== undefined && message.parts.length > 0) {
+    // Keep the text alongside any attachments; a caption is part of the turn.
+    return message.content.length > 0
+      ? [{ type: "text", text: message.content }, ...message.parts]
+      : [...message.parts];
+  }
+  return message.content.length > 0 ? [{ type: "text", text: message.content }] : [];
+}
+
+/** True when a message carries anything beyond text. */
+export function hasAttachments(message: ChatMessage): boolean {
+  return message.parts !== undefined && message.parts.length > 0;
+}
+
+/**
+ * Ceiling on one attachment, in bytes of decoded data.
+ *
+ * Providers cap uploads themselves, but at different sizes and with unhelpful
+ * errors. Checking here means an over-large attachment is refused with a clear
+ * message instead of a provider failure partway through a run.
+ */
+export const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+/** Attachment types BOBI will carry, mapped from a MIME type. */
+export function partTypeForMediaType(mediaType: string): ContentPart["type"] | undefined {
+  const type = mediaType.split(";")[0]!.trim().toLowerCase();
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("audio/")) return "audio";
+  if (type === "application/pdf") return "document";
+  return undefined;
+}
+
+/** Estimated decoded size of a base64 payload, without decoding it. */
+export function base64Bytes(base64: string): number {
+  const padding = base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0;
+  return Math.floor((base64.length * 3) / 4) - padding;
 }
 
 /** Token counts a provider reported, when it reports any. */

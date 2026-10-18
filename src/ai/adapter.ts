@@ -81,7 +81,7 @@ export interface ListModelsRequest {
 }
 
 /**
- * Adapters SOL ships with.
+ * Adapters BOBI ships with.
  *
  * These are CONNECTION TEMPLATES, not claims of a tested live endpoint: each
  * entry says how the request is shaped, and only the adapters actually
@@ -96,7 +96,7 @@ export const ADAPTER_TYPES = [
 
 export type AdapterType = (typeof ADAPTER_TYPES)[number];
 
-/** True when a string is one of the adapters SOL knows. */
+/** True when a string is one of the adapters BOBI knows. */
 export function isAdapterType(value: string): value is AdapterType {
   return (ADAPTER_TYPES as readonly string[]).includes(value);
 }

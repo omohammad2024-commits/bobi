@@ -13,7 +13,7 @@
  *
  * Reusing them is also why the local-target exception defaults to OFF here:
  * `resolveTarget` refuses loopback and RFC1918 unless explicitly allowed, so a
- * model cannot ask SOL to read an internal service.
+ * model cannot ask BOBI to read an internal service.
  *
  * Text extraction is delegated to `html.ts`. This module adds only what is
  * specific to fetching a page: a content-type allow-list, a redirect policy, and
@@ -29,9 +29,17 @@ import type { Tool, ToolContext } from "./types";
 
 export const FETCH_URL_PERMISSION = "tools:fetch_url";
 
-/** Content types this tool will read. Anything else is refused, not guessed at. */
+/**
+ * Content types this tool will read. Anything else is refused, not guessed at.
+ *
+ * `application/xhtml+xml` is included because the request's `accept` header
+ * advertises it: a server that honours the header would otherwise return a type
+ * this tool rejects, which is a self-inflicted failure. The extractor handles it
+ * as markup, the same as HTML.
+ */
 const READABLE_TYPES = [
   "text/html",
+  "application/xhtml+xml",
   "text/plain",
   "application/json",
   "application/xml",
@@ -114,7 +122,7 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
     const limit = input.maxChars ?? MAX_TEXT_CHARS;
     // A JSON or XML body is already text; running the HTML extractor over it
     // would strip the payload as if it were markup.
-    const isMarkup = contentType === "text/html";
+    const isMarkup = contentType === "text/html" || contentType === "application/xhtml+xml";
     const body = decodeBody(result.body, result.contentType ?? "");
 
     const text =
@@ -210,7 +218,7 @@ async function fetchWithRedirects(startUrl: string, signal: AbortSignal): Promis
  * Apply the SSRF policy to one hop's URL.
  *
  * `allowLocalTargets` is deliberately not passed, so the default (public-only)
- * policy applies: a model cannot point SOL at an internal address.
+ * policy applies: a model cannot point BOBI at an internal address.
  */
 async function resolveAndAllow(
   url: string,
@@ -251,7 +259,7 @@ async function send(
       method: "GET",
       headers: {
         accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9",
-        "user-agent": "SOL/0.0.1 (+agent)",
+        "user-agent": "BOBI/0.0.1 (+agent)",
         "accept-language": "fa,en;q=0.8",
       },
       timeoutMs: DEFAULT_TIMEOUT_MS,
@@ -296,19 +304,25 @@ function mapAiError(err: AiError): "timeout" | "invalid_input" | "internal" {
   }
 }
 
-/** Decode a body according to its declared charset, when it is a simple one. */
+/**
+ * The body as text.
+ *
+ * No re-decoding happens here, and that is deliberate: the transport already
+ * produced a JavaScript string by decoding the bytes as UTF-8. A legacy charset
+ * cannot be recovered from it — every byte ≥ 0x80 has already become U+FFFD, so
+ * a "convert from windows-1256" step would re-encode those replacement
+ * characters and yield mojibake, not the original text.
+ *
+ * A page that declares a non-UTF-8 charset therefore reads with replacement
+ * characters for its non-ASCII run. Decoding it correctly would mean changing
+ * the transport to hand back raw bytes, which is a larger change than this tool
+ * warrants; the honest behaviour is to return what was actually received.
+ *
+ * `fetch_url` favours UTF-8 pages for this reason, and Persian content served
+ * as UTF-8 — which is the norm — is unaffected.
+ */
 function decodeBody(body: string, contentType: string): string {
-  const charset = /charset=["']?([\w-]+)/i.exec(contentType)?.[1]?.toLowerCase();
-  if (charset === undefined || charset === "utf-8" || charset === "utf8") return body;
-  // Only the encodings that matter in practice for Persian/Arabic content are
-  // converted; anything else is read as UTF-8 rather than guessed at.
-  if (charset === "windows-1256" || charset === "iso-8859-6") {
-    try {
-      return new TextDecoder(charset).decode(Buffer.from(body, "binary"));
-    } catch {
-      return body;
-    }
-  }
+  void contentType;
   return body;
 }
 

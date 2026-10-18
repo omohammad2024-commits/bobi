@@ -3,7 +3,7 @@
  *
  * The engine keeps a bounded window of recent turns. Before this existed, the
  * oldest turns simply fell out of that window and were gone — a user who
- * mentioned something fifty messages ago would find SOL had no memory of it,
+ * mentioned something fifty messages ago would find BOBI had no memory of it,
  * with nothing to indicate the loss.
  *
  * Instead, when the window is exceeded the turns that would have been dropped
@@ -30,7 +30,6 @@ export const MAX_SUMMARY_CHARS = 2_000;
 
 /** The summariser's own budget — small, because it is housekeeping. */
 const SUMMARY_TIMEOUT_MS = 20_000;
-const SUMMARY_MAX_TOKENS_HINT = 500;
 
 export interface SummariseOptions {
   provider: AiProvider;
@@ -96,7 +95,7 @@ function buildSummarisePrompt(
   previous: string | undefined,
 ): string {
   const transcript = turns
-    .map((m) => `${m.role === "user" ? "کاربر" : "SOL"}: ${m.content}`)
+    .map((m) => `${m.role === "user" ? "کاربر" : "BOBI"}: ${m.content}`)
     .join("\n");
 
   const parts = [
@@ -157,5 +156,3 @@ export function splitHistory(
   };
 }
 
-/** Token budget hint, exported so a caller can pass it to an adapter. */
-export const SUMMARY_MAX_TOKENS = SUMMARY_MAX_TOKENS_HINT;

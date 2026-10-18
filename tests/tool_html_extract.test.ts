@@ -34,6 +34,59 @@ describe("script and style removal", () => {
     expect(text).toContain("ok");
   });
 
+  test("a fake close followed by an INLINE tag still leaks nothing", () => {
+    // The harder version of the case above, and one that shipped broken: an
+    // inline tag like <b> is exactly what appears inside a JavaScript string, so
+    // it must not be treated as the end of the suppressed run.
+    const html = `<script>x="</script>"; a=<b>SECRET</b>; y</script><p>ok</p>`;
+    const text = htmlToText(html);
+    expect(text).not.toContain("SECRET");
+    expect(text).toContain("ok");
+  });
+
+  test("a fake close followed by several inline tags still leaks nothing", () => {
+    const html = `<script>s="</script>"; x=<i>P1</i>+<u>P2</u>+<em>P3</em>;</script><p>done</p>`;
+    const text = htmlToText(html);
+    for (const leaked of ["P1", "P2", "P3"]) expect(text).not.toContain(leaked);
+    expect(text).toContain("done");
+  });
+
+  test("a self-closing <script/> still swallows its body", () => {
+    // `<script/>` is invalid HTML, but a browser treats the following text as
+    // the script's body — so it must not be read as "an empty script" that
+    // lets the JavaScript through as page prose.
+    const html = `<p>Intro</p><script/>var apiKey="ABC";doStuff()</script><p>After</p>`;
+    const text = htmlToText(html);
+    expect(text).not.toContain("apiKey");
+    expect(text).not.toContain("doStuff");
+    expect(text).toContain("Intro");
+    expect(text).toContain("After");
+  });
+
+  test("a self-closing <style/> still swallows its body", () => {
+    const html = `<p>A</p><style/>.x{color:red}</style><p>B</p>`;
+    const text = htmlToText(html);
+    expect(text).not.toContain("color");
+    expect(text).toContain("A");
+    expect(text).toContain("B");
+  });
+
+  test("an unclosed <head> does not swallow the document", () => {
+    // HTML5 closes <head> implicitly at <body>, and pages routinely omit the
+    // closing tag. Without that rule the whole page extracts to nothing and
+    // fetch_url reports "no text found" for a perfectly ordinary page.
+    const text = htmlToText(`<html><head><title>T</title><body><p>Real content</p>`);
+    expect(text).toContain("Real content");
+    expect(text).not.toContain("T");
+  });
+
+  test("suppression resumes at a block boundary", () => {
+    // A block element is a real structural boundary, so prose after one is
+    // genuine page text rather than a script fragment.
+    const html = `<script>s="</script>"; leftover;</script><div>Real prose</div>`;
+    expect(htmlToText(html)).toContain("Real prose");
+  });
+
   test("angled brackets inside a style body do not leak", () => {
     const html = `<style>a::after{content:"<b>"}</style><p>ok</p>`;
     const text = htmlToText(html);
@@ -213,6 +266,49 @@ describe("truncation", () => {
     // The cut lands on a space, so no partial word is left dangling.
     expect(text.slice(0, -1).trimEnd()).toBe(text.slice(0, -1).trimEnd().trim());
     expect(text).not.toMatch(/alph…$/);
+  });
+});
+
+describe("performance", () => {
+  test("a tag-heavy page extracts in linear time, not quadratic", () => {
+    // The extractor runs synchronously on the request path, so a slow scan is
+    // not merely inefficient: it blocks the whole process, including every
+    // other chat and the reminder scheduler, and the tool timeout cannot
+    // preempt synchronous code.
+    //
+    // An earlier version searched an open-element stack on every closing tag,
+    // which is O(n²): 40k tags took ~4.2 s, so a 2 MB page would have frozen
+    // the bot for minutes. The bound below is loose enough not to be flaky on a
+    // slow machine, and tight enough that a return to quadratic fails.
+    const n = 50_000;
+    const html = "<a>".repeat(n) + "</b>".repeat(n);
+
+    const started = performance.now();
+    htmlToText(html);
+    const elapsed = performance.now() - started;
+
+    expect(elapsed).toBeLessThan(2_000);
+  });
+
+  test("doubling the input does not quadruple the time", () => {
+    // The shape of the curve, not an absolute number: this is what actually
+    // distinguishes linear from quadratic and stays meaningful on any hardware.
+    const build = (n: number) => "<a>".repeat(n) + "</b>".repeat(n);
+
+    // Warm up so the first call does not pay one-off JIT cost.
+    htmlToText(build(1_000));
+
+    const time = (n: number): number => {
+      const html = build(n);
+      const t0 = performance.now();
+      htmlToText(html);
+      return performance.now() - t0;
+    };
+
+    const small = Math.max(time(20_000), 1);
+    const large = time(80_000);
+    // Linear would be ~4×; quadratic would be ~16×. The threshold sits between.
+    expect(large / small).toBeLessThan(10);
   });
 });
 

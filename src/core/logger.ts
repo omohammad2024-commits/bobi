@@ -2,7 +2,7 @@
  * Structured logging.
  *
  * Before this, every diagnostic went through a bare `console.error`, which had
- * three problems: the configured `SOL_LOG_LEVEL` was read and then ignored, a
+ * three problems: the configured log level was read and then ignored, a
  * debug build and a production build produced identical noise, and nothing
  * stopped a caller from pasting a token or a message body into a log line.
  *

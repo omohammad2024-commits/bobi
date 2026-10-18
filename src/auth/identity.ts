@@ -1,5 +1,5 @@
 /**
- * Owner identity — the single source of truth for who owns SOL.
+ * Owner identity — the single source of truth for who owns BOBI.
  *
  * The owner is a Telegram NUMERIC USER ID supplied by configuration. It is
  * never inferred from anything a person or a model can type:

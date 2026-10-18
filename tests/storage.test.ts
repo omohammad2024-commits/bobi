@@ -143,6 +143,92 @@ describe("engine with persistent storage", () => {
     db.close();
   });
 
+  test("compaction is incremental: a long conversation does not summarise every turn", async () => {
+    // This is a cost regression guard. An earlier version re-summarised the
+    // whole prior conversation on EVERY message once the window filled, which
+    // silently doubled the provider spend of a chatty conversation.
+    //
+    // With a 20-message window and 6 messages landing per turn, a 5-turn run
+    // should need at most a couple of summarisation calls — not one per turn.
+    const db = openMemory();
+    for (let i = 0; i < 30; i++) {
+      db.appendMessage("u1", "c1", "user", `old${i}`);
+      db.appendMessage("u1", "c1", "assistant", `reply${i}`);
+    }
+
+    let summaryCalls = 0;
+    const provider = {
+      name: "sim",
+      async complete(req: { messages: Array<{ role: string }>; model: string }) {
+        if (req.messages.length === 1) {
+          summaryCalls++;
+          return { text: "خلاصه", model: "m" };
+        }
+        return { text: "جواب", model: "m" };
+      },
+    };
+
+    const engine = new ConversationEngine({
+      provider, model: "m", timeoutMs: 1000, maxConcurrent: 1, storage: db, historyLimit: 20,
+    });
+    for (let i = 0; i < 5; i++) {
+      await engine.respond({ conversationId: "c1", userId: "u1", userText: `new${i}` });
+    }
+
+    expect(summaryCalls).toBeGreaterThan(0);
+    // The hard ceiling: strictly fewer summarisations than turns. A per-turn
+    // implementation would be exactly 5.
+    expect(summaryCalls).toBeLessThan(5);
+
+    db.close();
+  });
+
+  test("the summary and its watermark survive a reopen", async () => {
+    // The summary covers turns that are no longer in the window; losing it on
+    // restart would drop them permanently.
+    const db = openMemory();
+    db.setConversationSummary({
+      userId: "u1",
+      chatId: "c1",
+      summary: "خلاصهٔ قبلی",
+      summarisedUntil: 42,
+    });
+
+    const stored = db.getConversationSummary("u1", "c1");
+    expect(stored?.summary).toBe("خلاصهٔ قبلی");
+    expect(stored?.summarisedUntil).toBe(42);
+
+    // Another user cannot read it.
+    expect(db.getConversationSummary("u2", "c1")).toBeUndefined();
+    db.close();
+  });
+
+  test("only messages past the watermark are offered for summarising", () => {
+    const db = openMemory();
+    // Ten messages; the window keeps the last 4, so ids 1..6 overflow.
+    const ids: number[] = [];
+    for (let i = 0; i < 10; i++) {
+      ids.push(db.appendMessage("u1", "c1", "user", `m${i}`));
+    }
+
+    // Nothing summarised yet: the first six overflow.
+    const first = db.unsummarisedMessages("u1", "c1", 0, 4);
+    expect(first).toHaveLength(6);
+
+    // After summarising through id 3, only the remainder is offered.
+    const rest = db.unsummarisedMessages("u1", "c1", ids[2]!, 4);
+    expect(rest).toHaveLength(3);
+    expect(rest[0]!.id).toBe(ids[3]!);
+
+    // Once the watermark reaches the boundary, nothing is left.
+    expect(db.unsummarisedMessages("u1", "c1", ids[5]!, 4)).toHaveLength(0);
+
+    // Another user's conversation is never returned.
+    expect(db.unsummarisedMessages("u2", "c1", 0, 4)).toHaveLength(0);
+
+    db.close();
+  });
+
   test("a failed summarisation still lets the turn succeed", async () => {
     const db = openMemory();
     for (let i = 0; i < 20; i++) db.appendMessage("u1", "c1", "user", `old${i}`);

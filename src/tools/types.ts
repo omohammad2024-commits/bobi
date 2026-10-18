@@ -1,5 +1,5 @@
 /**
- * Tool contract — the shared vocabulary for every SOL tool.
+ * Tool contract — the shared vocabulary for every BOBI tool.
  *
  * Rules enforced by these types:
  * - A tool has a unique, stable name and a description the model can read.
@@ -36,7 +36,22 @@ export interface ToolRunResult<T = unknown> {
  * Declarative, codec-friendly input schema.
  * Untrusted input is checked against this BEFORE the tool body runs.
  */
-export type FieldType = "string" | "number" | "integer" | "boolean" | "enum" | "array";
+export type FieldType =
+  | "string"
+  | "number"
+  | "integer"
+  | "boolean"
+  | "enum"
+  | "array"
+  /**
+   * A free-form object bag, passed through without field-level validation.
+   *
+   * Used by adapters that front another protocol (MCP, say), where the remote
+   * service is the authority on its own argument shapes. A declarative spec
+   * cannot express an arbitrary JSON Schema, and a lossy translation in front of
+   * an untrusted server would be worse than leaving validation to it.
+   */
+  | "object";
 
 export interface FieldSpec {
   type: FieldType;
@@ -71,7 +86,7 @@ export interface ToolPermission {
   readonly requires: readonly string[];
 }
 
-/** A SOL tool. Implementations are pure and side-effect free by contract. */
+/** A BOBI tool. Implementations are pure and side-effect free by contract. */
 export interface Tool<TIn, TOut> {
   /** Unique, stable, lowercase snake_case identifier. */
   readonly name: string;

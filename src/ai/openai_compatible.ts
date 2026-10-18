@@ -29,6 +29,8 @@ import {
 import type { AdapterTarget } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
+import { dataUrl, selectParts, textWithPartNotes } from "./parts";
+import type { SendablePart } from "./parts";
 
 export interface OpenAITarget extends AdapterTarget {
   /** Owner-tunable settings. Only known keys are honored. */
@@ -187,7 +189,43 @@ function toWireMessage(m: ChatMessage): Record<string, unknown> {
     };
   }
 
+  // A message with attachments becomes a content ARRAY. This service requires
+  // that form for images, and an unsupported attachment is described in the text
+  // so the model at least learns it was sent.
+  const { sendable, dropped } = selectParts(m);
+  if (sendable.length > 0) {
+    return { role: m.role, content: contentArray(m, sendable) };
+  }
+  if (dropped.length > 0) {
+    return { role: m.role, content: textWithPartNotes(m) };
+  }
+
   return { role: m.role, content: m.content };
+}
+
+/**
+ * Build the multimodal content array.
+ *
+ * Images use the `image_url` form with an inline data URL, which is the shape
+ * this family of services accepts without a separate upload step. Audio has no
+ * portable representation here, so it is named in the text instead of being sent
+ * as a part the endpoint would reject.
+ */
+function contentArray(m: ChatMessage, sendable: readonly SendablePart[]): unknown[] {
+  const out: unknown[] = [];
+  const text = textWithPartNotes(m);
+  if (text.length > 0) out.push({ type: "text", text });
+
+  for (const part of sendable) {
+    if (part.type === "image") {
+      out.push({ type: "image_url", image_url: { url: dataUrl(part) } });
+    } else {
+      // Named rather than sent: this adapter has no wire form for audio or a
+      // document, and a fabricated one would be rejected by the endpoint.
+      out.push({ type: "text", text: `[پیوست ${part.type}: ${part.mediaType} ارسال نشد]` });
+    }
+  }
+  return out;
 }
 
 /** This service expects `arguments` as a JSON *string*, not an object. */

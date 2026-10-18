@@ -33,7 +33,7 @@ export interface EncryptedSecret {
 
 /** Shown when the master key is absent; safe to display. */
 export const MISSING_KEY_MESSAGE =
-  "کلید رمزنگاری اعتبارنامه‌ها تنظیم نشده است. آن را در متغیر محیطی SOL_AI_KEY_MASTER_KEY تنظیم و دوباره تلاش کنید.";
+  "کلید رمزنگاری اعتبارنامه‌ها تنظیم نشده است. آن را در متغیر محیطی BOBI_AI_KEY_MASTER_KEY تنظیم و دوباره تلاش کنید.";
 
 export class SecretStoreError extends Error {
   constructor(

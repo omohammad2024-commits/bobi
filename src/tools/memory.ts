@@ -2,7 +2,7 @@
  * Long-term memory tools — remember, recall, forget.
  *
  * The model decides what is worth keeping, which is why these are tools rather
- * than automatic behaviour: SOL has no reliable way to know that "اسم پروژه‌م
+ * than automatic behaviour: BOBI has no reliable way to know that "اسم پروژه‌م
  * سول است" matters and "سلام" does not.
  *
  * Isolation is enforced in storage, not here: every method takes the owner id

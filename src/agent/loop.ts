@@ -1,8 +1,8 @@
 /**
  * The agent loop — model → tools → model → answer.
  *
- * This is what turns SOL from a chat bot into an agent: the model chooses which
- * registered tool to run, SOL executes it through the authorized Executor, feeds
+ * This is what turns BOBI from a chat bot into an agent: the model chooses which
+ * registered tool to run, BOBI executes it through the authorized Executor, feeds
  * the result back, and repeats until the model answers.
  *
  * Design rules that are load-bearing:
@@ -58,6 +58,14 @@ export const DEFAULT_BUDGETS: AgentBudgets = {
   maxToolCalls: 12,
   totalTimeoutMs: 120_000,
 };
+
+/**
+ * Allowance for the final, tool-free answer when the wall clock has run out.
+ *
+ * Without this the "always answer" branch would hand the provider a 1ms
+ * deadline and fail instead of replying.
+ */
+const FINAL_ANSWER_GRACE_MS = 20_000;
 
 export interface AgentLoopOptions {
   provider: AiProvider;
@@ -172,18 +180,42 @@ export class AgentLoop {
 
         // Final call with no tools: the model must answer from what it has,
         // rather than the user being left with nothing.
-        const final = await this.call(input, messages, [], startedAt);
-        usage = addUsage(usage, final);
-        messages.push({ role: "assistant", content: final.text });
+        //
+        // When the WALL CLOCK is what ran out, this call gets its own small
+        // allowance rather than the remaining budget — which is zero, and would
+        // produce a 1ms deadline that aborts before the provider can answer.
+        // The user asked a question; failing with a timeout instead of a
+        // best-effort reply is the one outcome this branch exists to avoid.
+        const graceMs = outOfTime ? FINAL_ANSWER_GRACE_MS : 0;
 
-        return {
-          text: nonEmpty(final.text),
-          model: final.model,
-          stopReason: "budget_exhausted",
-          steps,
-          toolCallsExecuted: executed,
-          usage,
-        };
+        try {
+          const final = await this.call(input, messages, [], startedAt, graceMs);
+          usage = addUsage(usage, final);
+          messages.push({ role: "assistant", content: final.text });
+
+          return {
+            text: nonEmpty(final.text),
+            model: final.model,
+            stopReason: "budget_exhausted",
+            steps,
+            toolCallsExecuted: executed,
+            usage,
+          };
+        } catch (err) {
+          // The grace call failed too. Return what was gathered rather than
+          // surfacing a provider error for a run that did real work.
+          if (outOfTime && !input.signal.aborted) {
+            return {
+              text: "برای این پاسخ وقت کافی نداشتم؛ اگر لازم است دقیق‌تر بپرس.",
+              model: this.model,
+              stopReason: "budget_exhausted",
+              steps,
+              toolCallsExecuted: executed,
+              usage,
+            };
+          }
+          throw err;
+        }
       }
 
       iteration++;
@@ -306,9 +338,11 @@ export class AgentLoop {
     messages: ChatMessage[],
     tools: readonly ToolSpec[],
     startedAt: number,
+    graceMs = 0,
   ): Promise<CompletionResponse> {
     const remaining = this.budgets.totalTimeoutMs - (this.now() - startedAt);
-    const timeoutMs = Math.max(1, Math.min(this.callTimeoutMs, remaining));
+    const allowance = remaining > 0 ? remaining : graceMs;
+    const timeoutMs = Math.max(1, Math.min(this.callTimeoutMs, allowance));
 
     // The caller's signal only covers cancellation, so the deadline is armed
     // here too — a provider that ignores `timeoutMs` cannot hang the run. The

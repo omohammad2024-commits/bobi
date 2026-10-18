@@ -71,6 +71,15 @@ export interface AiModelRow {
   updatedAt: number;
 }
 
+/** A conversation's rolling summary plus how far it reaches. */
+export interface ConversationSummary {
+  summary: string;
+  /** Id of the last message folded into the summary. */
+  summarisedUntil: number;
+  /** unix ms */
+  updatedAt: number;
+}
+
 /** Daily usage counters. Counts only — never message content. */
 export interface UsageRecord {
   /** Owner id, or "*" for an aggregate row. */
@@ -302,6 +311,25 @@ CREATE TABLE IF NOT EXISTS search_credentials (
   updated_at INTEGER NOT NULL
 );
 
+-- Rolling summary of a conversation's older turns, plus a watermark.
+--
+-- The summarised_until column is the id of the last message folded into the
+-- summary. It is what makes compaction incremental: each turn summarises only the messages
+-- that have overflowed the window since the last pass, instead of re-summarising
+-- the whole prior conversation. Without a watermark the bot pays for a second
+-- model call on every single message once a conversation grows past its window.
+--
+-- Stored rather than kept in memory so a restart does not lose the summary —
+-- losing it would permanently drop the older turns it covers.
+CREATE TABLE IF NOT EXISTS conversation_summaries (
+  user_id          TEXT NOT NULL,
+  chat_id          TEXT NOT NULL,
+  summary          TEXT NOT NULL,
+  summarised_until INTEGER NOT NULL,
+  updated_at       INTEGER NOT NULL,
+  PRIMARY KEY (user_id, chat_id)
+);
+
 -- Daily usage counters, one row per (owner, day). Token counts let the owner
 -- see what the agent actually costs; tool_calls and requests show where the
 -- spend comes from. Only counts are stored — never message content.
@@ -428,13 +456,22 @@ CREATE INDEX IF NOT EXISTS idx_failover_order ON ai_failover_candidates(position
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 10;
+export const SCHEMA_VERSION = 11;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
  * which bounds file growth without an external scheduler.
  */
 const AUDIT_MAX_ROWS = 5000;
+
+/**
+ * Most messages folded into one summary pass.
+ *
+ * Bounded so a backlog (after an outage, or after a long gap) is summarised in
+ * several affordable calls rather than one that may exceed the model's context
+ * and then be retried forever without ever succeeding.
+ */
+const MAX_SUMMARY_BATCH = 40;
 
 export class Storage {
   private db: Database;
@@ -856,6 +893,99 @@ export class Storage {
             [Date.now(), userId, onlyIf],
           );
     return res.changes > 0;
+  }
+
+  // ---- conversation summaries ----
+
+  /** The stored rolling summary for a conversation, if one exists. */
+  getConversationSummary(userId: string, chatId: string): ConversationSummary | undefined {
+    const row = this.query<{
+      summary: string;
+      summarised_until: number;
+      updated_at: number;
+    }>(
+      `SELECT summary, summarised_until, updated_at
+         FROM conversation_summaries WHERE user_id=? AND chat_id=?`,
+      [userId, chatId],
+    )[0];
+    if (!row) return undefined;
+    return {
+      summary: row.summary,
+      summarisedUntil: row.summarised_until,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  /** Store (or replace) a conversation's rolling summary and watermark. */
+  setConversationSummary(s: {
+    userId: string;
+    chatId: string;
+    summary: string;
+    summarisedUntil: number;
+  }): void {
+    this.exec(
+      `INSERT INTO conversation_summaries(user_id, chat_id, summary, summarised_until, updated_at)
+       VALUES(?,?,?,?,?)
+       ON CONFLICT(user_id, chat_id) DO UPDATE SET
+         summary=excluded.summary,
+         summarised_until=excluded.summarised_until,
+         updated_at=excluded.updated_at`,
+      [s.userId, s.chatId, s.summary, s.summarisedUntil, Date.now()],
+    );
+  }
+
+  /** Drop a conversation's rolling summary. */
+  clearConversationSummary(userId: string, chatId: string): boolean {
+    return (
+      this.exec(`DELETE FROM conversation_summaries WHERE user_id=? AND chat_id=?`, [
+        userId,
+        chatId,
+      ]).changes > 0
+    );
+  }
+
+  /**
+   * Messages that overflow the window and are not yet summarised.
+   *
+   * This is the incremental read that replaces re-summarising the whole prior
+   * conversation: only rows after the watermark are returned, so each message
+   * is folded into the summary exactly once.
+   *
+   * `keepLast` messages are excluded, because those still fit in the window and
+   * belong to the model verbatim rather than to the summary.
+   */
+  unsummarisedMessages(
+    userId: string,
+    chatId: string,
+    summarisedUntil: number,
+    keepLast: number,
+  ): StoredMessage[] {
+    const conv = this.query<{ id: number }>(
+      `SELECT id FROM conversations WHERE user_id=? AND chat_id=?`,
+      [userId, chatId],
+    )[0];
+    if (!conv) return [];
+
+    // The id of the newest message that still fits in the window. Everything
+    // strictly below it is overflow.
+    const boundary = this.query<{ id: number }>(
+      `SELECT id FROM messages WHERE conversation_id=? ORDER BY id DESC LIMIT 1 OFFSET ?`,
+      [conv.id, Math.max(0, keepLast - 1)],
+    )[0];
+    if (!boundary) return [];
+
+    // Bounded on purpose. An outage can leave a large backlog unsummarised; a
+    // batch that grew without limit would eventually be too big to summarise
+    // at all, and every subsequent turn would retry that impossible call
+    // forever. Taking the oldest chunk first guarantees the watermark can
+    // always advance.
+    return this.query<StoredMessage>(
+      `SELECT id, conversation_id AS conversationId, role, content, created_at AS createdAt
+         FROM messages
+        WHERE conversation_id=? AND id>? AND id<?
+        ORDER BY id ASC LIMIT ?`,
+      [conv.id, summarisedUntil, boundary.id, MAX_SUMMARY_BATCH],
+    );
   }
 
   // ---- usage ----

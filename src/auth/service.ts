@@ -1,6 +1,6 @@
 /**
  * AuthorizationService — binds the OwnerIdentity to the role policy and is
- * the object the rest of SOL depends on.
+ * the object the rest of BOBI depends on.
  *
  * It exposes the two central entry points used everywhere:
  *   isOwner(actor) — "is this the owner?"
@@ -84,7 +84,7 @@ export class AuthorizationService implements AuthorizationPolicy {
     });
   }
 
-  /** True when a permission string is one SOL recognizes. */
+  /** True when a permission string is one BOBI recognizes. */
   isKnownPermission(value: string): boolean {
     return isPermission(value);
   }

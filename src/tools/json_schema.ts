@@ -2,7 +2,7 @@
  * ToolInputSpec → JSON Schema.
  *
  * The Registry's declarative spec is what the Executor validates against, and
- * it is also the only description of a tool's arguments SOL has. Model-facing
+ * it is also the only description of a tool's arguments BOBI has. Model-facing
  * tool definitions need JSON Schema instead, so this module is the single
  * translation between the two — deriving both from one source means a schema
  * sent to a model can never drift from what the validator actually enforces.
@@ -58,6 +58,10 @@ function baseSchema(spec: FieldSpec): Record<string, unknown> {
       return { type: "string", enum: [...(spec.choices ?? [])] };
     case "array":
       return { type: "array", items: {} };
+    case "object":
+      // A free-form bag: `additionalProperties` must stay open, unlike the
+      // closed argument object a normal tool declares.
+      return { type: "object", additionalProperties: true };
   }
 }
 

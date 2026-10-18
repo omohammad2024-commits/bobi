@@ -34,7 +34,7 @@ export function panelMenuKeyboard(): InlineKeyboard {
 }
 
 export function panelMenuText(): string {
-  return ["پنل مدیریت SOL", "یک گزینه را انتخاب کنید:"].join("\n");
+  return ["پنل مدیریت BOBI", "یک گزینه را انتخاب کنید:"].join("\n");
 }
 
 export function backKeyboard(): InlineKeyboard {

@@ -48,6 +48,17 @@ const RAW_TEXT_ELEMENTS: ReadonlySet<string> = new Set([
 ]);
 
 /**
+ * Elements HTML5 closes implicitly when another element starts.
+ *
+ * `<head>` is the one that matters in practice: pages routinely omit `</head>`,
+ * and without this the skip would run to the end of the document and extract
+ * nothing at all.
+ */
+const IMPLICITLY_CLOSED_BY: Readonly<Record<string, readonly string[]>> = {
+  head: ["body", "html"],
+};
+
+/**
  * Elements whose content is navigation/chrome rather than the page's substance.
  * Dropping these is what makes an article readable instead of a menu dump.
  */
@@ -226,21 +237,36 @@ export function htmlToText(html: string, opts: ExtractOptions = {}): string {
  * Walk the input once, dropping unwanted element bodies and turning block
  * boundaries into newlines.
  *
- * Raw-text elements (`script`, `style`, ...) are handled by seeking their
- * closing tag directly rather than by parsing nesting: HTML does not allow
- * nested `<script>`, and a scanner that tried would mis-handle the `</script>`
- * that legitimately appears inside a JavaScript string.
+ * Three properties this had to be rewritten for:
+ *
+ *  1. NO STACK. The previous version tracked open elements in an array and
+ *     searched it on every closing tag, which is O(n²) — a 2 MB page of
+ *     repeated tags froze the process for minutes, stalling every chat and the
+ *     reminder scheduler. A closing tag now only needs to decide "is this a
+ *     block?", so no stack is kept at all.
+ *
+ *  2. A SELF-CLOSING DROP ELEMENT IS STILL A DROP. `<script/>` is not valid
+ *     HTML, but a parser must not treat it as "open a script and then close it
+ *     immediately": doing so let the JavaScript after it through as page prose.
+ *     It now enters the raw-text skip like any other `<script>`.
+ *
+ *  3. RAW-TEXT BODIES END AT THEIR IMPORTANT CLOSE. HTML5 ends a `<script>` at
+ *     the first `</script>`, which an attacker can exploit with
+ *     `var s = "</script>"; <b>payload</b>`. Everything after such a close, up
+ *     to the next tag, is suppressed — so the remainder of the JavaScript
+ *     cannot be read as prose.
+ *
+ * An implied end is also honoured: `<head>` is closed by `<body>`, because
+ * HTML5 says so and a page that omits `</head>` would otherwise produce no
+ * text at all.
  */
 function scanTags(html: string): string {
   let out = "";
   let i = 0;
-  // A stack of open element names, so a closing tag only becomes a newline when
-  // it matches something that was actually open.
-  const open: string[] = [];
-  // When set, we are inside a dropped/raw element and only look for its end.
+  // When set, we are inside a raw-text element and only look for its end.
   let skipping: string | undefined;
   // Set after a raw-text element closes, so the remainder of its line is
-  // dropped too (see RAW_TEXT_ELEMENTS). Cleared at the next tag.
+  // dropped too. Cleared when a tag is consumed rather than when one is seen.
   let suppressingRun = false;
 
   while (i < html.length) {
@@ -254,8 +280,6 @@ function scanTags(html: string): string {
     // element is one whose content is prose. Appending before the skip check
     // would leak a <script> body as if it were page text.
     if (skipping === undefined && !suppressingRun) out += html.slice(i, lt);
-    // Any tag ends the suppressed run.
-    suppressingRun = false;
 
     // Comment, doctype or CDATA: skip to its terminator.
     if (html.startsWith("<!--", lt)) {
@@ -280,23 +304,50 @@ function scanTags(html: string): string {
     const { name, closing, selfClosing } = parsed;
 
     if (skipping !== undefined) {
-      // Inside a dropped element: only its own closing tag ends the skip.
-      if (closing && name === skipping) {
+      // An element that HTML5 closes implicitly ends the skip even without its
+      // closing tag. A page that omits `</head>` is common, and without this the
+      // whole document would be discarded and `fetch_url` would report that no
+      // text was found.
+      if (IMPLICITLY_CLOSED_BY[skipping]?.includes(name) === true) {
+        skipping = undefined;
+        // Fall through: this tag is processed normally below.
+      } else if (closing && name === skipping) {
+        // Inside a raw-text element, only its own closing tag ends the skip. A
+        // self-closing form does not, because its body still follows.
         skipping = undefined;
         // The remainder of a raw-text element's body is JavaScript or CSS that
         // HTML5 left as page text; it must not reach the model as prose.
         if (RAW_TEXT_ELEMENTS.has(name)) suppressingRun = true;
-        // A dropped block still separates the prose around it.
         if (BLOCK_ELEMENTS.has(name)) out += "\n";
+        continue;
+      } else {
+        continue;
+      }
+    }
+
+    if (DROPPED_ELEMENTS.has(name) || CHROME_ELEMENTS.has(name)) {
+      if (!closing) {
+        // A self-closing form still opens a raw-text skip. `<script/>` must not
+        // be read as "an empty script", because the text that follows it is the
+        // script's body as far as a browser is concerned.
+        skipping = name;
+      } else if (BLOCK_ELEMENTS.has(name)) {
+        out += "\n";
       }
       continue;
     }
 
-    if (DROPPED_ELEMENTS.has(name) || CHROME_ELEMENTS.has(name)) {
-      if (!closing && !selfClosing) skipping = name;
-      else if (closing) out += "\n";
+    // A suppressed run resumes only at a BLOCK-level tag.
+    //
+    // Clearing it on any tag was the bug: given `<script>x="</script>"; a=<b>FAKE</b>`
+    // the inline `<b>` ended suppression and the leftover script fragment became
+    // page prose. Inline tags are exactly what appears inside a JavaScript
+    // string, so they cannot be trusted to mark the end of one; a block element
+    // is a real structural boundary and does end it.
+    if (suppressingRun && !BLOCK_ELEMENTS.has(name)) {
       continue;
     }
+    suppressingRun = false;
 
     if (selfClosing) {
       // `<br/>` and friends separate lines; a stray `<img/>` should not.
@@ -304,14 +355,7 @@ function scanTags(html: string): string {
       continue;
     }
 
-    if (closing) {
-      const at = open.lastIndexOf(name);
-      if (at !== -1) open.splice(at, 1);
-      if (BLOCK_ELEMENTS.has(name)) out += "\n";
-    } else {
-      open.push(name);
-      if (BLOCK_ELEMENTS.has(name)) out += "\n";
-    }
+    if (BLOCK_ELEMENTS.has(name)) out += "\n";
   }
 
   return out;
@@ -337,6 +381,8 @@ function parseTag(raw: string): ParsedTag | undefined {
   if (!match) return undefined;
   const name = match[0].toLowerCase();
 
+  // A trailing slash marks a self-closing tag, but only when it is the last
+  // character: `<a href="x/">` is not self-closing.
   return {
     name,
     closing,

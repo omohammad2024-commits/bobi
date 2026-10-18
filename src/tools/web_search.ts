@@ -100,13 +100,19 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
           throw new ToolError("invalid_result", "نتیجه‌ای برای این جستجو پیدا نشد.");
         }
 
-        return {
-          query,
-          provider: provider.label,
-          // Re-checked here rather than trusted from the provider: only http(s)
-          // targets are useful, since fetch_url would refuse anything else.
-          results: results.slice(0, limit).filter((r) => isHttpUrl(r.url)),
-        };
+        // Re-checked here rather than trusted from the provider: only http(s)
+        // targets are useful, since fetch_url would refuse anything else.
+        //
+        // The filter runs BEFORE the emptiness check, so a provider that
+        // returned only unusable URLs is reported as "nothing found" rather
+        // than as a successful search with an empty list — the model cannot
+        // tell those apart, and would present an empty result as an answer.
+        const usable = results.slice(0, limit).filter((r) => isHttpUrl(r.url));
+        if (usable.length === 0) {
+          throw new ToolError("invalid_result", "نتیجهٔ قابل استفاده‌ای پیدا نشد.");
+        }
+
+        return { query, provider: provider.label, results: usable };
       } catch (err) {
         if (err instanceof ToolError) throw err;
         if (err instanceof SearchError) {

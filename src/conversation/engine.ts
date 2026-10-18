@@ -1,4 +1,4 @@
-import type { AiProvider, ChatMessage } from "../ai/provider";
+import type { AiProvider, ChatMessage, ContentPart } from "../ai/provider";
 import { AiError } from "../ai/provider";
 import type { Storage } from "../storage/storage";
 import { AgentCancelled, AgentLoop } from "../agent/loop";
@@ -6,7 +6,7 @@ import type { AgentBudgets, AgentRunInput } from "../agent/loop";
 import { raceDeadline, withDeadline } from "../core/deadline";
 import type { AgentRunResult, AgentStep } from "../agent/transcript";
 import { buildSystemPrompt } from "../agent/prompt";
-import { splitHistory, summariseHistory, summaryMessage } from "./summary";
+import { MIN_COMPACT_MESSAGES, summariseHistory, summaryMessage } from "./summary";
 import type { ToolService } from "../tools/service";
 import type { ToolActor } from "../tools/types";
 
@@ -23,13 +23,6 @@ interface RunOutcome {
 /** Telegram's hard limit for a single message. */
 export const TELEGRAM_MAX_LENGTH = 4096;
 
-/**
- * How far back a compaction reads.
- *
- * Larger than the window on purpose: the overflow is the part worth
- * summarising, so the read has to reach past the window to see it.
- */
-const COMPACT_LOOKBACK = 500;
 
 export interface ConversationInput {
   /** Stable id of the conversation owner (chat or user). */
@@ -55,6 +48,15 @@ export interface ConversationInput {
    * chat that made the request and one engine serves every conversation.
    */
   onProgress?: (step: AgentStep) => void;
+  /**
+   * Attachments to send alongside the text.
+   *
+   * Absent means a text-only turn. Parts travel to the provider but are NOT
+   * persisted in history: storing base64 in the messages table would bloat it
+   * without bound, and a model does not need yesterday's photo replayed on
+   * every later turn.
+   */
+  parts?: readonly ContentPart[];
 }
 
 export interface ConversationOutput {
@@ -142,7 +144,7 @@ export class EngineError extends Error {
 /**
  * Conversation engine — grammY-agnostic and unit-testable.
  *
- * One `respond()` is now a whole agent run: the model may request tools, SOL
+ * One `respond()` is now a whole agent run: the model may request tools, BOBI
  * runs them through the authorized Executor, and the loop repeats until the
  * model answers or a budget is reached. History is kept in memory by default;
  * pass `storage` for persistence.
@@ -169,8 +171,6 @@ export class ConversationEngine {
   private readonly chains = new Map<string, Promise<unknown>>();
   // conversationId -> live run, so a newer message can cancel a superseded one
   private readonly running = new Map<string, AbortController>();
-  // conversationId -> rolling summary of turns that left the window
-  private readonly summaries = new Map<string, string>();
   private readonly summarisationEnabled: boolean;
 
   constructor(opts: EngineOptions) {
@@ -194,7 +194,11 @@ export class ConversationEngine {
   /** Handle one user message end-to-end. Never throws raw provider errors. */
   async respond(input: ConversationInput): Promise<ConversationOutput> {
     const userText = input.userText.trim();
-    if (userText.length === 0) {
+    const hasParts = input.parts !== undefined && input.parts.length > 0;
+
+    // A caption-less photo is a complete turn, so emptiness is judged on the
+    // message as a whole rather than on its text alone.
+    if (userText.length === 0 && !hasParts) {
       throw new EngineError("empty_input", "پیام خالی است.");
     }
 
@@ -208,16 +212,20 @@ export class ConversationEngine {
     this.running.set(input.conversationId, controller);
 
     // Serialize per conversation so history never interleaves.
+    //
+    // The map holds a settled-safe tail, and cleanup compares against THAT
+    // value. An earlier version stored `run.catch(...)` but compared to `run`,
+    // so the comparison never matched and every conversation leaked a chain
+    // entry holding a closure over the request context.
     const tail = this.chains.get(input.conversationId) ?? Promise.resolve();
     const run = tail.then(() => this.runOnce(input, userText, controller.signal));
-    this.chains.set(
-      input.conversationId,
-      run.catch(() => undefined),
-    );
+    const settled = run.catch(() => undefined);
+    this.chains.set(input.conversationId, settled);
+
     try {
       return await run;
     } finally {
-      if (this.chains.get(input.conversationId) === run) {
+      if (this.chains.get(input.conversationId) === settled) {
         this.chains.delete(input.conversationId);
       }
       if (this.running.get(input.conversationId) === controller) {
@@ -247,7 +255,17 @@ export class ConversationEngine {
   ): Promise<ConversationOutput> {
     return this.semaphore.use(async () => {
       const history = await this.compactedHistory(input, signal);
-      const messages: ChatMessage[] = [...history, { role: "user", content: userText }];
+
+      // Attachments ride on the live turn only. They are deliberately excluded
+      // from `commitTurn`, so history stays text and cannot grow without bound.
+      const turn: ChatMessage = {
+        role: "user",
+        content: userText,
+        ...(input.parts !== undefined && input.parts.length > 0
+          ? { parts: input.parts }
+          : {}),
+      };
+      const messages: ChatMessage[] = [...history, turn];
 
       const result = await this.runAgent(input, messages, userText, signal);
 
@@ -373,6 +391,11 @@ export class ConversationEngine {
         deadline,
       );
     } catch (err) {
+      // Distinguish the caller replacing this turn from a real deadline: a
+      // superseded run must stay silent, while a genuine timeout is reported.
+      if (signal.aborted) {
+        throw new EngineError("superseded", "درخواست با پیام تازه‌تری جایگزین شد.");
+      }
       throw toEngineError(err, deadline.signal.aborted);
     } finally {
       deadline.dispose();
@@ -413,65 +436,111 @@ export class ConversationEngine {
   }
 
   /**
-   * History for this turn, compacted when it has outgrown the window.
+   * History for this turn: a rolling summary plus the recent window.
    *
-   * Rather than letting the oldest turns fall off the end silently, the excess
-   * is folded into a running summary. Compaction is best-effort: if the
-   * summariser fails the turn still proceeds with the plain window, because a
-   * housekeeping problem must never fail a user's request.
+   * Compaction is INCREMENTAL and persisted. An earlier version re-summarised
+   * the entire prior conversation on every single message once the window
+   * filled, which meant a second model call per turn forever. That is a real
+   * cost bug, not just wasted work: a chatty conversation would pay double.
+   *
+   * Now each pass reads only the messages that have overflowed since the last
+   * one — tracked by a stored message-id watermark — so every message is folded
+   * into the summary exactly once. The summary is stored rather than held in
+   * memory, because losing it on restart would permanently drop the old turns
+   * it covers.
+   *
+   * Compaction stays best-effort: if the summariser fails, the turn proceeds
+   * with the recent window and whatever summary already exists.
    */
   private async compactedHistory(
     input: ConversationInput,
     signal: AbortSignal,
   ): Promise<ChatMessage[]> {
-    const full = this.loadFullHistory(input);
-    const { older, recent } = splitHistory(full, this.historyLimit);
-    if (older.length === 0) {
-      const previous = this.summaries.get(input.conversationId);
-      return previous !== undefined ? [summaryMessage(previous), ...recent] : recent;
+    const recent = this.loadHistory(input);
+
+    // No storage means no watermark to track; the in-memory window is all
+    // there is, which matches the old behaviour for the no-storage engine.
+    if (!this.storage || !this.summarisationEnabled) return recent;
+
+    const { userId, chatId } = this.ownerOf(input);
+    const stored = this.storage.getConversationSummary(userId, chatId);
+
+    // Only messages that have fallen out of the window are candidates, and only
+    // those past the watermark.
+    let overflow;
+    try {
+      overflow = this.storage.unsummarisedMessages(
+        userId,
+        chatId,
+        stored?.summarisedUntil ?? 0,
+        this.historyLimit,
+      );
+    } catch {
+      // A failed read is not a reason to fail the turn.
+      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
     }
 
-    if (!this.summarisationEnabled) {
-      return recent;
+    if (overflow.length < MIN_COMPACT_MESSAGES) {
+      // Nothing new has overflowed; reuse the existing summary. This is the
+      // case that used to trigger an unnecessary model call every turn.
+      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
     }
 
-    const previous = this.summaries.get(input.conversationId);
-    const summary = await summariseHistory(older, previous, {
+    const messages: ChatMessage[] = overflow.map((r) => ({ role: r.role, content: r.content }));
+    const summary = await summariseHistory(messages, stored?.summary, {
       provider: this.provider,
       model: this.model,
       signal,
     });
 
     if (summary === undefined) {
-      // Keep any summary we already had; a failed refresh is not a reason to
-      // lose what was already compacted.
-      return previous !== undefined ? [summaryMessage(previous), ...recent] : recent;
+      // Keep what we had; a failed refresh must not discard it.
+      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
     }
 
-    this.summaries.set(input.conversationId, summary);
+    // Advance the watermark only on success, so a failed pass is retried on the
+    // next turn instead of silently skipping those messages.
+    const lastId = overflow[overflow.length - 1]!.id;
+    try {
+      this.storage.setConversationSummary({
+        userId,
+        chatId,
+        summary,
+        summarisedUntil: lastId,
+      });
+    } catch {
+      // The summary is still usable this turn even if it could not be stored.
+    }
+
     return [summaryMessage(summary), ...recent];
   }
 
-  /** The whole stored history, ignoring the window, for compaction to split. */
-  private loadFullHistory(input: ConversationInput): ChatMessage[] {
-    if (!this.storage) {
-      return this.histories.get(input.conversationId) ?? [];
-    }
-    const { userId, chatId } = this.ownerOf(input);
-    const rows = this.storage.history(userId, chatId, COMPACT_LOOKBACK);
-    return rows.map((r) => ({ role: r.role, content: r.content }));
-  }
-
+  /**
+   * Persist a successful turn.
+   *
+   * Attachments are NOT stored: base64 in the messages table would grow it
+   * without bound, and a later turn does not need an earlier photo replayed.
+   * A caption-less attachment is recorded as a short marker so the transcript
+   * still shows that a turn happened.
+   */
   private commitTurn(input: ConversationInput, userText: string, reply: string): void {
+    const stored = userText.length > 0 ? userText : this.describeAttachmentsOnly(input);
+
     if (!this.storage) {
       const h = this.histories.get(input.conversationId) ?? [];
-      h.push({ role: "user", content: userText }, { role: "assistant", content: reply });
+      h.push({ role: "user", content: stored }, { role: "assistant", content: reply });
       this.histories.set(input.conversationId, h);
       return;
     }
     const { userId, chatId } = this.ownerOf(input);
-    this.storage.appendMessage(userId, chatId, "user", userText);
+    this.storage.appendMessage(userId, chatId, "user", stored);
     this.storage.appendMessage(userId, chatId, "assistant", reply);
+  }
+
+  /** Transcript marker for a turn that was attachments only. */
+  private describeAttachmentsOnly(input: ConversationInput): string {
+    const count = input.parts?.length ?? 0;
+    return count > 0 ? `[${count} پیوست]` : "[پیام بدون متن]";
   }
 
   /** Read history — memory or storage depending on configuration. */
@@ -490,6 +559,15 @@ export class ConversationEngine {
     if (this.storage) {
       const { userId, chatId } = this.ownerOf(input);
       this.storage.deleteConversation(userId, chatId);
+      // The rolling summary is a separate row with no foreign key, so it must
+      // be dropped explicitly. Leaving it would re-inject a summary of the
+      // cleared conversation into the next one — a privacy surprise, and a
+      // context contamination the user explicitly asked to be rid of.
+      try {
+        this.storage.clearConversationSummary(userId, chatId);
+      } catch {
+        // Best-effort: the messages are gone either way.
+      }
     }
     this.histories.delete(input.conversationId);
   }
@@ -519,24 +597,40 @@ function toEngineError(err: unknown, aborted: boolean): EngineError {
   return new EngineError("unknown", "خطای ناشناخته در پردازش درخواست.");
 }
 
-/** Counting semaphore to bound concurrent provider calls. */
+/**
+ * Counting semaphore to bound concurrent provider calls.
+ *
+ * The slot is handed OVER, not re-fetched: a waiter is resolved only when a
+ * permit is already free, and the permit transfers to it without incrementing
+ * again. An earlier version had the waiter increment on wake, which let a
+ * caller arriving between a release and the wakee's continuation also take the
+ * slot — briefly exceeding `maxConcurrent`.
+ */
 class Semaphore {
   private active = 0;
   private readonly queue: Array<() => void> = [];
   constructor(private readonly max: number) {
     if (max < 1) throw new Error("maxConcurrent must be >= 1");
   }
+
   async use<T>(fn: () => Promise<T>): Promise<T> {
     if (this.active >= this.max) {
+      // Wait for a permit to be handed over. The caller that releases it has
+      // already accounted for this waiter, so no increment happens here.
       await new Promise<void>((resolve) => this.queue.push(resolve));
+    } else {
+      this.active++;
     }
-    this.active++;
+
     try {
       return await fn();
     } finally {
-      this.active--;
+      // Hand the permit to the next waiter, or give it back to the pool. The
+      // count is not decremented first, so there is no window in which a new
+      // caller can see a free slot that is already promised to a waiter.
       const next = this.queue.shift();
       if (next) next();
+      else this.active--;
     }
   }
 }

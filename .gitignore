@@ -3,3 +3,17 @@ dist/
 .env
 .env.local
 *.log
+
+# Local runtime data: the SQLite database and its WAL sidecars.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# MCP server config. It can carry service tokens and it names commands that run
+# with this bot's authority, so the real file stays local — mcp.example.json is
+# the committed template.
+mcp.json
+
+# Local Claude Code state — machine-specific permissions, not project config.
+.claude/settings.local.json

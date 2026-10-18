@@ -1,5 +1,5 @@
 /**
- * Central runtime configuration for SOL.
+ * Central runtime configuration for BOBI.
  * Everything is derived from environment variables with safe defaults.
  * Secrets are never read here — only non-sensitive settings.
  */
@@ -48,6 +48,13 @@ export interface SolConfig {
   schedulerIntervalMs: number;
   /** Whether the web_search tool is offered at all. */
   enableWebSearch: boolean;
+  /**
+   * Path to the MCP server config file.
+   *
+   * An MCP stdio server is a shell command, so this file is owner-only input;
+   * see `src/mcp/config.ts` for the validation rules.
+   */
+  mcpConfigPath: string;
 }
 
 const VALID_ENVS: ReadonlySet<string> = new Set(["development", "production", "test"]);
@@ -63,34 +70,47 @@ function pick<T extends string>(
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
   return {
-    env: pick(env.SOL_ENV, VALID_ENVS, "development"),
-    logLevel: pick(env.SOL_LOG_LEVEL, VALID_LEVELS, "info"),
+    env: pick(envVar(env, "ENV"), VALID_ENVS, "development"),
+    logLevel: pick(envVar(env, "LOG_LEVEL"), VALID_LEVELS, "info"),
     botToken: env.TELEGRAM_BOT_TOKEN?.trim() || undefined,
     aiModel: env.AI_MODEL?.trim() || "fake-echo",
     aiTimeoutMs: pickInt(env.AI_TIMEOUT_MS, 30_000),
     aiMaxConcurrent: pickInt(env.AI_MAX_CONCURRENT, 4),
-    dbPath: env.SOL_DB_PATH?.trim() || "data/sol.db",
+    dbPath: envVar(env, "DB_PATH")?.trim() || "data/bobi.db",
     // Trimmed (so stray whitespace cannot masquerade as a value) but not
     // parsed — OwnerIdentity decides validity and reports the reason.
     ownerTelegramIdRaw: env.OWNER_TELEGRAM_ID?.trim() || undefined,
     // Trimmed but not validated here: the secret store reports the reason.
-    aiMasterKey: env.SOL_AI_KEY_MASTER_KEY?.trim() || undefined,
+    aiMasterKey: envVar(env, "AI_KEY_MASTER_KEY")?.trim() || undefined,
     // An unusable zone falls back rather than failing startup: a wrong clock
     // label is not worth refusing to boot over.
-    timezone: pickTimezone(env.SOL_TIMEZONE),
+    timezone: pickTimezone(envVar(env, "TIMEZONE")),
     // Bounded both ways: a zero would disable the agent, an unbounded value
     // would let one message spend without limit.
-    agentMaxIterations: clampInt(env.SOL_AGENT_MAX_ITERATIONS, 1, 20, 6),
-    agentMaxToolCalls: clampInt(env.SOL_AGENT_MAX_TOOL_CALLS, 1, 50, 12),
-    agentTotalTimeoutMs: clampInt(env.SOL_AGENT_TOTAL_TIMEOUT_MS, 5_000, 600_000, 120_000),
-    extraSystemPrompt: env.SOL_EXTRA_SYSTEM_PROMPT?.trim() || undefined,
-    rateLimitPerMinute: clampInt(env.SOL_RATE_LIMIT_PER_MINUTE, 0, 10_000, 20),
-    rateLimitToolCallsPerHour: clampInt(env.SOL_RATE_LIMIT_TOOL_CALLS_PER_HOUR, 0, 100_000, 200),
-    schedulerIntervalMs: clampInt(env.SOL_SCHEDULER_INTERVAL_MS, 1_000, 3_600_000, 30_000),
+    agentMaxIterations: clampInt(envVar(env, "AGENT_MAX_ITERATIONS"), 1, 20, 6),
+    agentMaxToolCalls: clampInt(envVar(env, "AGENT_MAX_TOOL_CALLS"), 1, 50, 12),
+    agentTotalTimeoutMs: clampInt(envVar(env, "AGENT_TOTAL_TIMEOUT_MS"), 5_000, 600_000, 120_000),
+    extraSystemPrompt: envVar(env, "EXTRA_SYSTEM_PROMPT")?.trim() || undefined,
+    rateLimitPerMinute: clampInt(envVar(env, "RATE_LIMIT_PER_MINUTE"), 0, 10_000, 20),
+    rateLimitToolCallsPerHour: clampInt(envVar(env, "RATE_LIMIT_TOOL_CALLS_PER_HOUR"), 0, 100_000, 200),
+    schedulerIntervalMs: clampInt(envVar(env, "SCHEDULER_INTERVAL_MS"), 1_000, 3_600_000, 30_000),
     // On by default: the keyless provider needs no configuration, and an agent
     // without web access cannot answer anything past its training data.
-    enableWebSearch: pickBool(env.SOL_ENABLE_WEB_SEARCH, true),
+    enableWebSearch: pickBool(envVar(env, "ENABLE_WEB_SEARCH"), true),
+    mcpConfigPath: envVar(env, "MCP_CONFIG")?.trim() || "mcp.json",
   };
+}
+
+/**
+ * Read a configuration value, accepting the BOBI_ prefix and the older SOL_ one.
+ *
+ * The project was renamed from BOBI to BOBI. An existing .env in someone's
+ * deployment still uses SOL_* keys, and silently ignoring them would fall back
+ * to defaults — a quiet behaviour change on upgrade. The old prefix is read as a
+ * fallback so a rename never alters how a running install behaves.
+ */
+function envVar(env: NodeJS.ProcessEnv, suffix: string): string | undefined {
+  return env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`];
 }
 
 /** Parse a boolean env value; only explicit false-y strings disable. */

@@ -22,7 +22,7 @@ describe("conversation engine", () => {
     const out = await eng.respond(ok("سلام"));
     expect(out.isFake).toBe(true);
     expect(out.chunks.length).toBe(1);
-    expect(out.chunks[0]).toContain("آزمایشی SOL");
+    expect(out.chunks[0]).toContain("آزمایشی بابی");
   });
 
   test("empty / whitespace input rejected", async () => {

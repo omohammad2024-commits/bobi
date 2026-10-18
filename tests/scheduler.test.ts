@@ -376,7 +376,7 @@ describe("cancellation", () => {
 });
 
 describe("delivery failure", () => {
-  test("a failed delivery is claimed so it cannot loop forever", async () => {
+  test("a failed one-off delivery is claimed so it cannot loop forever", async () => {
     const h = harness();
     h.setDeliverOk(false);
     h.storage.createReminder({
@@ -394,6 +394,64 @@ describe("delivery failure", () => {
     // chat that rejected the message.
     expect((await h.scheduler.tick()).delivered).toBe(0);
     h.storage.close();
+  });
+
+  test("a failed delivery does NOT kill a repeating series", async () => {
+    // One transient Telegram error must not silently end a daily reminder the
+    // user asked for. The occurrence is lost; the series is not.
+    const h = harness();
+    const id = h.storage.createReminder({
+      userId: "u1",
+      chatId: "c1",
+      text: "روزانه",
+      dueAt: h.now(),
+      repeat: "daily",
+    });
+
+    h.setDeliverOk(false);
+    await h.scheduler.tick();
+
+    // The failed occurrence was not delivered...
+    expect(h.sent).toHaveLength(0);
+    // ...but the reminder is pending again, at its next occurrence.
+    const row = h.storage.getReminder("u1", id)!;
+    expect(row.state).toBe("pending");
+    expect(row.dueAt).toBeGreaterThan(h.now());
+
+    // And it delivers normally next time.
+    h.setDeliverOk(true);
+    h.set(row.dueAt);
+    expect((await h.scheduler.tick()).delivered).toBe(1);
+
+    h.storage.close();
+  });
+
+  test("the delivery callback receives the owning user", async () => {
+    // The delivery path needs the user id to re-check access at send time.
+    const storage = Storage.open(":memory:");
+    const clock = 1_000_000_000_000;
+    const seen: Array<{ chatId: string; userId: string }> = [];
+    const scheduler = new ReminderScheduler({
+      storage,
+      intervalMs: 1_000,
+      now: () => clock,
+      deliver: async (d) => {
+        seen.push({ chatId: d.chatId, userId: d.userId });
+        return true;
+      },
+    });
+
+    storage.createReminder({
+      userId: "u42",
+      chatId: "c9",
+      text: "t",
+      dueAt: clock,
+      repeat: "none",
+    });
+    await scheduler.tick();
+
+    expect(seen).toEqual([{ chatId: "c9", userId: "u42" }]);
+    storage.close();
   });
 
   test("a throwing delivery does not abort the whole pass", async () => {

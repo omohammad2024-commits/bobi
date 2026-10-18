@@ -198,6 +198,84 @@ describe("agent loop — budgets", () => {
     expect(toolMsgs[2]!.content).toContain("سقف");
   });
 
+  test("a run whose wall clock ran out still answers instead of timing out", async () => {
+    // The bug this guards: the "final answer" branch computed its deadline from
+    // the REMAINING budget, which is zero once the clock is spent — handing the
+    // provider a 1ms deadline and failing. The user asked a question and should
+    // get a reply, not a timeout.
+    let clock = 0;
+    let calls = 0;
+    const provider: AiProvider = {
+      name: "slow",
+      async complete(req: CompletionRequest): Promise<CompletionResponse> {
+        calls++;
+        // First call spends the entire budget; the grace call answers.
+        if (calls === 1) {
+          clock += 500_000;
+          return toolTurn(call("calculator", { op: "add", a: 1, b: 1 }));
+        }
+        void req;
+        return answer("بهترین پاسخ با اطلاعات موجود.");
+      },
+    };
+
+    const loop = new AgentLoop({
+      provider,
+      model: "m",
+      tools: new ToolService(),
+      callTimeoutMs: 60_000,
+      budgets: { totalTimeoutMs: 1_000 },
+      now: () => clock,
+    });
+
+    const result = await loop.run({
+      messages: [{ role: "user", content: "hi" }],
+      systemPrompt: "s",
+      actor: FULL_ACTOR,
+      signal: new AbortController().signal,
+    });
+
+    expect(result.stopReason).toBe("budget_exhausted");
+    expect(result.text).toContain("بهترین پاسخ");
+    expect(result.steps.some((s) => s.kind === "limit" && s.limit === "timeout")).toBe(true);
+  });
+
+  test("a failed grace call still returns something usable", async () => {
+    // If even the grace call cannot complete, the user should get an
+    // explanation rather than a raw provider error for a run that did work.
+    let clock = 0;
+    let calls = 0;
+    const provider: AiProvider = {
+      name: "dying",
+      async complete(): Promise<CompletionResponse> {
+        calls++;
+        if (calls === 1) {
+          clock += 500_000;
+          return toolTurn(call("calculator", { op: "add", a: 1, b: 1 }));
+        }
+        throw new AiError("network", "down");
+      },
+    };
+
+    const loop = new AgentLoop({
+      provider,
+      model: "m",
+      tools: new ToolService(),
+      callTimeoutMs: 60_000,
+      budgets: { totalTimeoutMs: 1_000 },
+      now: () => clock,
+    });
+
+    const result = await loop.run({
+      messages: [{ role: "user", content: "hi" }],
+      systemPrompt: "s",
+      actor: FULL_ACTOR,
+      signal: new AbortController().signal,
+    });
+    expect(result.text.length).toBeGreaterThan(0);
+    expect(result.stopReason).toBe("budget_exhausted");
+  });
+
   test("total wall-clock timeout bounds a slow provider", async () => {
     let clock = 0;
     const provider: AiProvider = {

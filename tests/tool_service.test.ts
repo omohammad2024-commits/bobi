@@ -117,7 +117,7 @@ describe("menu wiring", () => {
     const kb = buildMainMenu();
     expect(kb.inline_keyboard[0]!.length).toBe(3);
     const labels = kb.inline_keyboard[0]!.map((b) => b.text);
-    expect(labels).toEqual(["گفت‌وگو", "ابزارها", "درباره SOL"]);
+    expect(labels).toEqual(["گفت‌وگو", "ابزارها", "درباره بابی"]);
   });
 
   test("the tools entry renders one line per active tool", () => {
@@ -125,7 +125,7 @@ describe("menu wiring", () => {
     const names = svc.listActiveNames();
     const text = toolListText(names);
     expect(names.length).toBe(DEFAULT_NAMES.length);
-    expect(text).toContain("ابزارهای فعال SOL:");
+    expect(text).toContain("ابزارهای فعال بابی:");
     // One numbered line per active tool, in registry order.
     for (let i = 1; i <= names.length; i++) {
       expect(text).toContain(`${i}. `);
@@ -184,7 +184,7 @@ describe("menu wiring", () => {
 
 describe("message routing still behaves as before", () => {
   const BOT_ID = 42;
-  const ME = { id: BOT_ID, is_bot: true, first_name: "SOL", username: "sol_bot" } as const;
+  const ME = { id: BOT_ID, is_bot: true, first_name: "BOBI", username: "bobi_bot" } as const;
 
   function ctx(o: { chatType?: string; text?: string; replyFromId?: number; hasMessage?: boolean }) {
     const base: Record<string, unknown> = { me: ME };
@@ -214,7 +214,7 @@ describe("message routing still behaves as before", () => {
   test("group reply to the bot and its commands are handled", () => {
     expect(shouldHandleMessage(ctx({ chatType: "group", replyFromId: BOT_ID }), BOT_ID)).toBe(true);
     expect(shouldHandleMessage(ctx({ chatType: "group", text: "/start" }), BOT_ID)).toBe(true);
-    expect(shouldHandleMessage(ctx({ chatType: "group", text: "/help@sol_bot" }), BOT_ID)).toBe(true);
+    expect(shouldHandleMessage(ctx({ chatType: "group", text: "/help@bobi_bot" }), BOT_ID)).toBe(true);
   });
 
   test("commands aimed at other bots are ignored", () => {

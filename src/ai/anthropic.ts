@@ -32,6 +32,8 @@ import type {
 } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
+import { selectParts, textWithPartNotes } from "./parts";
+import type { SendablePart } from "./parts";
 
 /** Anthropic requires an explicit cap; this is only a fallback. */
 const DEFAULT_MAX_TOKENS = 1024;
@@ -91,18 +93,27 @@ export class AnthropicAdapter implements AIProviderAdapter {
  * Request body. Exported so the wire format can be asserted without a network.
  */
 export function buildBody(target: AnthropicTarget, req: CompletionRequest): Record<string, unknown> {
-  let system = target.settings?.systemPrompt;
-
-  // A system turn supplies the top-level `system` field; everything else
-  // becomes a message.
+  // System turns are HOISTED into the single top-level `system` field.
+  //
+  // They are concatenated, never overwritten. A conversation can legitimately
+  // carry more than one system turn — the owner's configured prompt, the
+  // agent's own prompt, and a rolling summary of older history — and
+  // last-one-wins would discard the earlier ones entirely, dropping the tool
+  // rules and identity while promoting model-written summary text into the
+  // trusted system slot.
   const messages: Array<{ role: string; content: unknown }> = [];
+  const systemParts: string[] = [];
+  const configured = target.settings?.systemPrompt;
+  if (typeof configured === "string" && configured.length > 0) systemParts.push(configured);
+
   for (const m of req.messages) {
     if (m.role === "system") {
-      system = m.content;
+      if (m.content.length > 0) systemParts.push(m.content);
       continue;
     }
     messages.push(toWireMessage(m));
   }
+  const system = systemParts.length > 0 ? systemParts.join("\n\n") : undefined;
 
   if (messages.length === 0) {
     throw new AiError("invalid_response", "درخواست پیامی نداشت.");
@@ -167,10 +178,45 @@ export function toWireMessage(m: ChatMessage): { role: string; content: unknown 
     return { role: "assistant", content: blocks };
   }
 
+  // A message with attachments becomes a content-block array. This service
+  // accepts an image as a base64 source block, and a PDF as a document block,
+  // so both travel natively rather than being described in the text.
+  const { sendable, dropped } = selectParts(m);
+  if (sendable.length > 0) {
+    const blocks: unknown[] = [];
+    const text = textWithPartNotes(m);
+    if (text.length > 0) blocks.push({ type: "text", text });
+    for (const part of sendable) blocks.push(attachmentBlock(part));
+    return { role: m.role === "assistant" ? "assistant" : "user", content: blocks };
+  }
+  if (dropped.length > 0) {
+    return { role: m.role === "assistant" ? "assistant" : "user", content: textWithPartNotes(m) };
+  }
+
   return {
     role: m.role === "assistant" ? "assistant" : "user",
     content: m.content,
   };
+}
+
+/** This service's block for one attachment. */
+function attachmentBlock(part: SendablePart): Record<string, unknown> {
+  if (part.type === "image") {
+    return {
+      type: "image",
+      source: { type: "base64", media_type: part.mediaType, data: part.base64 },
+    };
+  }
+  if (part.type === "document") {
+    return {
+      type: "document",
+      source: { type: "base64", media_type: part.mediaType, data: part.base64 },
+      ...(part.name !== undefined ? { title: part.name } : {}),
+    };
+  }
+  // Audio has no block form here, so it is named in the text rather than sent
+  // as a block the service would reject.
+  return { type: "text", text: `[پیوست صوتی: ${part.mediaType} ارسال نشد]` };
 }
 
 /**

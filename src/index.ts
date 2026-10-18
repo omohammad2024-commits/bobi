@@ -27,6 +27,8 @@ import { createWebSearchTool } from "./tools/web_search";
 import { createMemoryTools } from "./tools/memory";
 import { createReminderTools } from "./tools/reminders";
 import { ReminderScheduler } from "./scheduler/scheduler";
+import { McpManager, mcpTools } from "./mcp/bridge";
+import { loadMcpConfig, describeIssues } from "./mcp/config";
 import { RateLimiter } from "./core/rate_limit";
 import { UsageService, formatCost } from "./core/usage";
 import { Logger } from "./core/logger";
@@ -38,7 +40,7 @@ async function main(): Promise<void> {
   // Structured logging, at the level the owner configured. Every diagnostic
   // below goes through it; the redactor strips credential shapes, so a caller
   // that passes one by mistake cannot leak it into a log file.
-  const log = new Logger({ level: config.logLevel, base: { app: "sol" } });
+  const log = new Logger({ level: config.logLevel, base: { app: "bobi" } });
 
   const token = requireBotToken(config); // throws a short, clear error
 
@@ -73,7 +75,7 @@ async function main(): Promise<void> {
   const secrets = new ProviderSecretStore(config.aiMasterKey);
   if (!secrets.configured) {
     log.warn(
-      "SOL_AI_KEY_MASTER_KEY is not set; provider credentials cannot be stored. " +
+      "BOBI_AI_KEY_MASTER_KEY is not set; provider credentials cannot be stored. " +
         "Set it in .env or the environment to enable real providers.",
     );
   }
@@ -89,9 +91,27 @@ async function main(): Promise<void> {
   // to run one. The engine reaches tools only through here, so validation,
   // permissions, timeouts and the concurrency bound apply to every call the
   // model makes.
+  // MCP servers. The config file is owner-only input, and a server is inert
+  // until it says `enabled: true` — a stdio server is a shell command, so
+  // nothing here is allowed to run by accident.
+  const mcpConfig = loadMcpConfig(config.mcpConfigPath);
+  if (mcpConfig.issues.length > 0) {
+    // Reported once at startup rather than failing: one bad entry must not
+    // stop the bot, but the owner needs to know their config is wrong.
+    log.warn("MCP config has problems", { issues: describeIssues(mcpConfig.issues) });
+  }
+  const mcp = new McpManager(mcpConfig.servers);
+  await mcp.connectAll();
+  for (const status of mcp.status()) {
+    if (status.enabled && !status.connected) {
+      log.warn("MCP server unavailable", { server: status.name, error: status.error ?? "" });
+    }
+  }
+
   const extraTools: Tool<unknown, unknown>[] = [
     ...createMemoryTools({ storage }),
     ...createReminderTools({ storage }),
+    ...mcpTools(mcp),
   ];
   if (searchEnabled) {
     extraTools.push(
@@ -226,6 +246,9 @@ async function main(): Promise<void> {
 
   const bot = createBot(token, {
     engine,
+    // Needed to download attachment bytes: Telegram reports a file's path but
+    // not its content, and the download URL embeds the token.
+    botToken: token,
     tools,
     auth,
     groups,
@@ -244,7 +267,16 @@ async function main(): Promise<void> {
   const scheduler = new ReminderScheduler({
     storage,
     intervalMs: config.schedulerIntervalMs,
-    deliver: async ({ chatId, text }) => {
+    deliver: async ({ chatId, userId, text }) => {
+      // Access is re-checked at DELIVERY time, not only when the reminder was
+      // created. Revoking a user must stop the bot talking to them, and an
+      // approval re-read on every message would otherwise be undermined by a
+      // reminder set days earlier.
+      if (userId !== undefined && !mayDeliverTo(userId, chatId)) {
+        log.info("reminder suppressed: recipient no longer approved", { userId });
+        return true; // Claimed and retired; not a delivery failure.
+      }
+
       try {
         await bot.api.sendMessage(chatId, text);
         return true;
@@ -257,12 +289,31 @@ async function main(): Promise<void> {
   });
   scheduler.start();
 
+  /**
+   * Whether the bot may still send to this reminder's recipient.
+   *
+   * The owner is always allowed. A private-chat recipient needs an approved
+   * row; a group recipient needs its group approved, matching the gate every
+   * incoming message passes through.
+   */
+  function mayDeliverTo(userId: string, chatId: string): boolean {
+    if (identity.isOwner(Number(userId))) return true;
+
+    // A negative chat id is a group; the owner's own id is used for direct
+    // reminders, so the two cases are distinguishable without extra state.
+    if (chatId.startsWith("-")) return groups.isApproved(chatId);
+    return users.isApproved(userId);
+  }
+
   // Graceful shutdown
   const stop = (): void => {
     log.info("shutting down");
     // Stop the scheduler before the database closes: a pass in flight would
     // otherwise write to a closed handle.
     scheduler.stop();
+    // Close MCP servers so their child processes are reaped rather than left
+    // orphaned when the bot exits.
+    void mcp.closeAll();
     // Abort in-flight agent runs first, so a tool or provider call is not left
     // writing to a database handle that is about to close.
     engine.cancelAll();

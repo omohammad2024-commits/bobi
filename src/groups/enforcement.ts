@@ -31,7 +31,7 @@ const GATED_TYPES: ReadonlySet<string> = new Set(["group", "supergroup"]);
  * Chat types that deliberately bypass group approval.
  *
  * - private: group policy must never affect one-to-one conversations.
- * - channel: the approval workflow covers group membership only. SOL has no
+ * - channel: the approval workflow covers group membership only. BOBI has no
  *   channel handler in this phase, so a channel update reaches no reasoning
  *   path either way; the exemption is stated here rather than falling through
  *   implicitly, so the policy is explicit and reviewable.

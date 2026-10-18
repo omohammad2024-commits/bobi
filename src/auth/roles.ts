@@ -13,7 +13,7 @@
 
 export type Role = "owner" | "user" | "unknown";
 
-/** Explicit, typed permission strings used across SOL. */
+/** Explicit, typed permission strings used across BOBI. */
 export type Permission =
   | "tools.use"
   | "settings.manage"
@@ -22,7 +22,7 @@ export type Permission =
   | "users.manage"
   | "admin.view";
 
-/** Every permission SOL knows about, in a stable order. */
+/** Every permission BOBI knows about, in a stable order. */
 export const ALL_PERMISSIONS: readonly Permission[] = [
   "tools.use",
   "settings.manage",
@@ -46,7 +46,7 @@ const ROLE_GRANTS: Readonly<Record<Role, readonly Permission[]>> = {
   unknown: [],
 } as const;
 
-/** True when a string is one of SOL's known permissions. */
+/** True when a string is one of BOBI's known permissions. */
 export function isPermission(value: string): value is Permission {
   return (ALL_PERMISSIONS as readonly string[]).includes(value);
 }

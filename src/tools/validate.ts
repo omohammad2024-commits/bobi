@@ -65,6 +65,13 @@ function checkField(field: string, fs: FieldSpec, value: unknown): unknown {
       return checkEnum(field, fs, value);
     case "array":
       return checkArray(field, fs, value);
+    case "object":
+      // Passed through as-is: the consumer validates it. Only the shape is
+      // checked here, so a non-object cannot slip through as one.
+      if (!isPlainObject(value)) {
+        throw new ToolError("invalid_input", `فیلد باید شیء باشد: ${field}.`, { field });
+      }
+      return value;
   }
 }
 

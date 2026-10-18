@@ -17,11 +17,20 @@ import type { UserAccessService } from "../auth/user_service";
 import type { UserPanelController } from "../auth/user_controller";
 import { checkUserAccess, userDenialNote } from "../auth/user_enforcement";
 import { USER_NOT_APPROVED, USER_REVOKED } from "../auth/user_panel";
+import { extractMedia, hasMedia } from "./media";
 import type { RateLimiter } from "../core/rate_limit";
 import type { UsageService } from "../core/usage";
 
 export interface BotDeps {
   engine: ConversationEngine;
+  /**
+   * Bot token, needed to download attachment bytes.
+   *
+   * Telegram reports a file's `file_path` but not its content, and the download
+   * URL embeds the token. It is passed here rather than read from the
+   * environment so this module never touches configuration directly.
+   */
+  botToken?: string;
   /** Optional until tools are wired at the call site. */
   tools?: ToolService;
   /** Central authorization; when absent, tools stay unavailable. */
@@ -260,6 +269,133 @@ async function takeMessageBudget(ctx: Context, deps: BotDeps): Promise<boolean> 
   return false;
 }
 
+/**
+ * Run one user turn: gates, engine, delivery, accounting.
+ *
+ * Both the text and the media paths go through here, so there is exactly one
+ * place that decides whether a message may reach the engine and one place that
+ * records what it cost. Duplicating that per message type is how a gate ends up
+ * missing from one of them.
+ *
+ * Attachments are downloaded HERE rather than by the caller, so a failed
+ * download is reported to the user alongside the answer instead of being
+ * swallowed.
+ */
+async function runTurn(
+  ctx: Context,
+  deps: BotDeps,
+  input: { text: string },
+): Promise<void> {
+  const { engine } = deps;
+
+  // Private-chat gate: an unapproved user never reaches the engine, so an
+  // unknown account cannot spend the owner's API budget.
+  if (!(await gateUser(ctx, deps))) return;
+
+  // Per-user message budget. The agent makes this necessary: one message can
+  // become several provider calls, so a burst of messages is no longer a burst
+  // of one call each.
+  if (!(await takeMessageBudget(ctx, deps))) return;
+
+  if (!ctx.message || !ctx.from || !ctx.chat) return;
+  if (!shouldHandleMessage(ctx, ctx.me.id)) return;
+
+  const conversationId = String(ctx.chat.id);
+  const userId = String(ctx.from.id);
+
+  // Tools run as this actor, resolved from the trusted numeric id. Without a
+  // tool service the turn still answers — it simply has no tools.
+  const actor = deps.tools ? toolActorFor(deps.tools, deps.auth, ctx) : undefined;
+
+  // Show that work has started; a tool-using run can take tens of seconds.
+  const progress = createProgress(ctx);
+  await progress.start();
+
+  try {
+    // Attachments are fetched before the gate on emptiness, so a caption-less
+    // photo is still a valid turn.
+    const media = hasMedia(ctx.message)
+      ? await extractMedia(ctx, deps.botToken ?? "")
+      : { parts: [], skipped: [], text: input.text };
+
+    const text = input.text.trim() || media.text.trim();
+    const parts = media.parts;
+
+    // A message with nothing usable at all is answered rather than silently
+    // dropped: the user sent something and deserves to know it did not arrive.
+    if (text.length === 0 && parts.length === 0) {
+      await progress.finish();
+      await safeReply(ctx, describeNothingUsable(media.skipped));
+      return;
+    }
+
+    const out = await engine.respond({
+      conversationId,
+      userId,
+      userText: text,
+      ...(actor !== undefined ? { actor } : {}),
+      ...(parts.length > 0 ? { parts } : {}),
+      onProgress: (step) => {
+        const line = progressText(step);
+        if (line !== undefined) void progress.update(line);
+      },
+    });
+
+    // Remove the status line before the answer, so the chat shows only the
+    // reply once it exists.
+    await progress.finish();
+
+    // An attachment that could not be used is named before the answer, so the
+    // model's reply is not read as a comment on something it never received.
+    const note = describeSkipped(media.skipped);
+    if (note.length > 0) await ctx.reply(note);
+
+    for (const chunk of out.chunks) {
+      await ctx.reply(chunk);
+    }
+    // A run that hit a budget got a best-effort answer; saying so is more
+    // honest than presenting it as complete.
+    if (out.truncated) {
+      await ctx.reply("برای این پاسخ به سقف تعداد مراحل رسیدم؛ اگر لازم است دقیق‌تر بپرس.");
+    }
+    // Recorded after delivery: the spend already happened, so a failed send
+    // must not hide it.
+    deps.usage?.record({
+      userId,
+      requests: 1,
+      toolCalls: out.toolCalls,
+      inputTokens: out.usage.inputTokens,
+      outputTokens: out.usage.outputTokens,
+    });
+  } catch (err) {
+    // Clear the status line first: leaving "thinking…" above an error message
+    // would suggest the bot is still working.
+    await progress.finish();
+    await replyToFailure(ctx, err);
+    // Technical detail stays in logs, never the secret or payload.
+    console.error("[bobi] conversation error:", errToLog(err));
+  }
+}
+
+/** A short note about attachments that could not be used. */
+function describeSkipped(skipped: readonly { kind: string; reason: string }[]): string {
+  if (skipped.length === 0) return "";
+  const lines = skipped.map((s) =>
+    s.reason === "too_large"
+      ? `• ${s.kind}: حجمش بیش از حد مجاز بود.`
+      : s.reason === "unsupported"
+        ? `• ${s.kind}: این نوع فایل پشتیبانی نمی‌شود.`
+        : `• ${s.kind}: دریافت نشد.`,
+  );
+  return ["این پیوست‌ها استفاده نشدند:", ...lines].join("\n");
+}
+
+/** The reply when a message carried nothing that could be used. */
+function describeNothingUsable(skipped: readonly { kind: string; reason: string }[]): string {
+  const note = describeSkipped(skipped);
+  return note.length > 0 ? note : "پیام خالی است.";
+}
+
 export function createBot(token: string, deps: BotDeps): Bot {
   const bot = new Bot(token);
   const { engine, groups, panel, aiAdmin, userPanel } = deps;
@@ -269,7 +405,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   // reasoning, tool access, or stored content. Every entry that does — the
   // tools menu button and the conversation engine — is gated separately.
   bot.command("start", async (ctx) => {
-    await ctx.reply("سلام! من SOL هستم. یک گزینه را انتخاب کن:", {
+    await ctx.reply("سلام! من BOBI هستم. یک گزینه را انتخاب کن:", {
       reply_markup: buildMainMenu(),
     });
   });
@@ -371,82 +507,35 @@ export function createBot(token: string, deps: BotDeps): Bot {
     // Group gate runs first: an unapproved group never reaches reasoning.
     if (!(await gateGroup(ctx, groups))) return;
 
+    const text = ctx.message.text;
+
     // An owner mid-way through an AI form has their reply consumed here rather
     // than sent to the model. Consuming is gated on the owner's own pending
     // state, and the write itself re-authorizes inside the controller.
     //
     // This runs BEFORE the user gate on purpose: it is how the owner
     // administers, and the owner is exempt from the user gate anyway.
-    if (aiAdmin && !ctx.message.text.startsWith("/")) {
-      const consumed = await aiAdmin.handleText(ctx, ctx.message.text);
+    if (aiAdmin && !text.startsWith("/")) {
+      const consumed = await aiAdmin.handleText(ctx, text);
       if (consumed) return;
     }
 
-    // Private-chat gate: an unapproved user never reaches the engine, so an
-    // unknown account cannot spend the owner's API budget.
-    if (!(await gateUser(ctx, deps))) return;
-
-    // Per-user message budget. The agent makes this necessary: one message can
-    // become several provider calls, so a burst of messages is no longer a
-    // burst of one call each.
-    if (!(await takeMessageBudget(ctx, deps))) return;
-
-    if (!shouldHandleMessage(ctx, ctx.me.id)) return;
-
-    const text = ctx.message.text;
     if (text.startsWith("/")) return; // unknown command — stay silent
-
-    const conversationId = String(ctx.chat.id);
-    const userId = String(ctx.from.id);
-
-    // Tools run as this actor, resolved from the trusted numeric id. Without a
-    // tool service the turn still answers — it simply has no tools.
-    const actor = deps.tools ? toolActorFor(deps.tools, deps.auth, ctx) : undefined;
-
-    // Show that work has started; a tool-using run can take tens of seconds.
-    const progress = createProgress(ctx);
-    await progress.start();
-
-    try {
-      const out = await engine.respond({
-        conversationId,
-        userId,
-        userText: text,
-        ...(actor !== undefined ? { actor } : {}),
-        onProgress: (step) => {
-          const line = progressText(step);
-          if (line !== undefined) void progress.update(line);
-        },
-      });
-      // Remove the status line before the answer, so the chat shows only the
-      // reply once it exists.
-      await progress.finish();
-      for (const chunk of out.chunks) {
-        await ctx.reply(chunk);
-      }
-      // A run that hit a budget got a best-effort answer; saying so is more
-      // honest than presenting it as complete.
-      if (out.truncated) {
-        await ctx.reply("برای این پاسخ به سقف تعداد مراحل رسیدم؛ اگر لازم است دقیق‌تر بپرس.");
-      }
-      // Recorded after delivery: the spend already happened, so a failed send
-      // must not hide it.
-      deps.usage?.record({
-        userId,
-        requests: 1,
-        toolCalls: out.toolCalls,
-        inputTokens: out.usage.inputTokens,
-        outputTokens: out.usage.outputTokens,
-      });
-    } catch (err) {
-      // Clear the status line first: leaving "thinking…" above an error
-      // message would suggest the bot is still working.
-      await progress.finish();
-      await replyToFailure(ctx, err);
-      // Technical detail stays in logs, never the secret or payload.
-      console.error("[sol] conversation error:", errToLog(err));
-    }
+    await runTurn(ctx, deps, { text });
   });
+
+  // ---- media messages → conversation engine ----
+  //
+  // A photo, voice note, or document is an ordinary turn whose content happens
+  // to be an attachment. The gates below are the same ones the text path uses,
+  // applied through `runTurn` so there is one place that decides whether a
+  // message may reach the engine.
+  for (const kind of ["message:photo", "message:voice", "message:audio", "message:document"] as const) {
+    bot.on(kind, async (ctx) => {
+      if (!(await gateGroup(ctx, groups))) return;
+      await runTurn(ctx, deps, { text: ctx.message.caption ?? "" });
+    });
+  }
 
   // ---- edited messages ----
   // Explicit policy: an edit never produces a fresh reply. Answering an edited

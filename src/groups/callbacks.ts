@@ -360,7 +360,7 @@ export function decode(data: string): PanelAction | undefined {
   }
 }
 
-/** Parse a search-provider slug, which must be one SOL knows. */
+/** Parse a search-provider slug, which must be one BOBI knows. */
 function parseSearchProvider(
   arg: string | undefined,
   length: number,
