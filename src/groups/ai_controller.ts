@@ -22,6 +22,7 @@ import type { AdapterRegistry } from "../ai/adapter_registry";
 import { ModelService, ProviderService, type ProviderView } from "../ai/provider_service";
 import type { RemoteModel } from "../ai/adapter";
 import { ADAPTER_TEMPLATES, providerPreset } from "../ai/adapter";
+import { setupFromPreset, parseSetupReply, setupPrompt } from "../ai/setup";
 import { isAdapterType } from "../ai/adapter";
 import type { Storage } from "../storage/storage";
 import { decode, encode, type PanelAction } from "./callbacks";
@@ -29,7 +30,6 @@ import { PANEL_DENIED, PANEL_STALE, backKeyboard } from "./panel";
 import {
   adapterKeyboard,
   addFormText,
-  presetFormText,
   aiMenuKeyboard,
   aiMenuText,
   attemptsKeyboard,
@@ -68,7 +68,7 @@ const PERM_MANAGE: Permission = "settings.manage";
 
 /** A pending free-text submission, keyed by the owner's Telegram id. */
 interface PendingInput {
-  kind: "add_provider" | "edit_provider" | "search_key";
+  kind: "add_provider" | "edit_provider" | "search_key" | "setup_preset";
   providerId?: number;
   /** When set, the add flow preselects this adapter. */
   adapter?: string;
@@ -584,15 +584,11 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.add.preset", permission: PERM_MANAGE, targetId: preset.id },
           () => {
-            // The preset supplies the endpoint; the owner still supplies the
-            // label and key. It is remembered so the form parser can pre-fill
-            // the URL the owner saw.
-            this.setPending(ctx, {
-              kind: "add_provider",
-              adapter: "openai_compatible",
-              presetId: preset.id,
-            });
-            return { text: presetFormText(preset), keyboard: backKeyboard() };
+            // The owner is asked for ONE thing — the key — and everything else
+            // comes from the preset. The pending state carries the preset id so
+            // the reply can be applied without a second form.
+            this.setPending(ctx, { kind: "setup_preset", presetId: preset.id });
+            return { text: setupPrompt(preset), keyboard: backKeyboard() };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -1122,6 +1118,71 @@ export class AiAdminController {
       .split("\n")
       .map((l) => l.trim())
       .filter((l) => l.length > 0);
+
+    if (flow.kind === "setup_preset") {
+      const preset = flow.presetId !== undefined ? providerPreset(flow.presetId) : undefined;
+      // Consume the pending state BEFORE the write, so a failed attempt does
+      // not leave the owner stuck.
+      this.pending.delete(id);
+      if (!preset) {
+        await ctx.reply("این سرویس شناخته نشده است.");
+        return true;
+      }
+
+      const needsExtra = preset.requiredPlaceholder !== undefined;
+      const parsed = parseSetupReply(text, needsExtra);
+      if (!parsed) {
+        await this.render(
+          ctx,
+          needsExtra
+            ? `کلید و ${preset.requiredPlaceholder} را با کاما بفرست: کلید, مقدار`
+            : "کلید را بفرست.",
+          backKeyboard(),
+        );
+        return true;
+      }
+
+      // The URL is completed here rather than asked for: the preset knows its
+      // own shape, and the only unknown is the one value the owner just gave.
+      const baseUrl =
+        parsed.extra !== undefined && preset.requiredPlaceholder !== undefined
+          ? preset.baseUrl.replace(`{${preset.requiredPlaceholder}}`, parsed.extra)
+          : undefined;
+
+      const r = await this.admin.runAdmin(
+        { actor, operation: "ai.setup", permission: PERM_MANAGE, targetId: preset.id },
+        () =>
+          setupFromPreset(
+            {
+              storage: this.storage,
+              providers: this.providers,
+              models: this.models,
+              secrets: this.secrets,
+            },
+            preset.id,
+            parsed.apiKey,
+            baseUrl,
+          ),
+      );
+      if (!r.ok) {
+        await this.deny(ctx);
+        return true;
+      }
+
+      // The key is never echoed back; the confirmation names what was created.
+      const result = r.data;
+      const body = [result.message, ...result.notes.map((n) => `• ${n}`)].join("\n");
+      const providers = await this.admin.runAdmin(
+        { actor, operation: "ai.setup.refresh", permission: PERM_VIEW },
+        () => ({ text: providersText(this.providers.listViews()), keyboard: providersKeyboard() }),
+      );
+      await this.render(
+        ctx,
+        providers.ok ? `${body}\n\n${providers.data.text}` : body,
+        providers.ok ? providers.data.keyboard : backKeyboard(),
+      );
+      return true;
+    }
 
     if (flow.kind === "search_key") {
       if (!this.search) {

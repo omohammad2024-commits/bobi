@@ -11,7 +11,6 @@
 import { InlineKeyboard } from "grammy";
 import { encode } from "./callbacks";
 import { ADAPTER_TEMPLATES, PROVIDER_PRESETS } from "../ai/adapter";
-import type { ProviderPreset } from "../ai/adapter";
 import type { ModelView, ProviderView } from "../ai/provider_service";
 
 export function aiMenuKeyboard(): InlineKeyboard {
@@ -418,38 +417,6 @@ export function adapterKeyboard(): InlineKeyboard {
   }
   kb.text("بازگشت", encode({ kind: "ai_menu" }));
   return kb;
-}
-
-/**
- * The form for a named service, with its URL already filled in.
- *
- * The URL is shown because the owner may need to edit it — Cloudflare's embeds
- * an account id — and because what will actually be contacted should never be a
- * surprise.
- */
-export function presetFormText(preset: ProviderPreset): string {
-  const lines = [
-    `افزودن ${preset.label}`,
-    "",
-    "این پیام را پاسخ بدهید (reply) و مقادیر را خط‌به‌خط بفرستید:",
-    "",
-    `نام نمایشی: ${preset.label}`,
-    `آدرس سرویس: ${preset.baseUrl}`,
-    "کلید API: <کلید شما>",
-  ];
-
-  if (preset.requiredPlaceholder !== undefined) {
-    lines.push(
-      "",
-      `⚠️ در آدرس بالا، {${preset.requiredPlaceholder}} را با مقدار واقعی خودت عوض کن.`,
-    );
-  }
-  if (preset.suggestedModel !== undefined) {
-    lines.push("", `مدل پیشنهادی: ${preset.suggestedModel}`, "(بعد از افزودن پروایدر، مدل را جدا اضافه می‌کنی.)");
-  }
-  lines.push("", `نکته: ${preset.note}`, "", "برای لغو، /admin را بفرستید.");
-
-  return lines.join("\n");
 }
 
 export function addFormText(adapter: string): string {

@@ -169,25 +169,29 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     id: "openrouter",
     label: "OpenRouter",
     baseUrl: "https://openrouter.ai/api/v1",
-    note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model، مثل anthropic/claude-sonnet-5-5.",
+    // Taken from OpenRouter's own live model list, which is public.
+    suggestedModel: "anthropic/claude-haiku-5.5",
+    note: "آدرس و لیست مدل‌ها بررسی شد. مدل‌ها با پیشوند vendor/model انتخاب می‌شوند.",
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
     suggestedModel: "deepseek-chat",
-    note: "آدرس بررسی شد.",
+    note: "آدرس بررسی شد (بدون کلید قابل خواندن نیست).",
   },
   {
     id: "groq",
     label: "Groq",
     baseUrl: "https://api.groq.com/openai/v1",
+    suggestedModel: "llama-3.3-70b-versatile",
     note: "آدرس بررسی شد. سرعت بالا، مدل‌های open-weight.",
   },
   {
     id: "mistral",
     label: "Mistral",
     baseUrl: "https://api.mistral.ai/v1",
+    suggestedModel: "mistral-large-latest",
     note: "آدرس بررسی شد.",
   },
   {
@@ -201,6 +205,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     id: "together",
     label: "Together",
     baseUrl: "https://api.together.xyz/v1",
+    suggestedModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
     note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model.",
   },
 ];
