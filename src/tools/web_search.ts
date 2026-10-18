@@ -59,6 +59,7 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
       "جستجوی وب. برای پیدا کردن اطلاعات تازه یا منابع بیرون از دانش مدل استفاده کن.",
     enabled: true,
     permission: { requires: [WEB_SEARCH_PERMISSION] },
+    toolset: "web",
     input: {
       fields: {
         query: {

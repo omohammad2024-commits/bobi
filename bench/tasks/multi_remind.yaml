@@ -1,0 +1,16 @@
+id: multi_remind
+title_fa: "یادآور و سپس نمایش لیست"
+category: multi_step
+prompt: "برای فردا ساعت ۸ صبح یک یادآوری با متن «مصرف ویتامین» بگذار، بعد لیست یادآورها را نشانم بده."
+scoring:
+  type: tool_args
+  expected_tools: [remind_at, list_reminders]
+  arg_match:
+    - tool: remind_at
+      occurrence: 0
+      match:
+        text:
+          regex: "ویتامین"
+        dueAt:
+          exists: true
+  contains: ["ویتامین"]

@@ -55,6 +55,7 @@ export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, 
       "یک یادآور در زمان مشخص تنظیم کن. زمان باید ISO-8601 با منطقهٔ زمانی باشد و در آینده باشد.",
     enabled: true,
     permission: { requires: [REMIND_AT_PERMISSION] },
+    toolset: "schedule",
     input: {
       fields: {
         text: {
@@ -186,6 +187,7 @@ export function createListRemindersTool(
     description: "یادآورهای فعال (در انتظار اجرا) کاربر را فهرست کن.",
     enabled: true,
     permission: { requires: [LIST_REMINDERS_PERMISSION] },
+    toolset: "schedule",
     input: {
       // No `includeFired` field: the store is the scheduler's queue, so a fired
       // reminder is not retained as history. Offering the option would tell the
@@ -231,6 +233,7 @@ export function createCancelReminderTool(
     description: "یک یادآور را با شناسه‌اش لغو کن.",
     enabled: true,
     permission: { requires: [CANCEL_REMINDER_PERMISSION] },
+    toolset: "schedule",
     input: {
       fields: {
         id: {

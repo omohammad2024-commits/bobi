@@ -42,13 +42,34 @@ describe("SQL schema source", () => {
       "user_access",
       "memories",
       "reminders",
+      "scheduled_tasks",
       "usage",
       "conversation_summaries",
       "search_settings",
       "search_credentials",
       "ai_providers",
+      "ai_credential_pool",
+      "user_prefs",
+      "goals",
+      "heartbeat_log",
     ]) {
       expect(body).toContain(`CREATE TABLE IF NOT EXISTS ${table}`);
+    }
+  });
+
+  test("the full-text index over messages is declared with its sync triggers", () => {
+    // Phase D1: messages_fts is a VIRTUAL table (external-content FTS5), so
+    // it is not in the CREATE TABLE list above — assert it separately, plus
+    // the three triggers that keep it in sync inside the write transaction.
+    const body = schemaBody();
+    expect(body).toContain("CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(");
+    expect(body).toContain("tokenize='unicode61'");
+    for (const trigger of [
+      "messages_fts_insert",
+      "messages_fts_delete",
+      "messages_fts_update",
+    ]) {
+      expect(body).toContain(`CREATE TRIGGER IF NOT EXISTS ${trigger}`);
     }
   });
 

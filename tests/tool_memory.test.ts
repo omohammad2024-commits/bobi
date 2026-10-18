@@ -10,6 +10,7 @@ import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { Storage } from "../src/storage/storage";
 import { ToolService } from "../src/tools/service";
+import { SqliteMemoryProvider } from "../src/memory/sqlite_provider";
 import {
   createForgetTool,
   createMemoryTools,
@@ -29,7 +30,8 @@ function actor(userId: string): ToolActor {
 
 function service() {
   const storage = Storage.open(":memory:");
-  return { storage, svc: new ToolService({ extraTools: createMemoryTools({ storage }) }) };
+  const provider = new SqliteMemoryProvider(storage);
+  return { storage, svc: new ToolService({ extraTools: createMemoryTools({ provider }) }) };
 }
 
 /** Run through the Executor, which is the only production path. */
@@ -322,7 +324,8 @@ describe("memory persistence", () => {
 
   test("the store is capped per user", async () => {
     const storage = Storage.open(":memory:");
-    const svc = new ToolService({ extraTools: [createRememberTool({ storage }) as never] });
+    const provider = new SqliteMemoryProvider(storage);
+    const svc = new ToolService({ extraTools: [createRememberTool({ provider }) as never] });
     // Fill to the cap, then confirm the next add is refused while a replace
     // still works.
     for (let i = 0; i < 200; i++) {

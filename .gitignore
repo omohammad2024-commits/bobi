@@ -17,3 +17,7 @@ mcp.json
 
 # Local Claude Code state — machine-specific permissions, not project config.
 .claude/settings.local.json
+
+# Benchmark run artifacts (regenerated per run)
+bench/results/*.json
+bench/results/*.md

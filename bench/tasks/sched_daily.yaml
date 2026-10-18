@@ -1,0 +1,16 @@
+id: sched_daily
+title_fa: "یادآور روزانه"
+category: scheduling
+prompt: "هر روز ساعت ۸ صبح به من یادآوری کن که آب بنوشم."
+scoring:
+  type: tool_args
+  expected_tools: [remind_at]
+  arg_match:
+    - tool: remind_at
+      occurrence: 0
+      match:
+        text:
+          regex: "آب"
+        repeat: daily
+        dueAt:
+          exists: true

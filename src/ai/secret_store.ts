@@ -20,6 +20,7 @@ import {
   type CipherGCM,
   type DecipherGCM,
 } from "node:crypto";
+import type { Storage } from "../storage/storage";
 
 /** Serialized ciphertext, safe to keep in a TEXT column. */
 export interface EncryptedSecret {
@@ -153,4 +154,111 @@ function parseKey(masterKey: string): Buffer {
 
   // Passphrase: derive a 256-bit key so any usable secret can be configured.
   return createHash("sha256").update(trimmed, "utf8").digest();
+}
+
+/**
+ * A pool credential as every list call sees it.
+ * Deliberately carries NO key material: labels, flags, and timestamps only.
+ */
+export interface PoolEntryView {
+  id: number;
+  providerId: number;
+  /** Owner-chosen display label, e.g. "backup-1". */
+  label: string;
+  /** Load-sharing multiplier inside the round-robin order. */
+  weight: number;
+  enabled: boolean;
+  /** unix ms */
+  createdAtMs: number;
+}
+
+/**
+ * Pool credential store — extra encrypted API keys per provider (Phase E3).
+ *
+ * The same AES-256-GCM envelope as the primary credential is reused, and the
+ * master-key FAIL-CLOSED behavior covers pools too: with no master key,
+ * saving a pool credential throws instead of writing anything.
+ *
+ * Pool rows are envelopes on disk. Plaintext appears only as a return value
+ * of load() / decryptEnabled(), handed straight to an adapter for one
+ * request, and is never logged or returned by a list call.
+ */
+export class CredentialPoolStore {
+  constructor(
+    private readonly storage: Storage,
+    private readonly secrets: ProviderSecretStore,
+  ) {}
+
+  /**
+   * Encrypt and store a pool credential.
+   * Throws SecretStoreError("missing_key") when no master key is configured —
+   * the key is never stored, in any form, rather than stored plaintext.
+   * Returns the pool entry id.
+   */
+  savePoolCredential(providerId: number, label: string, apiKey: string): number {
+    const enc = this.secrets.encrypt(apiKey);
+    return this.storage.addPoolCredential({ providerId, label, ...enc });
+  }
+
+  /**
+   * Decrypt one pool entry for the duration of a single request.
+   * Throws SecretStoreError when the entry does not exist or decryption fails.
+   */
+  loadPoolCredential(id: number): string {
+    const row = this.storage.getPoolCredential(id);
+    if (!row) {
+      throw new SecretStoreError("decrypt_failed", "کلید پشتیبان یافت نشد.");
+    }
+    return this.secrets.decrypt(row);
+  }
+
+  /**
+   * Enabled pool entries with their decrypted keys, for one request's
+   * rotation. Entries that fail to decrypt are skipped — a corrupt envelope
+   * is unusable, not a reason to fail the whole request.
+   */
+  decryptEnabledPool(
+    providerId: number,
+  ): { entryId: number; label: string; weight: number; apiKey: string }[] {
+    const out: { entryId: number; label: string; weight: number; apiKey: string }[] = [];
+    for (const row of this.storage.listPoolCredentials(providerId)) {
+      if (!row.enabled) continue;
+      try {
+        out.push({
+          entryId: row.id,
+          label: row.label,
+          weight: row.weight,
+          apiKey: this.secrets.decrypt(row),
+        });
+      } catch {
+        // Skip the unusable entry; its envelope stays for the owner to fix or remove.
+      }
+    }
+    return out;
+  }
+
+  /** Pool entries for display. NEVER includes key material. */
+  listPoolEntries(providerId: number): PoolEntryView[] {
+    return this.storage.listPoolCredentials(providerId).map((r) => ({
+      id: r.id,
+      providerId: r.providerId,
+      label: r.label,
+      weight: r.weight,
+      enabled: r.enabled,
+      createdAtMs: r.createdAtMs,
+    }));
+  }
+
+  /** Enable or disable a pool entry. Returns whether the entry exists. */
+  setPoolEntryEnabled(id: number, enabled: boolean): boolean {
+    return this.storage.setPoolCredentialEnabled(id, enabled);
+  }
+
+  /**
+   * Remove a pool entry — the containment path for a compromised key.
+   * Returns whether a row was deleted.
+   */
+  removePoolEntry(id: number): boolean {
+    return this.storage.removePoolCredential(id);
+  }
 }

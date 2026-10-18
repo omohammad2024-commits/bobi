@@ -1,0 +1,20 @@
+id: search_capital
+title_fa: "جست‌وجوی پایتخت استرالیا"
+category: web_search
+prompt: "پایتخت استرالیا کجاست؟ جست‌وجو کن و خلاصه بگو."
+scoring:
+  type: tool_args
+  expected_tools: [web_search]
+  arg_match:
+    - tool: web_search
+      occurrence: 0
+      match:
+        query:
+          exists: true
+  contains: ["کانبرا"]
+mocks:
+  web_search:
+    results:
+      - title: "پایتخت استرالیا"
+        url: "https://example.com/canberra"
+        snippet: "پایتخت استرالیا شهر کانبرا است که در جنوب شرقی این کشور قرار دارد."

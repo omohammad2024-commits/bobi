@@ -85,6 +85,7 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
     "محتوای یک صفحهٔ وب را می‌خواند و به متن تبدیل می‌کند. برای خواندن جزئیات یک لینک.",
   enabled: true,
   permission: { requires: [FETCH_URL_PERMISSION] },
+  toolset: "web",
   input: {
     fields: {
       url: {

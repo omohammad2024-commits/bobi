@@ -30,7 +30,11 @@ export interface PinnedRequest {
   url: string;
   method: string;
   headers: Record<string, string>;
-  body?: string;
+  /**
+   * Request body. A Buffer carries binary payloads (multipart audio, file
+   * uploads) that cannot survive a string round trip.
+   */
+  body?: string | Buffer;
   timeoutMs: number;
   /** Caller cancellation. */
   signal: AbortSignal;
@@ -52,8 +56,14 @@ export interface PinnedRequest {
 export interface PinnedResponse {
   status: number;
   headers: Record<string, string | undefined>;
-  /** Response body, already read. */
+  /** Response body, already read, as UTF-8 text. */
   body: string;
+  /**
+   * The same response body, raw bytes. Text decodes (e.g. UTF-8 with a BOM)
+   * can corrupt binary payloads such as synthesised audio, so consumers of
+   * binary responses read this instead of `body`.
+   */
+  rawBody: Buffer;
 }
 
 /**
@@ -426,10 +436,12 @@ function attemptOne(
       });
       res.on("end", () => {
         settle(() => {
+          const rawBody = Buffer.concat(chunks);
           resolve({
             status: res.statusCode ?? 0,
             headers: res.headers as Record<string, string | undefined>,
-            body: Buffer.concat(chunks).toString("utf8"),
+            body: rawBody.toString("utf8"),
+            rawBody,
           });
         });
       });

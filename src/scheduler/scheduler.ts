@@ -19,6 +19,13 @@
  */
 import type { ReminderRecord, Storage } from "../storage/storage";
 import type { ReminderRepeat } from "../storage/storage";
+import type { ScheduledTaskRecord, ScheduledTaskStatus } from "../storage/storage";
+import { nextAfterSchedule, parseCron } from "./cron";
+import type { CronSchedule } from "./cron";
+import { parseTaskAction } from "../tools/scheduled_tasks";
+import type { TaskAction } from "../tools/scheduled_tasks";
+import type { ToolService } from "../tools/service";
+import type { ToolActor } from "../tools/types";
 
 /** What a delivery attempt needs to report back. */
 export interface ReminderDelivery {
@@ -249,4 +256,351 @@ export function stepFor(repeat: ReminderRepeat): number {
 
 function msg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---------------------------------------------------------------------------
+// Scheduled tasks (cron)
+// ---------------------------------------------------------------------------
+
+/**
+ * What a "message" action needs to deliver.
+ *
+ * userId is the task's creator, supplied so the delivery path can re-check
+ * that access is still granted — mirroring ReminderDelivery.
+ */
+export interface TaskMessageDelivery {
+  chatId: string;
+  userId: string;
+  text: string;
+}
+
+/** What an "agent" action needs to run. */
+export interface TaskAgentRun {
+  chatId: string;
+  userId: string;
+  prompt: string;
+}
+
+export interface TaskSchedulerOptions {
+  storage: Storage;
+  tools: ToolService;
+  /** Deliver a "message" action. Returns whether Telegram accepted it. */
+  sendMessage: (delivery: TaskMessageDelivery) => Promise<boolean>;
+  /**
+   * Run an "agent" action end-to-end (prompt the model, deliver the answer).
+   * When absent, agent actions are marked failed with a clear reason instead
+   * of crashing the pass — the scheduler must not hard-depend on the engine.
+   */
+  runAgent?: (run: TaskAgentRun) => Promise<boolean>;
+  /**
+   * Build the server-side ToolActor for a task creator, with their CURRENT
+   * permissions. Called per run, so a revocation between scheduling and
+   * execution takes effect on the next run.
+   */
+  actorForUser: (userId: string) => ToolActor;
+  /** Poll interval, ms. */
+  intervalMs: number;
+  /** Injectable clock, for deterministic tests. */
+  now?: () => number;
+  /**
+   * How far past its slot a task may be and still run. Mirrors the reminder
+   * catch-up policy: overdue within the window runs once, older slots are
+   * skipped to the next future occurrence.
+   */
+  maxLatenessMs?: number;
+  /** Per-run action budget, ms. */
+  actionTimeoutMs?: number;
+  /** Optional sink for one-line, secret-free diagnostics. */
+  onError?: (message: string) => void;
+}
+
+/** A task missed by more than an hour is skipped, not run. */
+const DEFAULT_TASK_MAX_LATENESS_MS = 60 * 60 * 1_000;
+
+/** Default per-run budget for one task action. */
+const DEFAULT_ACTION_TIMEOUT_MS = 30_000;
+
+/**
+ * Task scheduler: cron-driven recurring tasks with structured actions.
+ *
+ * The mechanics mirror ReminderScheduler on purpose — one shared timer, an
+ * atomic claim before any side effect, overdue catch-up on boot, re-arming
+ * from the SCHEDULED slot so series do not drift — because the failure modes
+ * are the same: the process is not always running, and two passes must never
+ * both act.
+ *
+ * SECURITY: a task's "tool" action runs with the CREATING owner's live
+ * permissions (see actorForUser), resolved server-side at execution time.
+ * Tasks are created owner-only (see schedule_task), so this is the owner's own
+ * authority delegated to a schedule they wrote — never ambient authority, and
+ * never anything derived from message text. Actions are structured data
+ * validated by parseTaskAction; nothing is ever eval'd.
+ */
+export class TaskScheduler {
+  private readonly storage: Storage;
+  private readonly tools: ToolService;
+  private readonly sendMessage: TaskSchedulerOptions["sendMessage"];
+  private readonly runAgent: TaskSchedulerOptions["runAgent"];
+  private readonly actorForUser: TaskSchedulerOptions["actorForUser"];
+  private readonly intervalMs: number;
+  private readonly now: () => number;
+  private readonly onError: ((message: string) => void) | undefined;
+  private readonly maxLatenessMs: number;
+  private readonly actionTimeoutMs: number;
+
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private running = false;
+
+  constructor(opts: TaskSchedulerOptions) {
+    this.storage = opts.storage;
+    this.tools = opts.tools;
+    this.sendMessage = opts.sendMessage;
+    this.runAgent = opts.runAgent;
+    this.actorForUser = opts.actorForUser;
+    this.intervalMs = opts.intervalMs;
+    this.now = opts.now ?? (() => Date.now());
+    this.onError = opts.onError;
+    this.maxLatenessMs = opts.maxLatenessMs ?? DEFAULT_TASK_MAX_LATENESS_MS;
+    this.actionTimeoutMs = opts.actionTimeoutMs ?? DEFAULT_ACTION_TIMEOUT_MS;
+  }
+
+  /** Start the loop. Idempotent: a second call is a no-op. */
+  start(): void {
+    if (this.timer !== undefined) return;
+    this.timer = setInterval(() => {
+      void this.tick();
+    }, this.intervalMs);
+    // Never hold the process open for a task poll.
+    this.timer.unref?.();
+  }
+
+  /** Stop the loop. Safe to call when not running. */
+  stop(): void {
+    if (this.timer !== undefined) {
+      clearInterval(this.timer);
+      this.timer = undefined;
+    }
+  }
+
+  get isRunning(): boolean {
+    return this.timer !== undefined;
+  }
+
+  /**
+   * One pass: run everything due.
+   *
+   * Serialised against itself, like the reminder scheduler, and returns a
+   * summary for the tests to assert on.
+   */
+  async tick(): Promise<{ executed: number; failed: number; skipped: number }> {
+    if (this.running) return { executed: 0, failed: 0, skipped: 0 };
+    this.running = true;
+    try {
+      return await this.runPass();
+    } finally {
+      this.running = false;
+    }
+  }
+
+  private async runPass(): Promise<{ executed: number; failed: number; skipped: number }> {
+    const now = this.now();
+    let due: ScheduledTaskRecord[];
+    try {
+      due = this.storage.dueTasks(now, MAX_PER_PASS);
+    } catch (err) {
+      this.report(`task scan failed: ${msg(err)}`);
+      return { executed: 0, failed: 0, skipped: 0 };
+    }
+
+    let executed = 0;
+    let failed = 0;
+    let skipped = 0;
+
+    for (const task of due) {
+      // Validate BEFORE claiming. The claim is what writes the re-arm, so the
+      // next slot has to be decided up front; a row that fails validation is
+      // still claimed and re-armed, because one bad row must not wedge the
+      // schedule — and the failure stays visible in last_status.
+      let action: TaskAction | undefined;
+      let schedule: CronSchedule | undefined;
+      try {
+        action = parseTaskAction(JSON.parse(task.actionJson) as unknown);
+        schedule = parseCron(task.cronExpr);
+      } catch (err) {
+        this.report(`task invalid: id=${task.id} ${msg(err)}`);
+      }
+
+      // Catch-up policy, mirroring reminders: a slot missed by more than the
+      // window is NOT replayed — the series jumps to its next future slot.
+      // Anything inside the window runs exactly once.
+      const tooOld = now - task.nextRunAtMs > this.maxLatenessMs;
+      const willRun = action !== undefined && schedule !== undefined && !tooOld;
+
+      // The next slot is computed from the SCHEDULED slot when the task runs,
+      // so a late run does not push the whole series later (no drift); a
+      // skipped or invalid task jumps to the next slot after now.
+      const newSlot = this.nextSlotAfter(schedule, task, willRun ? task.nextRunAtMs : now, now);
+
+      // Claim BEFORE acting. A pass that loses this race does nothing: the
+      // winner already re-armed the row and is running it.
+      let claimed: boolean;
+      try {
+        claimed = this.storage.claimTask(task.id, task.nextRunAtMs, newSlot);
+      } catch (err) {
+        this.report(`task claim failed: id=${task.id} ${msg(err)}`);
+        skipped++;
+        continue;
+      }
+      if (!claimed) {
+        skipped++;
+        continue;
+      }
+
+      let status: ScheduledTaskStatus;
+      if (willRun) {
+        const ok = await this.executeAction(task, action!);
+        status = ok ? "ok" : "failed";
+        if (ok) executed++;
+        else failed++;
+      } else if (action === undefined || schedule === undefined) {
+        status = "failed";
+        failed++;
+      } else {
+        status = "skipped";
+        skipped++;
+      }
+      this.finish(task.id, now, status);
+    }
+
+    return { executed, failed, skipped };
+  }
+
+  /**
+   * The next slot at or after `fromMs`, pushed past `now` when the schedule
+   * would otherwise land in the past. A task whose cron cannot be parsed (or
+   * whose next slot cannot be computed) falls back to one interval out, so a
+   * bad row retries later instead of hot-looping.
+   */
+  private nextSlotAfter(
+    schedule: CronSchedule | undefined,
+    task: ScheduledTaskRecord,
+    fromMs: number,
+    now: number,
+  ): number {
+    if (schedule === undefined) return now + this.intervalMs;
+    try {
+      let next = nextAfterSchedule(schedule, fromMs, task.timezone);
+      if (next <= now) next = nextAfterSchedule(schedule, now, task.timezone);
+      return next;
+    } catch (err) {
+      this.report(`task re-arm failed: id=${task.id} ${msg(err)}`);
+      return now + this.intervalMs;
+    }
+  }
+
+  private finish(id: number, ranAtMs: number, status: ScheduledTaskStatus): void {
+    try {
+      this.storage.markTaskRun(id, { ranAtMs, status });
+    } catch (err) {
+      this.report(`task mark-run failed: id=${id} ${msg(err)}`);
+    }
+  }
+
+  /**
+   * Dispatch one validated action.
+   *
+   * Every branch is bounded by the per-run budget. A "tool" action goes
+   * through the ToolService — the same permission → enabled → validate → run
+   * path as a live tool call — with the creator's actor.
+   */
+  private async executeAction(task: ScheduledTaskRecord, action: TaskAction): Promise<boolean> {
+    switch (action.type) {
+      case "tool": {
+        // SECURITY: scheduled tools run with the CREATOR's permissions,
+        // resolved live via actorForUser — not stored, not model-supplied.
+        // Task creation is owner-only, so this delegates the owner's own
+        // authority to a schedule they wrote.
+        let actor: ToolActor;
+        try {
+          actor = this.actorForUser(task.createdByUserId);
+        } catch (err) {
+          this.report(`task actor failed: id=${task.id} ${msg(err)}`);
+          return false;
+        }
+        const result = await this.tools.runTool({
+          tool: action.tool,
+          input: action.input,
+          actor,
+          timeoutMs: this.actionTimeoutMs,
+        });
+        if (result.status !== "ok") {
+          this.report(
+            `task tool failed: id=${task.id} tool=${action.tool} status=${result.status}`,
+          );
+          return false;
+        }
+        return true;
+      }
+
+      case "message": {
+        try {
+          return await this.withTimeout(
+            this.sendMessage({
+              chatId: action.chatId,
+              userId: task.createdByUserId,
+              text: action.text,
+            }),
+            `task message timed out: id=${task.id}`,
+          );
+        } catch (err) {
+          this.report(`task message failed: id=${task.id} ${msg(err)}`);
+          return false;
+        }
+      }
+
+      case "agent": {
+        if (this.runAgent === undefined) {
+          // Not a crash: the scheduler works without an engine attached, and
+          // the reason is recorded where the owner can see it.
+          this.report(`task agent failed: id=${task.id} (no agent runner configured)`);
+          return false;
+        }
+        try {
+          return await this.withTimeout(
+            this.runAgent({
+              chatId: action.chatId,
+              userId: task.createdByUserId,
+              prompt: action.prompt,
+            }),
+            `task agent timed out: id=${task.id}`,
+          );
+        } catch (err) {
+          this.report(`task agent failed: id=${task.id} ${msg(err)}`);
+          return false;
+        }
+      }
+    }
+  }
+
+  /** Bound a sender/runner promise by the per-run budget. False on timeout. */
+  private async withTimeout(promise: Promise<boolean>, message: string): Promise<boolean> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const timeout = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), this.actionTimeoutMs);
+      });
+      const outcome = await Promise.race([promise, timeout]);
+      if (outcome === "timeout") {
+        this.report(message);
+        return false;
+      }
+      return outcome;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  private report(message: string): void {
+    this.onError?.(message);
+  }
 }

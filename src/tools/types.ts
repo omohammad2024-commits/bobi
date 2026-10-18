@@ -9,6 +9,7 @@
  * - A tool's `run` receives already-validated input and never throws raw
  *   provider/OS errors — it throws ToolError with a safe, categorized kind.
  */
+import type { ContentPart } from "../ai/provider";
 
 /** Status of a tool run, as reported by the Executor. */
 export type ToolRunStatus =
@@ -28,6 +29,14 @@ export interface ToolRunResult<T = unknown> {
   data?: T;
   /** Short, user-safe message when status !== "ok". */
   message?: string;
+  /**
+   * Media the tool produced for the end user (e.g. a generated image).
+   *
+   * Shown to the user by the bot layer; it is NOT fed back to the model as
+   * data. The tool's `data` must stay model-safe (no raw base64 blobs) — the
+   * bytes travel here instead, via the tool's `extractMedia`.
+   */
+  media?: ContentPart[];
   /** Wall-clock duration of the run, ms. */
   durationMs: number;
 }
@@ -96,8 +105,46 @@ export interface Tool<TIn, TOut> {
   readonly enabled: boolean;
   /** Permission requirement; the Executor checks this per request. */
   readonly permission: ToolPermission;
+  /**
+   * When true, the authorization bridge never grants this tool's permission
+   * keys to a non-owner, so the tool is invisible to them in listings and
+   * refused by the Executor. Tools that set this ALSO check ownership in
+   * run(), as defence in depth for callers that build actors directly.
+   */
+  readonly ownerOnly?: boolean;
+  /**
+   * The toolset this tool belongs to, e.g. "utils", "memory", "schedule",
+   * "web", "media", "agents", "system".
+   *
+   * Toolsets are the E4 tool gateway's grouping knob: `ToolService`
+   * can hide whole toolsets from the model (`setActiveToolsets`), and
+   * `tool_search` uses them as an extra ranking signal. A tool with NO
+   * toolset is a core tool — always visible to the model (subject to the
+   * usual permission checks) regardless of the active toolset list.
+   */
+  readonly toolset?: string;
   /** Input contract used for validation before execution. */
   readonly input: ToolInputSpec;
+  /**
+   * Executor timeout override for this tool, ms.
+   *
+   * Most tools finish in seconds under the 10s default. A tool that is slow
+   * by design (mixture-of-agents consults several models) declares its own
+   * bound here instead of raising the global default for every tool.
+   */
+  readonly timeoutMs?: number;
+  /**
+   * Pull user-facing media out of a successful run's data.
+   *
+   * Declarative and optional: the Executor calls it on `ok` and attaches the
+   * result to `ToolRunResult.media`. Keep `data` model-safe — anything the
+   * user should SEE (image, audio, document bytes) belongs in the returned
+   * parts, not in `data`.
+   *
+   * Declared as a method (not a property) so Tool stays covariant-friendly
+   * under strictFunctionTypes — method parameters are bivariant.
+   */
+  extractMedia?(data: TOut): ContentPart[] | undefined;
   /** Execute with already-validated input. Must throw only ToolError. */
   run(input: TIn, ctx: ToolContext): Promise<TOut>;
 }

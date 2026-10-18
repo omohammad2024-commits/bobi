@@ -35,6 +35,7 @@ import type {
   AiProvider,
   ChatMessage,
   CompletionResponse,
+  ContentPart,
   ToolCall,
   ToolSpec,
 } from "../ai/provider";
@@ -163,6 +164,9 @@ export class AgentLoop {
     let usage = { inputTokens: 0, outputTokens: 0 };
     let iteration = 0;
     let stopReason: StopReason = "answered";
+    // User-facing media from tools, in call order. Kept out of `messages` and
+    // the transcript: it is delivered, not reasoned over.
+    const media: ContentPart[] = [];
 
     while (true) {
       this.throwIfCancelled(input.signal);
@@ -199,6 +203,7 @@ export class AgentLoop {
             stopReason: "budget_exhausted",
             steps,
             toolCallsExecuted: executed,
+            media,
             usage,
           };
         } catch (err) {
@@ -211,6 +216,7 @@ export class AgentLoop {
               stopReason: "budget_exhausted",
               steps,
               toolCallsExecuted: executed,
+              media,
               usage,
             };
           }
@@ -240,6 +246,7 @@ export class AgentLoop {
           stopReason: "answered",
           steps,
           toolCallsExecuted: executed,
+          media,
           usage,
         };
       }
@@ -284,6 +291,11 @@ export class AgentLoop {
 
         const result = await this.runTool(call, input);
         executed++;
+
+        // Media a tool produced for the user is collected for delivery. It
+        // never enters `messages`: the model already described what it made in
+        // `data`, and replaying base64 would bloat every later turn.
+        if (result.media !== undefined) media.push(...result.media);
 
         steps.push({
           kind: "tool",

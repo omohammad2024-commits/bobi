@@ -41,6 +41,8 @@ export type PanelAction =
   | { kind: "ai_test"; providerId: number }
   | { kind: "ai_discover"; providerId: number }
   | { kind: "ai_clear_key"; providerId: number }
+  /** Add a pool (backup) credential to a provider via the key-entry flow. */
+  | { kind: "ai_pool_key"; providerId: number }
   | { kind: "ai_delete"; providerId: number }
   | { kind: "ai_models"; providerId: number }
   | { kind: "ai_model_add_form"; providerId: number }
@@ -135,6 +137,8 @@ export function encode(action: PanelAction): string {
       return `${CALLBACK_PREFIX}:aid:${action.providerId}`;
     case "ai_clear_key":
       return `${CALLBACK_PREFIX}:aik:${action.providerId}`;
+    case "ai_pool_key":
+      return `${CALLBACK_PREFIX}:aipk:${action.providerId}`;
     case "ai_delete":
       return `${CALLBACK_PREFIX}:aix:${action.providerId}`;
     case "ai_models":
@@ -275,6 +279,8 @@ export function decode(data: string): PanelAction | undefined {
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_discover", providerId }));
     case "aik":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_clear_key", providerId }));
+    case "aipk":
+      return parseId(arg, parts.length, (providerId) => ({ kind: "ai_pool_key", providerId }));
     case "aix":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_delete", providerId }));
     case "aim":

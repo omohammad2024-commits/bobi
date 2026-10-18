@@ -1,0 +1,13 @@
+id: convert_01
+title_fa: "تبدیل واحد طول"
+category: tool_calling
+prompt: "۵ کیلومتر چند متر است؟"
+scoring:
+  type: tool_args
+  expected_tools: [unit_converter]
+  arg_match:
+    - tool: unit_converter
+      occurrence: 0
+      match:
+        value: 5
+  contains: ["۵۰۰۰"]

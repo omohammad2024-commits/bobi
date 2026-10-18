@@ -176,4 +176,21 @@ export class AiError extends Error {
 export interface AiProvider {
   readonly name: string;
   complete(req: CompletionRequest): Promise<CompletionResponse>;
+  /**
+   * Whether this provider accepts raw audio ContentParts natively, with no
+   * transcription needed.
+   *
+   * Optional: a provider that does not declare it is read as "no native
+   * audio". The bot layer asks this before deciding whether a voice message
+   * must be transcribed first (Phase B2).
+   */
+  supportsAudioInput?(): boolean;
+  /**
+   * Whether this provider accepts document ContentParts natively, with no
+   * local extraction needed.
+   *
+   * Optional: undeclared reads as "no native documents". The bot layer asks
+   * this before running local .docx/.xlsx/.pdf extraction (Phase B5).
+   */
+  supportsDocumentInput?(): boolean;
 }

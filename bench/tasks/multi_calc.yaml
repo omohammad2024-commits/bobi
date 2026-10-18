@@ -1,0 +1,20 @@
+id: multi_calc
+title_fa: "دو محاسبهٔ پشت سر هم"
+category: multi_step
+prompt: "جمع ۱۵ و ۲۷ را حساب کن، بعد نتیجه را در ۲ ضرب کن."
+scoring:
+  type: tool_args
+  expected_tools: [calculator, calculator]
+  arg_match:
+    - tool: calculator
+      occurrence: 0
+      match:
+        op: add
+        a: 15
+        b: 27
+    - tool: calculator
+      occurrence: 1
+      match:
+        op: multiply
+        b: 2
+  contains: ["۸۴"]

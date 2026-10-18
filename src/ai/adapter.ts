@@ -19,6 +19,10 @@ import type { AiProvider, CompletionRequest, CompletionResponse } from "./provid
 export interface AdapterCapabilities {
   /** The service exposes a model-listing endpoint this adapter can call. */
   listModels?: boolean;
+  /** The adapter serialises audio ContentParts natively (no transcription needed). */
+  audioInput?: boolean;
+  /** The adapter serialises document ContentParts natively (no local extraction needed). */
+  documentInput?: boolean;
   /** A short note about what this adapter supports, for the panel. */
   notes?: string;
 }

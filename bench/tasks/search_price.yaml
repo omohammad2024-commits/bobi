@@ -1,0 +1,20 @@
+id: search_price
+title_fa: "جست‌وجوی قیمت سکه"
+category: web_search
+prompt: "قیمت سکهٔ امروز چقدر است؟"
+scoring:
+  type: tool_args
+  expected_tools: [web_search]
+  arg_match:
+    - tool: web_search
+      occurrence: 0
+      match:
+        query:
+          regex: "سکه"
+  contains: ["تومان"]
+mocks:
+  web_search:
+    results:
+      - title: "قیمت سکه امروز"
+        url: "https://example.com/coin-today"
+        snippet: "قیمت هر سکهٔ تمام امروز به ۹۵ میلیون تومان رسید."

@@ -1,0 +1,15 @@
+id: sched_once
+title_fa: "یادآور یک‌باره برای فردا"
+category: scheduling
+prompt: "فردا ساعت ۹ صبح به من یادآوری کن که در جلسه شرکت کنم."
+scoring:
+  type: tool_args
+  expected_tools: [remind_at]
+  arg_match:
+    - tool: remind_at
+      occurrence: 0
+      match:
+        text:
+          regex: "جلسه"
+        dueAt:
+          regex: "^\\d{4}-\\d{2}-\\d{2}T"

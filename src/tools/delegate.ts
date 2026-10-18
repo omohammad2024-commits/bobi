@@ -1,0 +1,206 @@
+/**
+ * delegate — run a bounded child agent as a tool.
+ *
+ * The parent model hands a self-contained subtask to a fresh AgentLoop that
+ * runs with a filtered tool registry and tight budgets, then gets back a
+ * short summary. This is how the agent parallelises or isolates work without
+ * the parent's context filling up with intermediate steps.
+ *
+ * SECURITY MODEL (read before touching this file):
+ *
+ *  1. DEPTH-1 IS STRUCTURAL, NOT A COUNTER. The child loop's ToolService is
+ *     built from the parent's registry with `delegate` removed, via
+ *     createChildToolService(). The child model is never told `delegate`
+ *     exists (toolSpecsFor omits it) and a direct request is refused with
+ *     not_found by the Executor. A recursion bomb is impossible by
+ *     construction — there is no depth counter the model could influence.
+ *
+ *  2. SAME ACTOR, NO ESCALATION. The child loop runs as ctx.actor, the exact
+ *     identity the parent's tool call was authorized for. The child cannot
+ *     reach tools the actor may not run: toolSpecsFor filters by can(), and
+ *     the Executor re-checks per call.
+ *
+ *  3. CHILD BUDGETS ARE CAPPED BELOW THE PARENT'S. maxIterations <= 3,
+ *     maxToolCalls <= 5, totalTimeoutMs 60s — all at or under the parent's
+ *     typical caps (6 iterations / 12 tool calls / 120s), and none of them is
+ *     model-supplied beyond the declared input ranges.
+ *
+ *  4. CHILD OUTPUT IS UNTRUSTED DATA. The summary returns inside `data`, and
+ *     the parent loop wraps every tool result in <tool_result>, which the
+ *     system prompt already declares to be data, never instructions. The
+ *     parent must not treat the child's words as orders.
+ *
+ *  5. FAILURES NEVER LEAK INTERNALS. A child throw becomes
+ *     { ok: false, error } with a fixed Persian message; provider payloads,
+ *     stack traces, and model names stay out.
+ */
+import { AgentCancelled, AgentLoop } from "../agent/loop";
+import { AiError } from "../ai/provider";
+import type { AiProvider } from "../ai/provider";
+import { DEFAULT_TOOLS, ToolService } from "./service";
+import { ToolError } from "./errors";
+import type { Tool, ToolContext } from "./types";
+
+export const DELEGATE_TOOL_NAME = "delegate";
+export const DELEGATE_PERMISSION = "tools:delegate";
+
+/** Wall-clock ceiling for one delegation, ms. Input-independent. */
+export const DELEGATE_TOTAL_TIMEOUT_MS = 60_000;
+
+/** Per provider call inside the child loop, ms. Input-independent. */
+const DELEGATE_CALL_TIMEOUT_MS = 20_000;
+
+/** Summary length cap, in characters. Input-independent. */
+export const DELEGATE_SUMMARY_MAX_CHARS = 2000;
+
+/** Named note appended when the child's answer is truncated. */
+const TRUNCATION_NOTE = "… [یادداشت: پاسخ فرزند بلند بود و کوتاه شد]";
+
+export interface DelegateInput {
+  /** The subtask, self-contained. */
+  task: string;
+  /** Child model turns, 1..3. Defaults to 3. */
+  maxIterations?: number;
+  /** Child tool executions, 1..5. Defaults to 5. */
+  maxToolCalls?: number;
+}
+
+export type DelegateOutput = { ok: true; summary: string } | { ok: false; error: string };
+
+export interface DelegateToolDeps {
+  /** Parent registry: the child view is derived from this, minus `delegate`. */
+  tools: ToolService;
+  provider: AiProvider;
+  /** Model id the child loop requests. */
+  model: string;
+}
+
+const CHILD_SYSTEM_PROMPT =
+  "You are a focused subagent. Complete ONLY this task, answer concisely in Persian. " +
+  "Use the tools available to you. Do not ask clarifying questions.";
+
+/**
+ * Build the child's registry view: every tool the parent registry holds,
+ * EXCEPT `delegate` itself.
+ *
+ * Built with the ToolService public API only (constructor + registry.list):
+ * the constructor re-registers DEFAULT_TOOLS, so they are excluded from the
+ * extra list to avoid duplicate registration. Tool objects are shared by
+ * reference — they are stateless, so this is safe.
+ */
+export function createChildToolService(parent: ToolService): ToolService {
+  const defaultNames = new Set(DEFAULT_TOOLS.map((t) => t.name));
+  const childTools = parent.registry
+    .list()
+    .filter((t) => t.name !== DELEGATE_TOOL_NAME && !defaultNames.has(t.name));
+  return new ToolService({
+    extraTools: childTools as unknown as readonly Tool<unknown, unknown>[],
+  });
+}
+
+/** Build the delegate tool. Not ownerOnly: approved users may delegate. */
+export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, DelegateOutput> {
+  return {
+    name: DELEGATE_TOOL_NAME,
+    description:
+      "واگذاری یک زیروظیفهٔ مستقل به یک ایجنت فرزند با ابزارهای محدود و سقف زمانی. " +
+      "برای کارهای فرعی که نباید زمینهٔ گفتگوی اصلی را شلوغ کند استفاده کن؛ خلاصهٔ فارسی برمی‌گرداند.",
+    enabled: true,
+    permission: { requires: [DELEGATE_PERMISSION] },
+    toolset: "agents",
+    input: {
+      fields: {
+        task: {
+          type: "string",
+          required: true,
+          description: "شرح کامل و مستقل زیروظیفه.",
+          minLength: 1,
+          maxLength: 2000,
+        },
+        maxIterations: {
+          type: "integer",
+          description: "سقف دورهای مدل در ایجنت فرزند (۱ تا ۳، پیش‌فرض ۳).",
+          minimum: 1,
+          maximum: 3,
+        },
+        maxToolCalls: {
+          type: "integer",
+          description: "سقف فراخوانی ابزار در ایجنت فرزند (۱ تا ۵، پیش‌فرض ۵).",
+          minimum: 1,
+          maximum: 5,
+        },
+      },
+    },
+
+    async run(input: DelegateInput, ctx: ToolContext): Promise<DelegateOutput> {
+      const task = input.task.trim();
+      if (task.length === 0) {
+        throw new ToolError("invalid_input", "شرح زیروظیفه خالی است.");
+      }
+      const maxIterations = input.maxIterations ?? 3;
+      const maxToolCalls = input.maxToolCalls ?? 5;
+
+      // Depth-1 by construction: this registry has no `delegate` tool, so the
+      // child model cannot delegate further no matter what it tries.
+      const childTools = createChildToolService(deps.tools);
+      const loop = new AgentLoop({
+        provider: deps.provider,
+        model: deps.model,
+        tools: childTools,
+        callTimeoutMs: DELEGATE_CALL_TIMEOUT_MS,
+        budgets: {
+          maxIterations,
+          maxToolCalls,
+          totalTimeoutMs: DELEGATE_TOTAL_TIMEOUT_MS,
+        },
+      });
+
+      try {
+        const result = await loop.run({
+          systemPrompt: CHILD_SYSTEM_PROMPT,
+          messages: [{ role: "user", content: task }],
+          // The SAME actor as the parent call: no privilege escalation. The
+          // child's tool visibility and every execution are authorized against
+          // this identity, exactly as the parent's own tools are.
+          actor: ctx.actor,
+          signal: ctx.signal,
+        });
+        // The summary travels in `data`: the parent loop wraps it in
+        // <tool_result>, i.e. untrusted data, never instructions.
+        return { ok: true, summary: truncateSummary(result.text) };
+      } catch (err) {
+        // Never rethrow raw: a child failure may carry provider internals.
+        // Cancellation included: the parent loop re-checks its own signal at
+        // the next boundary and raises AgentCancelled itself.
+        return { ok: false, error: childErrorMessage(err) };
+      }
+    },
+  };
+}
+
+/** Cap the child's answer; the cut is marked with a named note. */
+function truncateSummary(text: string): string {
+  if (text.length <= DELEGATE_SUMMARY_MAX_CHARS) return text;
+  return text.slice(0, DELEGATE_SUMMARY_MAX_CHARS - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
+}
+
+/** Fixed, user-safe Persian message for any child failure. */
+function childErrorMessage(err: unknown): string {
+  if (err instanceof ToolError) return err.message; // already user-safe
+  if (err instanceof AgentCancelled) return "اجرای زیروظیفه لغو شد.";
+  if (err instanceof AiError) {
+    switch (err.kind) {
+      case "timeout":
+        return "زیروظیفه به سقف زمانی رسید و کامل نشد.";
+      case "aborted":
+        return "اجرای زیروظیفه لغو شد.";
+      case "quota":
+        return "سهمیهٔ سرویس هوش مصنوعی تمام شد؛ بعداً تلاش کن.";
+      case "auth":
+        return "پیکربندی سرویس هوش مصنوعی معتبر نیست.";
+      default:
+        return "اجرای زیروظیفه ناموفق بود.";
+    }
+  }
+  return "اجرای زیروظیفه ناموفق بود.";
+}

@@ -1,0 +1,13 @@
+id: mem_food
+title_fa: "به‌خاطر سپردن غذای موردعلاقه"
+category: memory
+turns:
+  - "من عاشق قورمه‌سبزی هستم، این را به خاطر بسپار."
+  - "غذای موردعلاقهٔ من چیست؟"
+scoring:
+  type: multi_turn
+  per_turn:
+    - type: exact_tools
+      expected_tools: [remember]
+    - type: contains
+      contains: ["قورمه‌سبزی"]

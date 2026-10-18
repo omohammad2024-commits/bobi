@@ -66,8 +66,13 @@ describe("ToolService", () => {
       "execute",
       "listActive",
       "listActiveNames",
+      "listToolsets",
       "runTool",
+      "searchableTools",
+      "setActiveToolsets",
+      "toolSearchDeps",
       "toolSpecsFor",
+      "toolsetVisible",
     ]);
   });
 

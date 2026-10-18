@@ -1,0 +1,16 @@
+id: multi_datetime_remind
+title_fa: "تاریخ امروز و یادآور فردا"
+category: multi_step
+prompt: "بگو امروز چه تاریخی است، بعد برای همین موقعِ فردا یک یادآور با متن «تماس با بانک» بگذار."
+scoring:
+  type: tool_args
+  expected_tools: [date_time, remind_at]
+  arg_match:
+    - tool: remind_at
+      occurrence: 0
+      match:
+        text:
+          regex: "بانک"
+        dueAt:
+          exists: true
+  contains: ["بانک"]

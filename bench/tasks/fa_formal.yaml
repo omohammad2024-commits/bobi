@@ -1,0 +1,11 @@
+id: fa_formal
+title_fa: "متن رسمی درخواست مرخصی"
+category: persian
+prompt: "یک متن رسمی و کوتاه برای درخواست یک روز مرخصی از مدیر بنویس."
+scoring:
+  type: rubric_fa
+  rubric:
+    min_length: 80
+    max_length: 1200
+    forbid_latin: true
+    contains_any: ["احتراماً", "جناب", "با سلام", "با احترام"]

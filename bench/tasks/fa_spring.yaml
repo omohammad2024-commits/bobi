@@ -1,0 +1,10 @@
+id: fa_spring
+title_fa: "پاراگراف فارسی دربارهٔ بهار"
+category: persian
+prompt: "یک پاراگراف کوتاه دربارهٔ بهار بنویس."
+scoring:
+  type: rubric_fa
+  rubric:
+    min_length: 60
+    max_length: 800
+    forbid_latin: true

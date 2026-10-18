@@ -5,17 +5,22 @@
  * than automatic behaviour: BOBI has no reliable way to know that "اسم پروژه‌م
  * سول است" matters and "سلام" does not.
  *
- * Isolation is enforced in storage, not here: every method takes the owner id
- * and every query filters on it, so a tool call can only ever touch the calling
- * user's own memory. The actor comes from the server-supplied ToolActor, so a
- * model cannot address another user's memory by putting an id in its arguments.
+ * Isolation is enforced below the tools, not here: every method takes the
+ * owner id and the provider scopes every query to it, so a tool call can only
+ * ever touch the calling user's own memory. The actor comes from the
+ * server-supplied ToolActor, so a model cannot address another user's memory
+ * by putting an id in its arguments.
  *
  * The system prompt states only HOW MANY memories exist, never their contents.
  * That keeps the context small and lets the model search for what it needs
  * rather than being handed everything on every turn.
+ *
+ * Phase D2: the tools take a MemoryProvider instead of Storage. The provider
+ * may be sync or async — every call is awaited either way — so swapping the
+ * backend never changes the tools.
  */
 import { ToolError } from "./errors";
-import type { Storage } from "../storage/storage";
+import type { MemoryProvider } from "../memory/provider";
 import type { Tool, ToolActor, ToolContext } from "./types";
 
 export const REMEMBER_PERMISSION = "tools:remember";
@@ -30,7 +35,7 @@ const DEFAULT_RECALL_LIMIT = 5;
 const MAX_RECALL_LIMIT = 20;
 
 export interface MemoryDeps {
-  storage: Storage;
+  provider: MemoryProvider;
 }
 
 // ---------- remember ----------
@@ -55,6 +60,7 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       "یک نکتهٔ پایدار دربارهٔ کاربر را برای همیشه ذخیره کن (نام، ترجیح، پروژه). برای اطلاعات زودگذر استفاده نکن.",
     enabled: true,
     permission: { requires: [REMEMBER_PERMISSION] },
+    toolset: "memory",
     input: {
       fields: {
         key: {
@@ -82,23 +88,23 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       }
 
       const userId = ownerOf(ctx.actor);
-      const existing = deps.storage.getMemory(userId, key);
+      const existing = await deps.provider.get(userId, key);
 
       // An ADD to a full store is refused; a REPLACE is not, since it does not
       // increase the count.
-      if (!existing && deps.storage.countMemories(userId) >= MAX_MEMORIES_PER_USER) {
+      if (existing === undefined && (await deps.provider.count(userId)) >= MAX_MEMORIES_PER_USER) {
         throw new ToolError(
           "invalid_input",
           "حافظه پر است؛ ابتدا با forget چند مورد را پاک کن.",
         );
       }
 
-      deps.storage.upsertMemory({ userId, key, content });
+      await deps.provider.upsert(userId, key, content);
 
       return {
         key,
         replaced: existing !== undefined,
-        total: deps.storage.countMemories(userId),
+        total: await deps.provider.count(userId),
       };
     },
   };
@@ -124,6 +130,7 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       "حافظه‌ها را جستجو کن. بدون query همهٔ موارد اخیر را برمی‌گرداند.",
     enabled: true,
     permission: { requires: [RECALL_PERMISSION] },
+    toolset: "memory",
     input: {
       fields: {
         query: {
@@ -144,9 +151,9 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       const userId = ownerOf(ctx.actor);
       const limit = clampLimit(input.limit);
 
-      // Every read goes through the owner-filtered query, so there is no path
+      // Every read goes through the owner-scoped provider, so there is no path
       // that could return another user's memory.
-      const all = deps.storage.listMemories(userId, MAX_MEMORIES_PER_USER);
+      const all = await deps.provider.list(userId, MAX_MEMORIES_PER_USER);
 
       const query = input.query?.trim() ?? "";
       const matches =
@@ -203,6 +210,7 @@ export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutp
     description: "یک حافظه را با کلیدش پاک کن.",
     enabled: true,
     permission: { requires: [FORGET_PERMISSION] },
+    toolset: "memory",
     input: {
       fields: {
         key: {
@@ -219,8 +227,8 @@ export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutp
       const key = normalizeKey(input.key);
       const userId = ownerOf(ctx.actor);
 
-      const removed = deps.storage.deleteMemory(userId, key);
-      return { key, removed, total: deps.storage.countMemories(userId) };
+      const removed = await deps.provider.delete(userId, key);
+      return { key, removed, total: await deps.provider.count(userId) };
     },
   };
 }

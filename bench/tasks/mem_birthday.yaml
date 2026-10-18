@@ -1,0 +1,13 @@
+id: mem_birthday
+title_fa: "به‌خاطر سپردن تاریخ تولد"
+category: memory
+turns:
+  - "تولد من ۱۲ خرداد است. یادت نرود."
+  - "تولدم چه روزی است؟"
+scoring:
+  type: multi_turn
+  per_turn:
+    - type: exact_tools
+      expected_tools: [remember]
+    - type: contains
+      contains: ["۱۲ خرداد"]

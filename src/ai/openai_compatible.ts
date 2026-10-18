@@ -12,11 +12,12 @@
  * A provider's response body is never returned to the caller: it can echo the
  * request, so only a caller-chosen static message leaves this module.
  */
-import { AiError } from "./provider";
+import { AiError, base64Bytes, MAX_ATTACHMENT_BYTES } from "./provider";
 import type {
   ChatMessage,
   CompletionRequest,
   CompletionResponse,
+  ContentPart,
   TokenUsage,
   ToolCall,
 } from "./provider";
@@ -29,8 +30,9 @@ import {
 import type { AdapterTarget } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
-import { dataUrl, selectParts, textWithPartNotes } from "./parts";
+import { dataUrl, partDropNote, selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
+import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
 
 export interface OpenAITarget extends AdapterTarget {
   /** Owner-tunable settings. Only known keys are honored. */
@@ -143,6 +145,18 @@ export function buildRequestBody(
     }
   }
 
+  // No explicit cache breakpoint exists on the chat-completions wire: prompt
+  // caching there is automatic and server-side. A `prompt_cache_key` field
+  // exists on some endpoints but it changes routing semantics (it names the
+  // cache bucket rather than marking a breakpoint), so it is deliberately not
+  // set. Documented, not changed.
+
+  // Opt-in reasoning: off unless the owner set BOBI_REASONING_EFFORT.
+  const reasoning = reasoningParamsFor("openai_compatible", resolveReasoningEffort());
+  if (reasoning.enabled && reasoning.levelName !== undefined) {
+    body["reasoning_effort"] = reasoning.levelName;
+  }
+
   const system = settings?.systemPrompt;
   if (typeof system === "string" && system.length > 0) {
     // Prepend as a system turn; the service decides how to treat it.
@@ -192,15 +206,115 @@ function toWireMessage(m: ChatMessage): Record<string, unknown> {
   // A message with attachments becomes a content ARRAY. This service requires
   // that form for images, and an unsupported attachment is described in the text
   // so the model at least learns it was sent.
-  const { sendable, dropped } = selectParts(m);
-  if (sendable.length > 0) {
-    return { role: m.role, content: contentArray(m, sendable) };
+  //
+  // A text/* document is plain UTF-8 under the base64, and this wire format
+  // carries text natively — so it is decoded and inlined as a labeled text
+  // block instead of being reported as unsent. Binary documents keep the
+  // existing named-note fallback; they never pass through here.
+  const split = splitInlineTextDocuments(m);
+  const { sendable, dropped } = selectParts(split.message);
+  const text = [textWithPartNotes(split.message), ...split.droppedNotes]
+    .filter((s) => s.length > 0)
+    .join("\n");
+  if (sendable.length > 0 || split.inlineDocs.length > 0) {
+    return { role: m.role, content: contentArray(text, sendable, split.inlineDocs) };
   }
-  if (dropped.length > 0) {
-    return { role: m.role, content: textWithPartNotes(m) };
+  if (dropped.length > 0 || split.droppedNotes.length > 0) {
+    return { role: m.role, content: text };
   }
 
   return { role: m.role, content: m.content };
+}
+
+/**
+ * Ceiling on the decoded text inlined from one text/* document, in bytes.
+ *
+ * The document rides as ordinary text in the request body, so it still costs
+ * context; the cap keeps one pasted file from crowding the rest of the turn
+ * out. Anything longer is cut at a character boundary and the cut is named.
+ */
+const MAX_INLINE_TEXT_DOC_BYTES = 50 * 1024;
+
+/** A text/* document decoded for inlining as one labeled text block. */
+interface InlineTextDoc {
+  /** The label, e.g. "[سند متنی notes.txt]: ". */
+  label: string;
+  /** The decoded text, possibly truncated (the truncation is named). */
+  text: string;
+}
+
+type TextDocumentPart = Extract<ContentPart, { type: "document" }>;
+
+/**
+ * Split text/* documents out of a message.
+ *
+ * Unlike binary attachments they have a safe wire form here — plain UTF-8 —
+ * so they are decoded and inlined as labeled text blocks rather than being
+ * reported as unsent. Binary documents stay in `message` and keep the existing
+ * named-note fallback; they never pass through here.
+ *
+ * A text document past the attachment ceiling is not decoded at all: it gets
+ * the same named "too large" note every other dropped attachment gets, through
+ * the shared partDropNote wording.
+ */
+function splitInlineTextDocuments(message: ChatMessage): {
+  inlineDocs: InlineTextDoc[];
+  message: ChatMessage;
+  droppedNotes: string[];
+} {
+  if (message.parts === undefined) return { inlineDocs: [], message, droppedNotes: [] };
+
+  const inlineDocs: InlineTextDoc[] = [];
+  const rest: ContentPart[] = [];
+  const droppedNotes: string[] = [];
+
+  for (const part of message.parts) {
+    if (part.type !== "document") {
+      rest.push(part);
+      continue;
+    }
+    const mediaType = part.mediaType.split(";")[0]!.trim().toLowerCase();
+    if (!mediaType.startsWith("text/")) {
+      rest.push(part);
+      continue;
+    }
+    if (base64Bytes(part.base64) > MAX_ATTACHMENT_BYTES) {
+      droppedNotes.push(partDropNote(mediaType, "too_large"));
+      continue;
+    }
+    inlineDocs.push(decodeTextDocument(part, mediaType));
+  }
+
+  return { inlineDocs, message: { ...message, parts: rest }, droppedNotes };
+}
+
+/**
+ * Decode one text/* document into a labeled text block.
+ *
+ * The byte cap is applied to the DECODED text: anything longer is cut at a
+ * character boundary and the cut is named, so the model knows it did not see
+ * the whole file.
+ */
+function decodeTextDocument(part: TextDocumentPart, mediaType: string): InlineTextDoc {
+  const label = `[سند متنی ${part.name ?? mediaType}]: `;
+  const decoded = Buffer.from(part.base64, "base64").toString("utf8");
+  if (Buffer.byteLength(decoded, "utf8") <= MAX_INLINE_TEXT_DOC_BYTES) {
+    return { label, text: decoded };
+  }
+
+  // Shrink by characters; removing characters only ever shrinks the byte
+  // length, so this converges.
+  let end = Math.max(
+    1,
+    Math.floor((MAX_INLINE_TEXT_DOC_BYTES / Buffer.byteLength(decoded, "utf8")) * decoded.length),
+  );
+  while (end > 0 && Buffer.byteLength(decoded.slice(0, end), "utf8") > MAX_INLINE_TEXT_DOC_BYTES) {
+    end = Math.floor(end / 2);
+  }
+  return {
+    label,
+    text: `${decoded.slice(0, end)}… [ادامه‌ی متن به دلیل حجم زیاد حذف شد]`,
+  };
 }
 
 /**
@@ -210,18 +324,32 @@ function toWireMessage(m: ChatMessage): Record<string, unknown> {
  * this family of services accepts without a separate upload step. Audio has no
  * portable representation here, so it is named in the text instead of being sent
  * as a part the endpoint would reject.
+ *
+ * SECURITY: a data URL carries the raw attachment bytes. It is built here only
+ * to be placed in the request body sent to the configured provider through the
+ * pinned, SSRF-guarded transport (see pinned_transport.ts and dns_guard.ts);
+ * it is never logged and never persisted — the engine commits text-only turns
+ * to history, so the bytes live only for the duration of this request.
  */
-function contentArray(m: ChatMessage, sendable: readonly SendablePart[]): unknown[] {
+function contentArray(
+  text: string,
+  sendable: readonly SendablePart[],
+  inlineDocs: readonly InlineTextDoc[],
+): unknown[] {
   const out: unknown[] = [];
-  const text = textWithPartNotes(m);
   if (text.length > 0) out.push({ type: "text", text });
+
+  // Decoded text documents ride as labeled plain-text blocks.
+  for (const doc of inlineDocs) {
+    out.push({ type: "text", text: `${doc.label}${doc.text}` });
+  }
 
   for (const part of sendable) {
     if (part.type === "image") {
       out.push({ type: "image_url", image_url: { url: dataUrl(part) } });
     } else {
       // Named rather than sent: this adapter has no wire form for audio or a
-      // document, and a fabricated one would be rejected by the endpoint.
+      // (binary) document, and a fabricated one would be rejected by the endpoint.
       out.push({ type: "text", text: `[پیوست ${part.type}: ${part.mediaType} ارسال نشد]` });
     }
   }

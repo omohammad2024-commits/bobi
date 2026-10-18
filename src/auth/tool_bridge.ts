@@ -52,6 +52,9 @@ export function authorizeToolUse(
   const keys: string[] = [];
   for (const tool of registeredTools) {
     if (!tool.enabled) continue;
+    // Owner-only tools are withheld from everyone else: without the key the
+    // Executor refuses them, and the model is never told they exist.
+    if (tool.ownerOnly === true && !auth.isOwner(actor)) continue;
     for (const key of tool.permission.requires) keys.push(key);
   }
 

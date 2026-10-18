@@ -7,6 +7,7 @@
  * outcome status, never its raw input or output.
  */
 import type { ToolRunStatus } from "../tools/types";
+import type { ContentPart } from "../ai/provider";
 
 /** One thing that happened during a run, in order. */
 export type AgentStep =
@@ -33,6 +34,13 @@ export interface AgentRunResult {
   steps: readonly AgentStep[];
   /** Tool calls actually executed (not merely requested). */
   toolCallsExecuted: number;
+  /**
+   * User-facing media produced by tools during the run, in call order.
+   *
+   * Collected from `ToolRunResult.media`; the bot layer delivers it after the
+   * text. Never persisted in history and never replayed to the model.
+   */
+  media: ContentPart[];
   /** Token totals across every provider call in this run. */
   usage: { inputTokens: number; outputTokens: number };
 }

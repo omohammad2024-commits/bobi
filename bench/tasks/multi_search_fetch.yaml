@@ -1,0 +1,16 @@
+id: multi_search_fetch
+title_fa: "جست‌وجو و خواندن اولین نتیجه"
+category: multi_step
+prompt: "عبارت «قیمت دلار امروز» را جست‌وجو کن و از اولین نتیجه یک خلاصهٔ کوتاه بگو."
+scoring:
+  type: exact_tools
+  expected_tools: [web_search, fetch_url]
+  contains: ["تومان"]
+mocks:
+  web_search:
+    results:
+      - title: "قیمت دلار امروز در بازار آزاد"
+        url: "https://example.com/dollar-today"
+        snippet: "قیمت دلار امروز در بازار آزاد به ۱۵۰ هزار تومان رسید."
+  fetch_url:
+    "https://example.com/dollar-today": "قیمت دلار امروز در بازار آزاد ۱۵۰ هزار تومان اعلام شد. کارشناسان نوسان را موقتی می‌دانند."

@@ -34,6 +34,8 @@ import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
 import { selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
+import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
+import { promptCacheEnabled, anthropicCacheBreakpoint } from "./cache_policy";
 
 /** Anthropic requires an explicit cap; this is only a fallback. */
 const DEFAULT_MAX_TOKENS = 1024;
@@ -50,7 +52,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
   /** Equals the adapter type; the engine reads this for its fake check. */
   readonly name = "anthropic";
   readonly type = "anthropic" as const;
-  readonly capabilities = { notes: "POST {baseUrl}/messages" };
+  readonly capabilities = { notes: "POST {baseUrl}/messages", documentInput: true };
   readonly label = "Anthropic";
 
   private readonly target: AnthropicTarget;
@@ -119,15 +121,32 @@ export function buildBody(target: AnthropicTarget, req: CompletionRequest): Reco
     throw new AiError("invalid_response", "درخواست پیامی نداشت.");
   }
 
-  const maxTokens =
+  // Opt-in reasoning: off unless the owner set BOBI_REASONING_EFFORT. The
+  // params are resolved once per request so the test can toggle them via env.
+  const reasoning = reasoningParamsFor("anthropic", resolveReasoningEffort());
+
+  const configuredMaxTokens =
     target.settings?.maxTokens !== undefined &&
     Number.isFinite(target.settings.maxTokens) &&
     target.settings.maxTokens > 0
       ? Math.min(Math.trunc(target.settings.maxTokens), 100_000)
       : DEFAULT_MAX_TOKENS;
+  // Extended thinking is rejected when max_tokens <= budget_tokens, so the
+  // enabled path leaves headroom for actual output above the budget.
+  const maxTokens =
+    reasoning.enabled && configuredMaxTokens <= reasoning.budgetTokens
+      ? reasoning.budgetTokens + 1024
+      : configuredMaxTokens;
 
   const body: Record<string, unknown> = { model: req.model, max_tokens: maxTokens, messages };
-  if (system !== undefined && system.length > 0) body["system"] = system;
+  if (system !== undefined && system.length > 0) {
+    // Opt-in prompt caching: the system prompt becomes a content block so it
+    // can carry a cache_control breakpoint. Off by default, so the default
+    // request stays a plain string exactly as before.
+    body["system"] = promptCacheEnabled()
+      ? [{ type: "text", text: system, ...anthropicCacheBreakpoint() }]
+      : system;
+  }
 
   // This service takes tool definitions as a flat array with `input_schema`,
   // not wrapped in the OpenAI `function` envelope.
@@ -140,7 +159,13 @@ export function buildBody(target: AnthropicTarget, req: CompletionRequest): Reco
   }
 
   const t = target.settings?.temperature;
-  if (typeof t === "number" && Number.isFinite(t)) {
+  if (reasoning.enabled) {
+    // Vendor rule: extended thinking requires temperature 1; anything else is
+    // rejected. Only applied on the explicitly enabled path, so the default
+    // request (reasoning off) is untouched.
+    body["thinking"] = { type: "enabled", budget_tokens: reasoning.budgetTokens };
+    body["temperature"] = 1;
+  } else if (typeof t === "number" && Number.isFinite(t)) {
     body["temperature"] = clamp(t, 0, 1);
   }
   return body;

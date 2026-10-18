@@ -68,7 +68,7 @@ const PERM_MANAGE: Permission = "settings.manage";
 
 /** A pending free-text submission, keyed by the owner's Telegram id. */
 interface PendingInput {
-  kind: "add_provider" | "edit_provider" | "search_key" | "setup_preset";
+  kind: "add_provider" | "edit_provider" | "search_key" | "setup_preset" | "add_pool_key";
   providerId?: number;
   /** When set, the add flow preselects this adapter. */
   adapter?: string;
@@ -687,6 +687,34 @@ export class AiAdminController {
         return;
       }
 
+      case "ai_pool_key": {
+        const id = action.providerId;
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.pool_key.form", permission: PERM_MANAGE, targetId: String(id) },
+          () => {
+            const view = this.providers.view(id);
+            if (!view) return undefined;
+            // The key travels in the owner's next message, server-side only:
+            // it is never shown, echoed, or handed to a model.
+            this.setPending(ctx, { kind: "add_pool_key", providerId: id });
+            return {
+              text: [
+                "کلید پشتیبان را در پیام بعدی بفرست.",
+                "",
+                "این کلید فقط وقتی استفاده می‌شود که کلید اصلی با خطای احراز هویت یا قطعی مواجه شود؛ هیچ‌وقت نمایش داده نمی‌شود.",
+                "",
+                "برای لغو، /admin را بفرستید.",
+              ].join("\n"),
+              keyboard: backKeyboard(),
+            };
+          },
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        if (!r.data) return void (await this.stale(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
       case "ai_delete": {
         const id = action.providerId;
         const r = await this.admin.runAdmin(
@@ -1278,6 +1306,73 @@ export class AiAdminController {
       return true;
     }
 
+    if (flow.kind === "add_pool_key") {
+      const providerId = flow.providerId;
+      // Consume the pending state BEFORE the write, so a failed attempt does
+      // not leave the owner stuck in the form.
+      this.pending.delete(id);
+      if (providerId === undefined) {
+        await this.stale(ctx);
+        return true;
+      }
+
+      // The key is the whole message; take the first line only, like the
+      // setup flow, so a pasted key is never truncated or split.
+      const apiKey = (lines[0] ?? "").trim();
+      if (apiKey.length === 0) {
+        await this.render(ctx, "کلیدی دریافت نشد؛ عملیات لغو شد.", backKeyboard());
+        return true;
+      }
+
+      const r = await this.admin.runAdmin(
+        {
+          actor,
+          operation: "ai.pool_key.add",
+          permission: PERM_MANAGE,
+          targetId: String(providerId),
+        },
+        () => {
+          // backup-N: N follows the current pool size. Labels are display
+          // text, not identifiers, so a gap left by a removal is harmless.
+          const label = `backup-${this.providers.listPoolKeys(providerId).length + 1}`;
+          const res = this.providers.addPoolKey(providerId, label, apiKey);
+          // One shape for both outcomes so the caller never sees a partial type.
+          if (!res.ok) return { ok: false as const, message: res.message };
+          return { ok: true as const, label };
+        },
+      );
+      if (!r.ok) {
+        await this.deny(ctx);
+        return true;
+      }
+      if (!r.data.ok) {
+        await this.render(ctx, r.data.message, backKeyboard());
+        return true;
+      }
+      // Never echo the key; confirm the label it was stored under, then show
+      // the provider screen again with the updated backup-key count.
+      const body = `کلید پشتیبان «${r.data.label}» ذخیره شد.`;
+      const view = await this.admin.runAdmin(
+        {
+          actor,
+          operation: "ai.provider.view",
+          permission: PERM_VIEW,
+          targetId: String(providerId),
+        },
+        () => {
+          const v = this.providers.view(providerId);
+          if (!v) return undefined;
+          return { text: providerText(v), keyboard: providerKeyboard(v) };
+        },
+      );
+      await this.render(
+        ctx,
+        view.ok && view.data ? `${body}\n\n${view.data.text}` : body,
+        view.ok && view.data ? view.data.keyboard : backKeyboard(),
+      );
+      return true;
+    }
+
     if (flow.kind === "edit_provider") {
       const providerId = flow.providerId;
       this.pending.delete(id);
@@ -1499,6 +1594,7 @@ const AI_ACTION_KINDS: ReadonlySet<string> = new Set([
   "ai_test",
   "ai_discover",
   "ai_clear_key",
+  "ai_pool_key",
   "ai_delete",
   "ai_models",
   "ai_model_add_form",

@@ -1,0 +1,10 @@
+id: fa_intro
+title_fa: "معرفی فارسی"
+category: persian
+prompt: "خودت را در دو جمله معرفی کن."
+scoring:
+  type: rubric_fa
+  rubric:
+    min_length: 20
+    forbid_latin: true
+    contains: ["بابی"]

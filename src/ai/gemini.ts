@@ -29,6 +29,7 @@ import type {
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { pinnedFetch } from "./pinned_transport";
 import { selectParts, textWithPartNotes } from "./parts";
+import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
 
 export interface GeminiTarget extends AdapterTarget {
   settings?: AdapterSettings;
@@ -41,6 +42,8 @@ export class GeminiAdapter implements AIProviderAdapter {
   readonly type = "gemini" as const;
   readonly capabilities = {
     listModels: true,
+    audioInput: true,
+    documentInput: true,
     notes: "POST {baseUrl}/models/{model}:generateContent",
   };
   readonly label = "Google Gemini";
@@ -214,6 +217,20 @@ export function buildBody(target: GeminiTarget, req: CompletionRequest): Record<
         })),
       },
     ];
+  }
+
+  // No explicit cache breakpoint exists on this wire: the service caches
+  // the prompt prefix implicitly, so there is nothing additive to set here.
+  // Keeping the system prompt byte-stable (see src/ai/cache_policy.ts) is
+  // what makes that implicit caching hit. Documented, not changed.
+
+  // Opt-in reasoning: off unless the owner set BOBI_REASONING_EFFORT.
+  const reasoning = reasoningParamsFor("gemini", resolveReasoningEffort());
+  if (reasoning.enabled && reasoning.levelName !== undefined) {
+    // thinkingConfig is a top-level request field. The level enum
+    // (LOW/MEDIUM/HIGH) is the documented knob for current models; it maps
+    // 1:1 onto BOBI's tiers.
+    body["thinkingConfig"] = { thinkingLevel: reasoning.levelName.toUpperCase() };
   }
 
   const generation: Record<string, number> = {};

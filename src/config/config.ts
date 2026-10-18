@@ -46,8 +46,47 @@ export interface SolConfig {
   rateLimitToolCallsPerHour: number;
   /** How often the reminder scheduler wakes up, ms. */
   schedulerIntervalMs: number;
+  /**
+   * How often the autonomous heartbeat runs, ms.
+   *
+   * Zero (the default) disables it: an agent acting without being spoken to
+   * must be an explicit owner choice, so nothing here turns on by itself.
+   * Bounded at one day; a longer "interval" is not a heartbeat.
+   */
+  heartbeatIntervalMs: number;
   /** Whether the web_search tool is offered at all. */
   enableWebSearch: boolean;
+  /**
+   * Directory of owner-authored skill files (markdown with frontmatter).
+   *
+   * Skills are injected into the system prompt on match; they grant no
+   * permissions and execute no code. Like .env, this directory is an
+   * owner-only configuration surface: only the server owner should have
+   * write access, and skill bodies must never contain secrets.
+   */
+  skillsDir: string;
+  /**
+   * Voice transcription (Whisper-style) endpoint. Empty baseUrl disables it:
+   * voice notes then fall back to the adapter's named text note.
+   */
+  transcribeBaseUrl: string;
+  transcribeApiKey: string | undefined;
+  transcribeModel: string;
+  /**
+   * Text-to-speech endpoint (OpenAI-compatible /audio/speech). Empty baseUrl
+   * disables voice replies; /voice then explains it is not configured.
+   */
+  ttsBaseUrl: string;
+  ttsApiKey: string | undefined;
+  ttsModel: string;
+  ttsVoice: string;
+  /**
+   * Image generation endpoint (OpenAI-compatible /images/generations).
+   * Empty baseUrl disables the generate_image tool.
+   */
+  imageBaseUrl: string;
+  imageApiKey: string | undefined;
+  imageModel: string;
   /**
    * Path to the MCP server config file.
    *
@@ -105,9 +144,23 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
     rateLimitPerMinute: clampInt(envVar(env, "RATE_LIMIT_PER_MINUTE"), 0, 10_000, 20),
     rateLimitToolCallsPerHour: clampInt(envVar(env, "RATE_LIMIT_TOOL_CALLS_PER_HOUR"), 0, 100_000, 200),
     schedulerIntervalMs: clampInt(envVar(env, "SCHEDULER_INTERVAL_MS"), 1_000, 3_600_000, 30_000),
+    // Off by default (0). A positive value is the owner's explicit decision to
+    // let the bot act on its own between messages.
+    heartbeatIntervalMs: clampInt(envVar(env, "HEARTBEAT_INTERVAL_MS"), 0, 86_400_000, 0),
     // On by default: the keyless provider needs no configuration, and an agent
     // without web access cannot answer anything past its training data.
     enableWebSearch: pickBool(envVar(env, "ENABLE_WEB_SEARCH"), true),
+    skillsDir: envVar(env, "SKILLS_DIR")?.trim() || "./skills",
+    transcribeBaseUrl: envVar(env, "TRANSCRIBE_BASE_URL")?.trim() || "",
+    transcribeApiKey: envVar(env, "TRANSCRIBE_API_KEY")?.trim() || undefined,
+    transcribeModel: envVar(env, "TRANSCRIBE_MODEL")?.trim() || "whisper-1",
+    ttsBaseUrl: envVar(env, "TTS_BASE_URL")?.trim() || "",
+    ttsApiKey: envVar(env, "TTS_API_KEY")?.trim() || undefined,
+    ttsModel: envVar(env, "TTS_MODEL")?.trim() || "tts-1",
+    ttsVoice: envVar(env, "TTS_VOICE")?.trim() || "alloy",
+    imageBaseUrl: envVar(env, "IMAGE_BASE_URL")?.trim() || "",
+    imageApiKey: envVar(env, "IMAGE_API_KEY")?.trim() || undefined,
+    imageModel: envVar(env, "IMAGE_MODEL")?.trim() || "dall-e-3",
     mcpConfigPath: envVar(env, "MCP_CONFIG")?.trim() || "mcp.json",
     // The platform's PORT wins: it is what the healthcheck will actually call.
     // Otherwise BOBI_HEALTH_PORT, then off (0) for a local run.

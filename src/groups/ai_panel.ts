@@ -293,6 +293,8 @@ export function providerText(p: ProviderView): string {
     `وضعیت: ${state}`,
     `نوع اتصال: ${p.adapterLabel}`,
     `کلید: ${key}`,
+    // Pool keys appear only as a count: key material is never listed.
+    `کلیدهای پشتیبان: ${p.poolKeyCount}`,
     `تعداد مدل‌ها: ${p.modelCount}`,
   ];
   if (p.lastTestOk !== undefined) {
@@ -315,6 +317,12 @@ export function providerKeyboard(p: ProviderView): InlineKeyboard {
     .text("مدل‌ها", encode({ kind: "ai_models", providerId: p.id }))
     .row()
     .text("جایگزینی کلید", encode({ kind: "ai_edit", providerId: p.id }))
+    .row()
+    // Backup keys: added through the same message-entry flow as the primary
+    // key (owner-only, PERM_MANAGE), stored in the encrypted credential pool
+    // as "backup-N". They are tried after the primary key on auth/transport
+    // failures; they are never displayed.
+    .text("کلید پشتیبان", encode({ kind: "ai_pool_key", providerId: p.id }))
     .row();
   if (p.hasCredential) {
     kb.text("پاک کردن کلید", encode({ kind: "ai_clear_key", providerId: p.id })).row();

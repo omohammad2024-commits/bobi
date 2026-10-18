@@ -40,6 +40,7 @@ export const calculatorTool: Tool<CalcInput, CalcOutput> = {
   description: "جمع، تفریق، ضرب و تقسیم دو عدد.",
   enabled: true,
   permission: { requires: [CALCULATOR_PERMISSION] },
+  toolset: "utils",
   input: {
     fields: {
       op: {

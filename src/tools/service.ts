@@ -14,9 +14,13 @@
 import { calculatorTool } from "./calculator";
 import { dateTimeTool } from "./date_time";
 import { ToolExecutor } from "./executor";
-import type { ExecuteRequest, ToolFailureInfo } from "./executor";
+import type { ExecuteRequest, ExecutorOptions, ToolFailureInfo } from "./executor";
 import { fetchUrlTool } from "./fetch_url";
 import { toJsonSchema } from "./json_schema";
+import type {
+  ToolSearchDeps,
+  VisibleToolInfo,
+} from "./tool_search";
 import { unitConverterTool } from "./unit_converter";
 import { textUtilitiesTool } from "./text_utilities";
 import { ToolRegistry } from "./registry";
@@ -45,6 +49,11 @@ export interface ToolServiceOptions {
   timeoutMs?: number;
   clock?: () => Date;
   onError?: (info: ToolFailureInfo) => void;
+  /**
+   * Observer for the `tool:end` lifecycle event, forwarded to the Executor.
+   * The hook runner is wired here by index.ts.
+   */
+  onToolEnd?: ExecutorOptions["onToolEnd"];
 }
 
 export interface ToolDescriptor {
@@ -52,6 +61,12 @@ export interface ToolDescriptor {
   description: string;
   enabled: boolean;
   requires: readonly string[];
+}
+
+/** One entry of the toolset taxonomy: a toolset name and its tool names. */
+export interface ToolsetInfo {
+  name: string;
+  tools: string[];
 }
 
 export interface ToolRunRequest {
@@ -66,6 +81,15 @@ export interface ToolRunRequest {
 export class ToolService {
   readonly registry: ToolRegistry;
   readonly executor: ToolExecutor;
+  /**
+   * Toolsets the model currently sees, or undefined for "all toolsets".
+   *
+   * When set, `toolSpecsFor` (and everything derived from it, including
+   * `searchableTools` for tool_search) includes only tools whose `toolset`
+   * is in this list, plus tools with NO toolset — those are core tools and
+   * are always visible. Default undefined = pre-E4 behaviour, no filtering.
+   */
+  private activeToolsets: readonly string[] | undefined;
 
   constructor(opts: ToolServiceOptions = {}) {
     this.registry = new ToolRegistry();
@@ -79,6 +103,7 @@ export class ToolService {
       ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
       ...(opts.onError !== undefined ? { onError: opts.onError } : {}),
+      ...(opts.onToolEnd !== undefined ? { onToolEnd: opts.onToolEnd } : {}),
     });
   }
 
@@ -101,6 +126,42 @@ export class ToolService {
   /** True when this actor may run the tool right now. */
   can(toolName: string, actor: ToolActor): boolean {
     return this.executor.can(toolName, actor);
+  }
+
+  /**
+   * Restrict which toolsets the model sees.
+   *
+   * Pass undefined (the default) to show every registered tool — the
+   * pre-E4 behaviour, so this is a no-op for existing callers. Pass a list
+   * of toolset names to show only tools in those toolsets; tools with NO
+   * toolset declared are core tools and stay visible regardless.
+   *
+   * This is an ergonomic filter like `toolSpecsFor`, never the security
+   * boundary: the Executor still checks permissions independently.
+   */
+  setActiveToolsets(names: string[] | undefined): void {
+    this.activeToolsets = names === undefined ? undefined : [...names];
+  }
+
+  /** Toolsets currently declared across the registry, with their tool names. */
+  listToolsets(): ToolsetInfo[] {
+    const groups = new Map<string, string[]>();
+    for (const tool of this.registry.list()) {
+      if (tool.toolset === undefined) continue; // core tools: no toolset
+      const names = groups.get(tool.toolset) ?? [];
+      names.push(tool.name);
+      groups.set(tool.toolset, names);
+    }
+    return [...groups.entries()].map(([name, tools]) => ({ name, tools }));
+  }
+
+  /** True when a tool passes the active-toolsets filter (undefined = all). */
+  private toolsetVisible(tool: Tool<unknown, unknown>): boolean {
+    return (
+      this.activeToolsets === undefined ||
+      tool.toolset === undefined ||
+      this.activeToolsets.includes(tool.toolset)
+    );
   }
 
   /** Active tools, for menus and for the model. Not an authorization grant. */
@@ -134,6 +195,7 @@ export class ToolService {
     for (const tool of this.registry.list()) {
       if (!tool.enabled) continue;
       if (!this.can(tool.name, actor)) continue;
+      if (!this.toolsetVisible(tool)) continue;
       specs.push({
         name: tool.name,
         description: tool.description,
@@ -141,5 +203,51 @@ export class ToolService {
       });
     }
     return specs;
+  }
+
+  /**
+   * Actor-visible tool metadata for dynamic discovery (tool_search).
+   *
+   * Applies the EXACT same filter as `toolSpecsFor` — enabled, permitted for
+   * this actor, and within the active toolsets — but carries the toolset and
+   * the declarative input fields instead of JSON Schema, which is what the
+   * search needs to rank and describe.
+   *
+   * SECURITY: this is the ONLY data tool_search may search. Wire the tool
+   * with `(actor) => service.searchableTools(actor)` (see ToolSearchDeps);
+   * never hand it `registry.list()` directly, because the raw registry
+   * includes ownerOnly tools a non-owner must not even know exist.
+   */
+  searchableTools(actor: ToolActor): VisibleToolInfo[] {
+    const out: VisibleToolInfo[] = [];
+    for (const tool of this.registry.list()) {
+      if (!tool.enabled) continue;
+      if (!this.can(tool.name, actor)) continue;
+      if (!this.toolsetVisible(tool)) continue;
+      out.push({
+        name: tool.name,
+        description: tool.description,
+        // exactOptionalPropertyTypes: omit the key rather than pass undefined.
+        ...(tool.toolset !== undefined ? { toolset: tool.toolset } : {}),
+        fields: Object.entries(tool.input.fields).map(([name, field]) => ({
+          name,
+          type: field.type,
+          required: field.required === true,
+        })),
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Deps for wiring a `tool_search` tool against THIS service.
+   *
+   * `toolService.toolSearchDeps()` returns `{ visibleTools: (actor) =>
+   * toolService.searchableTools(actor) }` — the actor-filtered viewer the
+   * security model requires (see `searchableTools`). Prefer this over
+   * hand-rolling the closure.
+   */
+  toolSearchDeps(): ToolSearchDeps {
+    return { visibleTools: (actor) => this.searchableTools(actor) };
   }
 }

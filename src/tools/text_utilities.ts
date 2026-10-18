@@ -33,6 +33,7 @@ export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
   description: "شمارش کاراکتر و کلمه و آمار سادهٔ متن.",
   enabled: true,
   permission: { requires: [TEXT_UTILITIES_PERMISSION] },
+  toolset: "utils",
   input: {
     fields: {
       text: {

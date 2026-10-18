@@ -50,6 +50,7 @@ export const dateTimeTool: Tool<DateTimeInput, DateTimeOutput> = {
   description: "تاریخ، ساعت و روز هفته در یک timezone معتبر.",
   enabled: true,
   permission: { requires: [DATE_TIME_PERMISSION] },
+  toolset: "utils",
   input: {
     fields: {
       timezone: {

@@ -19,6 +19,7 @@
  *     what it got AND what it could not get.
  */
 import type { Context } from "grammy";
+import { InputFile } from "grammy";
 import {
   base64Bytes,
   MAX_ATTACHMENT_BYTES,
@@ -214,4 +215,49 @@ export function hasMedia(message: NonNullable<Context["message"]>): boolean {
     message.audio !== undefined ||
     message.document !== undefined
   );
+}
+
+/**
+ * Delivering media a tool produced for the user (the reverse direction).
+ *
+ * `ToolRunResult.media` carries bytes the model must NOT see (a generated
+ * image, synthesised speech): they travel from the tool to the user without
+ * entering the prompt, the transcript, or history. These helpers turn a
+ * `ContentPart` into something grammY can send.
+ *
+ * SECURITY: the bytes originate from server-side tool code (e.g. a provider's
+ * image endpoint), not from user input or model output. Callers cap the count
+ * (`MAX_MEDIA_PER_REPLY`); each tool caps its own byte size.
+ */
+
+/** Max tool-produced media items delivered per reply, on every path. */
+export const MAX_MEDIA_PER_REPLY = 4;
+
+export type MediaSendKind = "photo" | "voice" | "document";
+
+/** File extension derived from a media type, sanitised — never raw input. */
+function extFor(mediaType: string, fallback: string): string {
+  const sub = mediaType.split("/")[1]?.split(";")[0]?.trim().toLowerCase();
+  return sub !== undefined && /^[a-z0-9]+$/.test(sub) ? sub : fallback;
+}
+
+/**
+ * Describe how to send one tool-produced part. Returns undefined for text
+ * parts (there is nothing to send — the text is already the reply).
+ */
+export function describeMediaPart(
+  part: ContentPart,
+): { kind: MediaSendKind; file: InputFile } | undefined {
+  if (part.type === "text") return undefined;
+  const bytes = Buffer.from(part.base64, "base64");
+  if (part.type === "image") {
+    return { kind: "photo", file: new InputFile(bytes, `bobi.${extFor(part.mediaType, "png")}`) };
+  }
+  if (part.type === "audio") {
+    return { kind: "voice", file: new InputFile(bytes, `bobi.${extFor(part.mediaType, "ogg")}`) };
+  }
+  return {
+    kind: "document",
+    file: new InputFile(bytes, part.name ?? `bobi.${extFor(part.mediaType, "bin")}`),
+  };
 }

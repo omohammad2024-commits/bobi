@@ -1,0 +1,23 @@
+id: search_news
+title_fa: "جست‌وجو و خلاصهٔ اخبار هوش مصنوعی"
+category: web_search
+prompt: "آخرین خبرهای دنیای هوش مصنوعی را جست‌وجو کن و در دو خط خلاصه کن."
+scoring:
+  type: tool_args
+  expected_tools: [web_search]
+  arg_match:
+    - tool: web_search
+      occurrence: 0
+      match:
+        query:
+          exists: true
+  contains: ["هوش مصنوعی"]
+mocks:
+  web_search:
+    results:
+      - title: "مدل زبانی جدید با استدلال بهتر"
+        url: "https://example.com/ai-news-1"
+        snippet: "یک مدل زبانی جدید هوش مصنوعی با توان استدلال بالاتر معرفی شد."
+      - title: "هوش مصنوعی در پزشکی"
+        url: "https://example.com/ai-news-2"
+        snippet: "کاربرد هوش مصنوعی در تشخیص پزشکی به‌سرعت در حال گسترش است."

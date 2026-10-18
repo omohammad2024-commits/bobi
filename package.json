@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "grammy": "^1.46.0",
-    "ipaddr.js": "^2.5.0"
+    "ipaddr.js": "^2.5.0",
+    "pdf-parse": "^2.4.5"
   }
 }

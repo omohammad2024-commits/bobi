@@ -53,7 +53,23 @@ export class AdapterRegistry {
   }
 
   /** What an adapter type can do, without constructing one. */
-  describes(type: string): { label: string; notes?: string; listModels: boolean } {
+  describes(type: string): {
+    label: string;
+    notes?: string;
+    listModels: boolean;
+    /**
+     * The adapter serialises audio ContentParts natively (Phase B2): no
+     * transcription is needed for voice messages. Mirrors the per-adapter
+     * `capabilities.audioInput` without constructing an instance (which would
+     * need a decrypted credential).
+     */
+    audioInput: boolean;
+    /**
+     * The adapter serialises document ContentParts natively (Phase B5): no
+     * local extraction is needed. Mirrors `capabilities.documentInput`.
+     */
+    documentInput: boolean;
+  } {
     switch (type) {
       case "openai_compatible":
       case "nine_router":
@@ -61,13 +77,27 @@ export class AdapterRegistry {
           label: type === "nine_router" ? "9Router" : "سفارشی / سازگار با OpenAI",
           notes: "POST {baseUrl}/chat/completions",
           listModels: type === "openai_compatible",
+          audioInput: false,
+          documentInput: false,
         };
       case "gemini":
-        return { label: "Google Gemini", notes: "generateContent", listModels: true };
+        return {
+          label: "Google Gemini",
+          notes: "generateContent",
+          listModels: true,
+          audioInput: true,
+          documentInput: true,
+        };
       case "anthropic":
-        return { label: "Anthropic", notes: "messages", listModels: false };
+        return {
+          label: "Anthropic",
+          notes: "messages",
+          listModels: false,
+          audioInput: false,
+          documentInput: true,
+        };
       default:
-        return { label: type, listModels: false };
+        return { label: type, listModels: false, audioInput: false, documentInput: false };
     }
   }
 }

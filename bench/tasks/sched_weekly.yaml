@@ -1,0 +1,16 @@
+id: sched_weekly
+title_fa: "یادآور هفتگی"
+category: scheduling
+prompt: "هر هفته شنبه‌ها ساعت ۱۰ صبح یک یادآوری با متن «خرید هفتگی» بگذار."
+scoring:
+  type: tool_args
+  expected_tools: [remind_at]
+  arg_match:
+    - tool: remind_at
+      occurrence: 0
+      match:
+        text:
+          regex: "خرید هفتگی"
+        repeat: weekly
+        dueAt:
+          exists: true

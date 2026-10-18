@@ -1,0 +1,13 @@
+id: mem_pet
+title_fa: "به‌خاطر سپردن و یادآوری نام حیوان"
+category: memory
+turns:
+  - "اسم سگ من «فلفل» است. لطفاً یادت بماند."
+  - "اسم سگ من چیست؟"
+scoring:
+  type: multi_turn
+  per_turn:
+    - type: exact_tools
+      expected_tools: [remember]
+    - type: contains
+      contains: ["فلفل"]

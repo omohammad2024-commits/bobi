@@ -1,0 +1,15 @@
+id: calc_01
+title_fa: "جمع ساده دو عدد"
+category: tool_calling
+prompt: "۱۲ به‌علاوهٔ ۳۰ چند می‌شود؟"
+scoring:
+  type: tool_args
+  expected_tools: [calculator]
+  arg_match:
+    - tool: calculator
+      occurrence: 0
+      match:
+        op: add
+        a: 12
+        b: 30
+  contains: ["۴۲"]

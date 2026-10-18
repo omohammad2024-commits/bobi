@@ -43,6 +43,20 @@ export const MAX_PARTS_PER_MESSAGE = 8;
  *
  * Pure and provider-agnostic, so each adapter can call it and then only worry
  * about shaping the result.
+ *
+ * Caps, applied in order:
+ *   1. TYPE ALLOWLIST — image/*, audio/*, application/pdf (see
+ *      partTypeForMediaType). Anything else is dropped as "unsupported".
+ *      Note: text/* documents are NOT sendable here; an adapter that can
+ *      carry them as text (openai_compatible) handles them itself, before
+ *      calling this.
+ *   2. PER-PART BYTE CEILING — MAX_ATTACHMENT_BYTES (5 MiB) of decoded data,
+ *      estimated from the base64 length without decoding. Over it is dropped
+ *      as "too_large".
+ *   3. PER-MESSAGE COUNT CEILING — MAX_PARTS_PER_MESSAGE (8) non-text parts.
+ *      Anything beyond the cap is reported as "too_large" (the existing
+ *      contract), so the note says the attachment could not be sent rather
+ *      than silently ignoring it.
  */
 export function selectParts(message: ChatMessage): PartSelection {
   const sendable: SendablePart[] = [];
@@ -83,16 +97,28 @@ export function selectParts(message: ChatMessage): PartSelection {
   return { sendable, dropped };
 }
 
+/**
+ * The named Persian note for one dropped attachment.
+ *
+ * Exported so an adapter that drops a part outside selectParts (e.g. a text
+ * document past the byte ceiling) can use the exact same wording — a dropped
+ * attachment is always NAMED, never silently discarded.
+ */
+export function partDropNote(
+  mediaType: string,
+  reason: "too_large" | "unsupported",
+): string {
+  return reason === "too_large"
+    ? `[پیوست ${mediaType} ارسال نشد: حجم بیش از حد مجاز]`
+    : `[پیوست ${mediaType} پشتیبانی نمی‌شود]`;
+}
+
 /** The text of a message, with any attachment descriptions appended. */
 export function textWithPartNotes(message: ChatMessage): string {
   const { dropped } = selectParts(message);
   if (dropped.length === 0) return message.content;
 
-  const notes = dropped.map((d) =>
-    d.reason === "too_large"
-      ? `[پیوست ${d.mediaType} ارسال نشد: حجم بیش از حد مجاز]`
-      : `[پیوست ${d.mediaType} پشتیبانی نمی‌شود]`,
-  );
+  const notes = dropped.map((d) => partDropNote(d.mediaType, d.reason));
   return [message.content, ...notes].filter((s) => s.length > 0).join("\n");
 }
 

@@ -20,6 +20,7 @@ import type { ToolErrorKind } from "./errors";
 import type { ToolRegistry } from "./registry";
 import type { ToolActor, ToolContext, ToolRunResult } from "./types";
 import { validateInput } from "./validate";
+import type { ToolEndPayload } from "../hooks/events";
 
 export interface ExecuteRequest {
   /** Tool name requested by the caller. Untrusted. */
@@ -43,6 +44,18 @@ export interface ExecuteRequest {
    * Never model-supplied; see ToolContext.
    */
   conversationId?: string;
+  /**
+   * Server-side only: suppress the `tool:end` lifecycle hook emission for
+   * this execution.
+   *
+   * Set by the hook runner for executions a hook itself triggered — without
+   * it, a hook on `tool:end` would emit another `tool:end` and recurse
+   * without bound. Has NO effect on validation, permissions, timeouts, or
+   * the concurrency bound; it only skips the observation callback. Never
+   * model-supplied: ExecuteRequest is built by server code (the agent loop,
+   * the schedulers, the hook runner), never from model output.
+   */
+  suppressHooks?: boolean;
 }
 
 export interface ExecutorOptions {
@@ -55,6 +68,16 @@ export interface ExecutorOptions {
   clock?: () => Date;
   /** Optional sink for secret-free diagnostics. */
   onError?: (info: ToolFailureInfo) => void;
+  /**
+   * Optional observer for the `tool:end` lifecycle event, called after every
+   * execution settles (ok or not) with a secret-free payload: tool name,
+   * status, duration, and user id — never input or output contents.
+   *
+   * The callback must not throw; the executor guards the call. It is skipped
+   * for executions with `suppressHooks: true` (hook-triggered runs), which
+   * prevents a `tool:end` hook from re-triggering itself.
+   */
+  onToolEnd?: (payload: ToolEndPayload, actor: ToolActor) => void;
 }
 
 /** Secret-free diagnostic payload handed to onError. */
@@ -71,6 +94,7 @@ export class ToolExecutor {
   private readonly defaultTimeoutMs: number;
   private readonly clock: () => Date;
   private readonly onError: ((info: ToolFailureInfo) => void) | undefined;
+  private readonly onToolEnd: ((payload: ToolEndPayload, actor: ToolActor) => void) | undefined;
 
   constructor(opts: ExecutorOptions) {
     this.registry = opts.registry;
@@ -78,13 +102,25 @@ export class ToolExecutor {
     this.defaultTimeoutMs = opts.timeoutMs ?? 10_000;
     this.clock = opts.clock ?? (() => new Date());
     this.onError = opts.onError;
+    this.onToolEnd = opts.onToolEnd;
   }
 
   /**
    * Execute one tool call. Never throws — always returns a ToolRunResult.
    * Any internal fault is reported as a safe "error" status.
+   *
+   * After the run settles, the `tool:end` lifecycle hook observer fires (when
+   * configured and not suppressed). The observer can never change the result
+   * or break the caller: its exceptions are swallowed.
    */
   async execute(req: ExecuteRequest): Promise<ToolRunResult> {
+    const result = await this.doExecute(req);
+    this.emitToolEnd(req, result);
+    return result;
+  }
+
+  /** The execution itself; separated so the hook emission wraps every path. */
+  private async doExecute(req: ExecuteRequest): Promise<ToolRunResult> {
     const started = Date.now();
 
     const tool = this.registry.find(req.tool);
@@ -111,7 +147,9 @@ export class ToolExecutor {
 
     // Wait for a concurrency slot, then bound the actual work.
     return this.semaphore.use(async () => {
-      const timeoutMs = req.timeoutMs ?? this.defaultTimeoutMs;
+      // Per-call override wins, then the tool's own declared bound (for tools
+      // that are slow by design), then the executor default.
+      const timeoutMs = req.timeoutMs ?? tool.timeoutMs ?? this.defaultTimeoutMs;
       const controller = new AbortController();
       let deadline: ReturnType<typeof setTimeout> | undefined;
 
@@ -180,10 +218,16 @@ export class ToolExecutor {
           );
         }
 
+        // User-facing media rides alongside the data, never inside it: the
+        // model's tool_result stays model-safe while the bot layer can still
+        // deliver what the tool produced (a generated image, say).
+        const media = tool.extractMedia?.(outcome.data);
+
         return {
           tool: req.tool,
           status: "ok",
           data: outcome.data,
+          ...(media !== undefined && media.length > 0 ? { media } : {}),
           durationMs: Date.now() - started,
         };
       } finally {
@@ -197,6 +241,36 @@ export class ToolExecutor {
     const tool = this.registry.find(toolName);
     if (!tool) return false;
     return hasPermission(tool.permission.requires, actor.permissions);
+  }
+
+  /**
+   * Fire the `tool:end` lifecycle observer, if one is configured.
+   *
+   * Skipped for hook-triggered executions (`suppressHooks`), which prevents
+   * re-entrant hook storms. Never throws: hook observation must not break the
+   * tool call it observes. The payload is deliberately minimal — tool name,
+   * status, duration, user id — so no input, output, or secret can leak
+   * through it (see the payload privacy contract in hooks/events.ts).
+   */
+  private emitToolEnd(req: ExecuteRequest, result: ToolRunResult): void {
+    if (req.suppressHooks === true) return;
+    const cb = this.onToolEnd;
+    if (!cb) return;
+    try {
+      cb(
+        {
+          event: "tool:end",
+          at: new Date().toISOString(),
+          tool: req.tool,
+          status: result.status,
+          durationMs: result.durationMs,
+          userId: req.actor.userId,
+        },
+        req.actor,
+      );
+    } catch {
+      // Hook observation is best-effort; the tool result stands regardless.
+    }
   }
 
   private result(

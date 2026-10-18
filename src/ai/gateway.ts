@@ -15,15 +15,35 @@
  *  4. Optional failover, disabled by default. When the owner turns it on, a
  *     retryable failure moves through an explicitly ordered candidate list,
  *     bounded by max_attempts and a per-candidate timeout.
+ *  5. Credential-pool rotation (Phase E3). Within one candidate, the request
+ *     tries the primary key first, then the provider's enabled pool keys in
+ *     round-robin order. An auth failure cools the failed key down for five
+ *     minutes and moves to the next key; network/timeout moves on without
+ *     cooldown; anything else (notably invalid_response) is never retried.
  *
  * `name` is "ai" so the engine's isFake check stays accurate: the gateway is a
  * real provider, unlike the offline FakeProvider used in tests.
  */
 import { AiError } from "./provider";
-import type { AiProvider, CompletionRequest, CompletionResponse } from "./provider";
+import type { AiProvider, CompletionRequest, CompletionResponse, TokenUsage } from "./provider";
 import type { AdapterRegistry } from "./adapter_registry";
 import type { ProviderSecretStore } from "./secret_store";
+import { CredentialPoolStore } from "./secret_store";
 import type { Storage } from "../storage/storage";
+
+/**
+ * What the usage listener receives for one attempt that returned usage.
+ *
+ * Token counts only — never prompts, completions, or key material. The
+ * listener does not learn which user or conversation the attempt belonged to;
+ * binding usage to a turn is the caller's job (UsageTracker.record takes the
+ * full run record).
+ */
+export interface UsageAttemptInfo {
+  providerId: number;
+  modelId: string;
+  usage: TokenUsage;
+}
 
 export interface GatewayOptions {
   storage: Storage;
@@ -35,6 +55,12 @@ export interface GatewayOptions {
     maxTokens?: number;
     systemPrompt?: string;
   };
+  /**
+   * Optional usage listener, fired for every attempt whose response carries
+   * usage (token counts only — see UsageAttemptInfo). Invoked inside
+   * try/catch, so a throwing listener can never break a turn.
+   */
+  onUsage?: (info: UsageAttemptInfo) => void;
   /** Injectable clock, for deterministic tests. */
   now?: () => number;
 }
@@ -67,12 +93,42 @@ export class AiGateway implements AiProvider {
   private readonly adapters: AdapterRegistry;
   private readonly secrets: ProviderSecretStore;
   private readonly settings: GatewayOptions["settings"];
+  private readonly now: () => number;
+  private readonly pool: CredentialPoolStore;
+  /**
+   * Usage listener, if the host configured one. Every invocation is wrapped
+   * in try/catch, so a throwing listener can never break a turn.
+   */
+  private readonly onUsage: GatewayOptions["onUsage"];
+
+  /**
+   * Cooldowns for keys that failed with auth, keyed by "p:<providerId>" for
+   * the primary credential and "pool:<entryId>" for pool keys, mapping to the
+   * unix-ms time when the key becomes usable again. IN-MEMORY BY DESIGN: a
+   * restart forgets every cooldown, which is fail-open in the safe direction
+   * (a possibly-dead key is retried once, not trusted forever). It never
+   * holds key material — ids only.
+   */
+  private readonly cooldowns = new Map<string, number>();
+
+  /**
+   * How long an auth-failed key stays out of rotation.
+   *
+   * Five minutes: long enough to stop hammering a revoked key (and to stop
+   * burning the request budget on a key that cannot succeed), short enough
+   * that an owner who just fixed the key on the service side is not locked
+   * out for long. Disable/remove the entry for an immediate effect.
+   */
+  private static readonly CREDENTIAL_COOLDOWN_MS = 5 * 60 * 1000;
 
   constructor(opts: GatewayOptions) {
     this.storage = opts.storage;
     this.adapters = opts.adapters;
     this.secrets = opts.secrets;
     this.settings = opts.settings;
+    this.now = opts.now ?? Date.now;
+    this.pool = new CredentialPoolStore(opts.storage, opts.secrets);
+    this.onUsage = opts.onUsage;
   }
 
   /**
@@ -98,6 +154,37 @@ export class AiGateway implements AiProvider {
       modelLabel: model.label,
       allowLocal: provider.allowLocal,
     };
+  }
+
+  /**
+   * Whether the active provider accepts raw audio ContentParts natively.
+   *
+   * Phase B2 seam: the bot layer asks this before deciding whether a voice
+   * message must be transcribed first. The capability is read from the
+   * registry's static description (no adapter is constructed, so no
+   * credential is decrypted for a mere capability check). No valid selection
+   * or an unknown adapter type reads as false — fail-closed toward the
+   * transcription path when transcription is configured; when it is not,
+   * the audio parts simply keep the adapter's existing named-note behaviour.
+   */
+  supportsAudioInput(): boolean {
+    const sel = this.currentSelection();
+    if (!sel) return false;
+    return this.adapters.describes(sel.adapterType).audioInput;
+  }
+
+  /**
+   * Phase B5 seam: the bot layer asks this before deciding whether document
+   * parts must be extracted locally first. Read from the registry's static
+   * description (no adapter constructed, no credential decrypted). No valid
+   * selection or an unknown adapter type reads as false — fail-closed toward
+   * local extraction; a provider that natively supports documents simply
+   * receives the parts untouched.
+   */
+  supportsDocumentInput(): boolean {
+    const sel = this.currentSelection();
+    if (!sel) return false;
+    return this.adapters.describes(sel.adapterType).documentInput;
   }
 
   /**
@@ -140,6 +227,45 @@ export class AiGateway implements AiProvider {
     }
 
     throw lastError ?? new AiError("unknown", "خطای ناشناخته سرویس.");
+  }
+
+  /**
+   * Complete a request against a SPECIFIC configured model, for server-side
+   * orchestration (mixture-of-agents).
+   *
+   * Unlike complete() — where the stored model always wins, a deliberate
+   * prompt-injection defense for the main agent loop — this honors req.model,
+   * but ONLY when it resolves to an enabled provider+model pair in storage.
+   * Callers must additionally validate the name against their own allowlist
+   * (consult_models does); the main loop must keep using complete().
+   * Credential handling is identical to send(): decrypted per request, never
+   * retained.
+   *
+   * @throws AiError when the model is unknown, disabled, or its provider fails.
+   */
+  async completeForModel(req: CompletionRequest): Promise<CompletionResponse> {
+    const candidate = this.resolveByModelId(req.model);
+    if (!candidate) {
+      throw new AiError("invalid_response", "این مدل پیکربندی نشده یا غیرفعال است.");
+    }
+    const res = await this.send(candidate, req, req.timeoutMs);
+    return { text: res.text, model: res.model };
+  }
+
+  /**
+   * Find an enabled provider+model pair by the service's model id string.
+   * First match wins; model ids are owner-configured, so collisions are the
+   * owner's to avoid.
+   */
+  private resolveByModelId(modelId: string): GatewaySelection | undefined {
+    for (const provider of this.storage.listProviders()) {
+      if (!provider.enabled) continue;
+      const model = this.storage
+        .listModels(provider.id)
+        .find((m) => m.enabled && m.modelId === modelId);
+      if (model !== undefined) return this.resolve(provider.id, model.id);
+    }
+    return undefined;
   }
 
   /**
@@ -196,7 +322,149 @@ export class AiGateway implements AiProvider {
   }
 
   /**
-   * Send one request to one candidate.
+   * Send one request to one candidate, rotating across its credentials.
+   *
+   * ROTATION POLICY (Phase E3):
+   *
+   * The attempt list is [primary credential, ...enabled pool credentials in
+   * round-robin order]. Keys are tried in order until one answers.
+   *
+   *   - auth failure: THIS key is dead (revoked, rotated, or wrong on the
+   *     service side), not the service. Mark it cooled-down for
+   *     CREDENTIAL_COOLDOWN_MS and try the next key. The other keys are not
+   *     punished for one key's failure.
+   *   - network / timeout: the pipe is broken, the key is innocent. Advance
+   *     to the next key WITHOUT a cooldown, so the key is tried again on the
+   *     next request. The outer complete() loop may additionally fail over
+   *     to another provider candidate on these classes.
+   *   - invalid_response and everything else (quota, aborted, unknown):
+   *     NEVER retried with another key. The response was already received
+   *     (invalid_response) or the failure is not key-specific (quota is
+   *     account-level, aborted is caller-cancelled). Rotating keys here
+   *     would burn quota hiding a problem no key can fix, so the error is
+   *     thrown immediately.
+   *
+   * Rotation is per-request and the primary key keeps its slot first: the
+   * pool is a backup rail, not a replacement for the primary. A missing or
+   * undecryptable primary fails closed exactly like before pools existed.
+   *
+   * Key material is decrypted per request, handed to the adapter, and dropped
+   * when the call settles. Cooldowns and the round-robin cursor hold entry
+   * ids and timestamps only — never keys.
+   *
+   * @throws AiError when no credential is usable or every key failed.
+   */
+  private async send(
+    candidate: GatewaySelection,
+    req: CompletionRequest,
+    timeoutMs: number,
+  ): Promise<CompletionResponse> {
+    const attempts = this.keyAttempts(candidate.providerId);
+
+    let lastError: AiError | undefined;
+    for (const key of attempts) {
+      try {
+        return await this.attempt(candidate, req, timeoutMs, key.apiKey);
+      } catch (err) {
+        const mapped = err instanceof AiError ? err : new AiError("unknown", "خطای ناشناخته سرویس.");
+        lastError = mapped;
+        if (mapped.kind === "auth") {
+          this.coolDown(key.id);
+          continue;
+        }
+        if (mapped.kind === "network" || mapped.kind === "timeout") {
+          // No cooldown: the key is fine, the transport failed. The next
+          // request will try this key again.
+          continue;
+        }
+        // invalid_response, quota, aborted, unknown: another key cannot fix
+        // these, so they are never rotated through.
+        throw mapped;
+      }
+    }
+
+    throw lastError ?? new AiError("unknown", "خطای ناشناخته سرویس.");
+  }
+
+  /**
+   * The ordered key attempts for one candidate: the primary credential
+   * first, then the provider's enabled, non-cooled-down pool keys starting
+   * at the round-robin cursor. Each entry's weight multiplies its slots in
+   * the rotation order, so a weight-2 key is visited twice per cycle.
+   *
+   * Throws AiError("auth") when nothing is usable: no primary credential
+   * (fail-closed, as before), or every key currently cooled down.
+   */
+  private keyAttempts(providerId: number): { id: string; apiKey: string }[] {
+    const now = this.now();
+    const live = (id: string): boolean => (this.cooldowns.get(id) ?? 0) <= now;
+    const out: { id: string; apiKey: string }[] = [];
+
+    const stored = this.storage.getCredential(providerId);
+    if (!stored) {
+      throw new AiError("auth", "اعتبارنامهٔ این پروایدر تنظیم نشده است.");
+    }
+    let primaryKey: string;
+    try {
+      primaryKey = this.secrets.decrypt(stored);
+    } catch {
+      throw new AiError("auth", "اعتبارنامهٔ این پروایدر قابل استفاده نبود.");
+    }
+    const primaryId = `p:${providerId}`;
+    if (live(primaryId)) out.push({ id: primaryId, apiKey: primaryKey });
+
+    const eligible = this.pool
+      .decryptEnabledPool(providerId)
+      .filter((e) => live(`pool:${e.entryId}`));
+    const expanded: { id: string; apiKey: string }[] = [];
+    for (const e of eligible) {
+      const slots = Math.max(1, Math.floor(e.weight));
+      for (let i = 0; i < slots; i++) {
+        expanded.push({ id: `pool:${e.entryId}`, apiKey: e.apiKey });
+      }
+    }
+    if (expanded.length > 0) {
+      const start = this.storage.poolPosition(providerId, expanded.length);
+      for (let i = 0; i < expanded.length; i++) {
+        out.push(expanded[(start + i) % expanded.length]!);
+      }
+    }
+
+    if (out.length === 0) {
+      // Every key is cooled down after an auth failure; hammering any of
+      // them would only burn the attempt budget on certain failure.
+      throw new AiError(
+        "auth",
+        "همهٔ کلیدهای این پروایدر موقتاً کنار گذاشته شده‌اند؛ کمی بعد دوباره تلاش کنید.",
+      );
+    }
+    return out;
+  }
+
+  /** Mark a key cooled-down after an auth failure. Holds an id, never key material. */
+  private coolDown(keyId: string): void {
+    this.cooldowns.set(keyId, this.now() + AiGateway.CREDENTIAL_COOLDOWN_MS);
+  }
+
+  /**
+   * Labels of pool keys currently cooled down for a provider, after an auth
+   * failure. For the panel's provider screen (labels only, never key
+   * material). In-memory: a restart clears it.
+   *
+   * A cooled-down key is deliberately NOT written into the provider's stored
+   * health row: that row records the owner's manual connection probe, and one
+   * dead key is not a dead provider (the others may be serving fine).
+   */
+  cooledDownPoolKeys(providerId: number): string[] {
+    const now = this.now();
+    return this.pool
+      .listPoolEntries(providerId)
+      .filter((e) => (this.cooldowns.get(`pool:${e.id}`) ?? 0) > now)
+      .map((e) => e.label);
+  }
+
+  /**
+   * One attempt with one decrypted key against one candidate.
    *
    * The credential is re-resolved and revalidated here rather than reused from
    * the plan, so a candidate whose key was removed since the plan was built is
@@ -204,22 +472,12 @@ export class AiGateway implements AiProvider {
    *
    * @throws AiError when the candidate is ineligible or the adapter fails.
    */
-  private async send(
+  private async attempt(
     candidate: GatewaySelection,
     req: CompletionRequest,
     timeoutMs: number,
+    apiKey: string,
   ): Promise<CompletionResponse> {
-    const stored = this.storage.getCredential(candidate.providerId);
-    if (!stored) {
-      throw new AiError("auth", "اعتبارنامهٔ این پروایدر تنظیم نشده است.");
-    }
-    let apiKey: string;
-    try {
-      apiKey = this.secrets.decrypt(stored);
-    } catch {
-      throw new AiError("auth", "اعتبارنامهٔ این پروایدر قابل استفاده نبود.");
-    }
-
     const adapter = this.adapters.create(candidate.adapterType, {
       baseUrl: candidate.baseUrl,
       apiKey,
@@ -231,12 +489,26 @@ export class AiGateway implements AiProvider {
     });
 
     try {
-      return await adapter.complete({
+      const res = await adapter.complete({
         ...req,
         // The stored model always wins: a request cannot name another model.
         model: candidate.modelId,
         timeoutMs,
       });
+      // Usage is metadata the caller asked to observe. A throwing listener
+      // must never break the turn — usage is an observer, never load-bearing.
+      if (res.usage !== undefined && this.onUsage !== undefined) {
+        try {
+          this.onUsage({
+            providerId: candidate.providerId,
+            modelId: candidate.modelId,
+            usage: res.usage,
+          });
+        } catch {
+          // Swallowed by design: accounting must not fail the user's request.
+        }
+      }
+      return res;
     } finally {
       // Nothing references the key after this call; it goes out of scope here.
     }

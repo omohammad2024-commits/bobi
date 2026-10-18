@@ -1,0 +1,8 @@
+id: datetime_01
+title_fa: "ساعت فعلی تهران"
+category: tool_calling
+prompt: "الان ساعت چند است؟ (به وقت تهران)"
+scoring:
+  type: exact_tools
+  expected_tools: [date_time]
+  contains: ["ساعت"]

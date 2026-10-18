@@ -80,6 +80,7 @@ export const unitConverterTool: Tool<UnitInput, UnitOutput> = {
   description: "تبدیل واحدهای طول، جرم، حجم و دما.",
   enabled: true,
   permission: { requires: [UNIT_CONVERTER_PERMISSION] },
+  toolset: "utils",
   input: {
     fields: {
       value: { type: "number", required: true, description: "مقدار ورودی." },

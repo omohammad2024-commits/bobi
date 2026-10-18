@@ -6,7 +6,7 @@
  * ProviderSecretStore: this module stores an envelope and reports only whether
  * a key is set, never its contents.
  */
-import { ProviderSecretStore, SecretStoreError } from "./secret_store";
+import { ProviderSecretStore, SecretStoreError, CredentialPoolStore } from "./secret_store";
 import { AdapterRegistry } from "./adapter_registry";
 import { isAdapterType } from "./adapter";
 import type { Storage, AiModelRow } from "../storage/storage";
@@ -22,9 +22,21 @@ function fail<T>(message: string, reason = "invalid"): ServiceResult<T> {
   return { ok: false, reason, message };
 }
 
-/** A provider as the panel sees it. No credential material at all. */
-export interface ProviderView {
+/** A pool credential as the panel sees it. Labels only — never key material. */
+export interface PoolKeyView {
   id: number;
+  providerId: number;
+  /** Owner-chosen display label, e.g. "backup-1". */
+  label: string;
+  /** Load-sharing multiplier inside the round-robin order. */
+  weight: number;
+  enabled: boolean;
+  /** unix ms */
+  createdAtMs: number;
+}
+
+/** A provider as the panel sees it. No credential material at all. */
+export interface ProviderView {  id: number;
   label: string;
   adapter: string;
   adapterLabel: string;
@@ -34,6 +46,8 @@ export interface ProviderView {
   allowLocal: boolean;
   hasCredential: boolean;
   modelCount: number;
+  /** Number of pool (backup) credentials stored for this provider. */
+  poolKeyCount: number;
   /** Adapter-declared ability to list models. */
   canListModels: boolean;
   /** True when this provider is the live runtime selection. */
@@ -44,11 +58,15 @@ export interface ProviderView {
 }
 
 export class ProviderService {
+  private readonly pool: CredentialPoolStore;
+
   constructor(
     private readonly storage: Storage,
     private readonly secrets: ProviderSecretStore,
     private readonly adapters: AdapterRegistry,
-  ) {}
+  ) {
+    this.pool = new CredentialPoolStore(storage, secrets);
+  }
 
   /**
    * True when this provider is the active runtime selection.
@@ -77,6 +95,7 @@ export class ProviderService {
         allowLocal: p.allowLocal,
         hasCredential: this.storage.hasCredential(p.id),
         modelCount: this.storage.listModels(p.id).length,
+        poolKeyCount: this.storage.listPoolCredentials(p.id).length,
         canListModels: info.listModels,
         // Marks the live selection so the panel can explain why an edit is refused.
         isActive: this.isActive(p.id),
@@ -240,6 +259,54 @@ export class ProviderService {
   credentialStatus(id: number): "set" | "unset" | "not_found" {
     if (!this.storage.getProvider(id)) return "not_found";
     return this.storage.hasCredential(id) ? "set" : "unset";
+  }
+
+  /**
+   * Add a pool (backup) credential to a provider.
+   *
+   * The provider must exist. The key is encrypted before it reaches storage;
+   * with no master key configured the whole operation fails closed with the
+   * actionable missing-key message, exactly like the primary credential.
+   * Returns the pool entry id.
+   */
+  addPoolKey(providerId: number, label: string, apiKey: string): ServiceResult<number> {
+    if (!this.storage.getProvider(providerId)) return fail("پروایدر یافت نشد.", "not_found");
+    const cleanLabel = label.trim();
+    if (cleanLabel.length === 0) return fail("نام نمایشی کلید پشتیبان لازم است.");
+    if (cleanLabel.length > MAX_LABEL) return fail("نام نمایشی کلید پشتیبان خیلی طولانی است.");
+    if (apiKey.trim().length === 0) return fail("کلید ارائه‌شده معتبر نبود.");
+    try {
+      const id = this.pool.savePoolCredential(providerId, cleanLabel, apiKey.trim());
+      return { ok: true, data: id };
+    } catch (err) {
+      if (err instanceof SecretStoreError && err.kind === "missing_key") {
+        return fail(err.message, "missing_key");
+      }
+      return fail("کلید ارائه‌شده معتبر نبود.");
+    }
+  }
+
+  /**
+   * Pool credentials of a provider for the panel.
+   * Labels, flags, and counts only — NEVER key material.
+   */
+  listPoolKeys(providerId: number): PoolKeyView[] {
+    if (!this.storage.getProvider(providerId)) return [];
+    return this.pool.listPoolEntries(providerId);
+  }
+
+  /** Remove a pool credential. The containment path for a compromised key. */
+  removePoolKey(id: number): ServiceResult<true> {
+    if (!this.pool.removePoolEntry(id)) return fail("کلید پشتیبان یافت نشد.", "not_found");
+    return { ok: true, data: true };
+  }
+
+  /** Enable or disable a pool credential. */
+  setPoolKeyEnabled(id: number, enabled: boolean): ServiceResult<true> {
+    if (!this.pool.setPoolEntryEnabled(id, enabled)) {
+      return fail("کلید پشتیبان یافت نشد.", "not_found");
+    }
+    return { ok: true, data: true };
   }
 
   /**
