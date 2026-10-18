@@ -26,7 +26,7 @@ export const fa: LanguagePack = {
   "menu.tools.title": "ابزارهای فعال بابی:",
   "menu.tools.empty": "ابزارها: هیچ ابزار فعالی وجود ندارد.",
   "menu.tools.note":
-    "فهرست بالا یعنی ابزارها در دسترس‌اند؛ اجرای هر کدام به مجوز شما بستگی دارد.",
+    "فهرست بالا یعنی ابزارها در دسترس‌اند؛ اجرای هر کدوم به اجازهٔ تو بستگی داره.",
   "menu.tools.item": "{index}. {label}",
 
   // ---- /start ----
@@ -69,6 +69,7 @@ export const fa: LanguagePack = {
 
   // ---- /reset ----
   "reset.done": "تاریخچهٔ این گفت‌وگو پاک شد. 🧹",
+  "reset.confirm": "⚠️ با این کار {n} پیام این گفت‌وگو کلاً پاک می‌شه — برگشتی نیست.\nاگه مطمئنی: /reset --confirm",
 
   // ---- /compress ----
   "compress.compressed":
@@ -92,6 +93,9 @@ export const fa: LanguagePack = {
   // ---- gates ----
   "gate.group_not_ready":
     "این ربات در این گروه هنوز فعال نیست. مالک ربات باید ابتدا دسترسی را تأیید کند.",
+  "gate.user_not_approved":
+    "درخواستت برای مالک ربات فرستاده شد؛ بعد از تأیید می‌تونی گفت‌وگو کنی.",
+  "gate.user_revoked": "دسترسی‌ت به این ربات لغو شده.",
   "help.cmd.history": "نمایش تاریخچهٔ گفت‌وگو",
   "help.cmd.save": "ذخیرهٔ گفت‌وگو به‌صورت فایل",
   "help.cmd.retry": "تلاش دوبارهٔ آخرین پیام",
@@ -145,4 +149,24 @@ export const fa: LanguagePack = {
   "help.cmd.loop": "تکرار خودکار",
   "help.cmd.cron": "وظایف زمان‌بندی‌شده",
   "help.cmd.learn": "آموزش مهارت",
+  "progress.thinking": "در حال فکر کردن…",
+  "progress.tool_running": "در حال {label}…",
+  "progress.tool_done": "{label} انجام شد.",
+
+  // ---- rate limit / turn errors (bot.ts §11c) ----
+  "ratelimit.wait": "یه کم تند رفتی؛ حدود {seconds} ثانیهٔ دیگه دوباره تلاش کن.",
+  "reply.truncated": "به سقف مراحل این پاسخ رسیدم؛ برای جزئیات بیشتر دقیق‌تر بپرس.",
+  "media.skipped_title": "این پیوست‌ها استفاده نشدند:",
+  "media.skipped_too_large": "• {kind}: حجمش بیش از حد مجاز بود.",
+  "media.skipped_unsupported": "• {kind}: این نوع فایل پشتیبانی نمی‌شود.",
+  "media.skipped_other": "• {kind}: دریافت نشد.",
+  "media.empty": "پیام خالی است.",
+  "error.empty_response": "پاسخی نگرفتم؛ دوباره تلاش کن.",
+  "error.auth": "سرویس در دسترس نیست (احراز هویت).",
+  "error.quota": "سقف استفاده پر شده؛ کمی بعد تلاش کن.",
+  "error.network": "خطای شبکه؛ دوباره تلاش کن.",
+  "error.timeout": "پاسخ خیلی طول کشید؛ لغو شد.",
+  "error.overloaded": "سیستم شلوغه؛ لحظه‌ای بعد تلاش کن.",
+  "error.unknown": "خطای موقت؛ دوباره تلاش کن.",
+  "error.unexpected": "خطای غیرمنتظره.",
 };

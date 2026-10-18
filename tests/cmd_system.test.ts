@@ -438,6 +438,7 @@ describe("handleModelShow", () => {
           modelId: "alpha-1",
           enabled: true,
           isActive: true,
+          id: 1,
         },
       ],
     );

@@ -492,7 +492,7 @@ describe("/resume", () => {
     await handleResumeCommand(unknown.ctx, env, "fa");
     expect(unknown.replies[0]).toContain("پیدا نشد");
   });
-  test("matches by branch suffix, stores the pref, shows history + limitation", async () => {
+  test("matches by branch suffix, stores the pref, shows history + active note", async () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     seedTurns(s, "u1", "c1:ideas", [["bq", "ba"]]);
@@ -502,7 +502,10 @@ describe("/resume", () => {
     expect(s.getUserPref("u1", "active_conversation:c1")).toBe("c1:ideas");
     const text = replies.join("\n");
     expect(text).toContain("bq");
-    expect(text).toContain("هندلر پیام");
+    // The stale "handler not wired" warning is gone; the reply confirms the
+    // switch honestly.
+    expect(text).toContain("نشست فعال");
+    expect(text).not.toContain("هندلر پیام");
   });
   test("matches by exact id", async () => {
     const s = openStorage();
@@ -561,9 +564,9 @@ describe("/status", () => {
     const text = replies.join("\n");
     expect(text).toContain("c1");
     expect(text).toContain("m1");
-    expect(text).toContain("2"); // message count
-    expect(text).toContain("100"); // today's input only
-    expect(text).not.toContain("200");
+    expect(text).toContain("۲"); // message count (Persian digits in fa)
+    expect(text).toContain("۱۰۰"); // today's input only (Persian digits)
+    expect(text).not.toContain("۲۰۰");
     expect(text).toContain("خیر"); // not running
   });
   test("unknown model when no usage yet", async () => {
@@ -682,16 +685,31 @@ describe("/version", () => {
 // ---------- /new ----------
 
 describe("/new", () => {
-  test("clears messages and the rolling summary like /reset", async () => {
+  test("bare /new only asks for confirmation; --confirm clears like /reset", async () => {
     const s = openStorage();
     const engine = makeEngine(s);
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const before = s.history("u1", "c1", 10);
     s.setConversationSummary({ userId: "u1", chatId: "c1", summary: "s", summarisedUntil: before[0]!.id });
-    const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/new" });
-    await handleNewCommand(ctx, { engine }, "fa");
+
+    // Bare /new: nothing is destroyed, the reply names the count and the
+    // exact confirmation command.
+    const bare = makeCtx({ userId: "u1", chatId: "c1", text: "/new" });
+    await handleNewCommand(bare.ctx, { engine, storage: s }, "fa");
+    expect(contents(s, "u1", "c1")).toHaveLength(2);
+    expect(s.getConversationSummary("u1", "c1")).toBeDefined();
+    expect(bare.replies[0]).toContain("/new --confirm");
+
+    // A near-miss flag does NOT count as confirmation.
+    const near = makeCtx({ userId: "u1", chatId: "c1", text: "/new --confirmx" });
+    await handleNewCommand(near.ctx, { engine, storage: s }, "fa");
+    expect(contents(s, "u1", "c1")).toHaveLength(2);
+
+    // Confirmed: messages and the rolling summary are cleared.
+    const done = makeCtx({ userId: "u1", chatId: "c1", text: "/new --confirm" });
+    await handleNewCommand(done.ctx, { engine, storage: s }, "fa");
     expect(contents(s, "u1", "c1")).toHaveLength(0);
     expect(s.getConversationSummary("u1", "c1")).toBeUndefined();
-    expect(replies[0]).toContain("نشست تازه");
+    expect(done.replies[0]).toContain("نشست تازه");
   });
 });

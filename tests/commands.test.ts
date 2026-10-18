@@ -3,6 +3,7 @@ import { Storage } from "../src/storage/storage";
 import { ConversationEngine, type CompressResult } from "../src/conversation/engine";
 import { FakeProvider } from "../src/ai/fake";
 import {
+  COMMAND_HELP,
   visibleCommandHelp,
   formatCommandHelp,
   handleResetCommand,
@@ -47,17 +48,52 @@ describe("/help visibility", () => {
     expect(text).toContain("/help — راهنمای دستورها");
     expect(text).not.toContain("/admin");
   });
+
+  test("help is grouped by category, not a flat wall", () => {
+    const text = formatCommandHelp(visibleCommandHelp(false));
+    expect(text).toContain("🔹 عمومی");
+    expect(text).toContain("🗂 نشست");
+    expect(text).toContain("⚡️ اتوماسیون");
+    expect(text).not.toContain("🔒 مالک");
+    // Sections render in a fixed order.
+    expect(text.indexOf("🔹 عمومی")).toBeLessThan(text.indexOf("🗂 نشست"));
+    expect(text.indexOf("🗂 نشست")).toBeLessThan(text.indexOf("⚡️ اتوماسیون"));
+  });
+
+  test("commands with examples render a one-line usage", () => {
+    const text = formatCommandHelp(visibleCommandHelp(false));
+    expect(text).toContain("/history 20 — نمایش تاریخچهٔ گفت‌وگو");
+    expect(text).toContain("/undo 2 — بازگشت و بازنویسی");
+    const en = formatCommandHelp(visibleCommandHelp(false), "en");
+    expect(en).toContain("/history 20 — Show conversation history");
+  });
+
+  test("owner help gains the owner section", () => {
+    const text = formatCommandHelp(visibleCommandHelp(true));
+    expect(text).toContain("🔒 مالک");
+    expect(text).toContain("/admin — پنل مدیریت ربات");
+  });
+
+  test("every entry has a valid group; owner-only entries are all in the owner group", () => {
+    for (const c of COMMAND_HELP) {
+      expect(["general", "session", "automation", "owner"]).toContain(c.group);
+      if (c.ownerOnly) expect(c.group).toBe("owner");
+      if (c.group === "owner") expect(c.ownerOnly).toBe(true);
+    }
+    expect(COMMAND_HELP.length).toBe(63);
+  });
 });
 
 // ---------- /reset ----------
 
-function stubCtx(chatId: number | string, userId: number | string) {
+function stubCtx(chatId: number | string, userId: number | string, text = "/reset --confirm") {
   const replies: string[] = [];
   return {
     replies,
     ctx: {
       chat: { id: chatId },
       from: { id: userId },
+      message: { text },
       async reply(t: string) {
         replies.push(t);
       },
@@ -88,6 +124,37 @@ describe("/reset scoping", () => {
     expect(replies[0]).toContain("پاک شد");
     // The in-flight registration is gone, so /stop finds nothing afterwards.
     expect(stopTurn("100")).toBe(false);
+  });
+
+  test("bare /reset asks for confirmation instead of wiping", async () => {
+    const cleared: unknown[] = [];
+    const engine = {
+      cancel: () => {},
+      clearHistory: (input: unknown) => {
+        cleared.push(input);
+      },
+    };
+    const { ctx, replies } = stubCtx(100, 5, "/reset");
+    await handleResetCommand(ctx, { engine });
+
+    expect(cleared).toEqual([]);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("--confirm");
+  });
+
+  test("a crafted --confirmx flag does not smuggle consent", async () => {
+    const cleared: unknown[] = [];
+    const engine = {
+      cancel: () => {},
+      clearHistory: (input: unknown) => {
+        cleared.push(input);
+      },
+    };
+    const { ctx, replies } = stubCtx(100, 5, "/reset --confirmx");
+    await handleResetCommand(ctx, { engine });
+
+    expect(cleared).toEqual([]);
+    expect(replies[0]).toContain("--confirm");
   });
 
   test("engine.clearHistory against real storage deletes one chat only", () => {

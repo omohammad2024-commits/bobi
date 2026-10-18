@@ -131,10 +131,18 @@ function priceFor(model: string): { input: number; output: number } {
 }
 
 /** Format an estimated cost for display. */
-export function formatCost(usd: number): string {
-  if (usd <= 0) return "۰ دلار";
-  if (usd < 0.01) return "کمتر از ۰٫۰۱ دلار";
-  return `${usd.toFixed(2)} دلار`;
+const FA_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
+
+/** Format a USD cost with the right digits for the language. */
+export function formatCost(usd: number, lang: "fa" | "en" = "fa"): string {
+  const digits = (s: string): string =>
+    lang === "en"
+      ? s
+      : s.replace(/\./g, "٫").replace(/[0-9]/g, (d) => FA_DIGITS[Number(d)] ?? d);
+  if (usd <= 0) return lang === "en" ? "$0" : "۰ دلار";
+  if (usd < 0.01)
+    return lang === "en" ? "less than $0.01" : `کمتر از ${digits("0.01")} دلار`;
+  return lang === "en" ? `$${usd.toFixed(2)}` : `${digits(usd.toFixed(2))} دلار`;
 }
 
 /** Format a token count with thousands separators. */

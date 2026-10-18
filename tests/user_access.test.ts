@@ -367,8 +367,8 @@ describe("user panel rendering", () => {
         updatedAt: 0,
       }));
     const full = usersPendingText(mk(USER_PAGE_SIZE), 0, 20);
-    expect(full).toContain("1");
+    expect(full).toContain("۱");
     // Only the text is checked here; navigation is asserted via the codec tests.
-    expect(usersPendingText(mk(1), 0, 1)).toContain("1–1");
+    expect(usersPendingText(mk(1), 0, 1)).toContain("۱–۱");
   });
 });

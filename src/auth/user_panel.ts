@@ -1,38 +1,46 @@
 /**
- * Owner panel UI for private-chat user access.
+ * Owner panel UI for private-chat user access — text and keyboards rendered
+ * from the panel string table (`../groups/panel_strings.ts`).
  *
  * Mirrors `groups/panel.ts` deliberately: the two approval workflows are the
  * same shape, so an owner who has used one already knows the other. This module
  * only renders — it performs no authorization and no state change. Every button
  * behind it is re-checked by the admin boundary when the callback arrives.
+ *
+ * `lang` defaults to Persian (the owner's ground truth); the English mirror
+ * comes from the same table. No user-facing literal lives in this file.
  */
 import { InlineKeyboard } from "grammy";
 import type { UserAccessRecord } from "../storage/storage";
 import { encode } from "../groups/callbacks";
+import { formatNum, tr, type PanelLang } from "../groups/panel_strings";
 
 /** Page size for the owner's user lists. */
 export const USER_PAGE_SIZE = 5;
 
-export function usersMenuKeyboard(): InlineKeyboard {
+export function usersMenuKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text("درخواست‌های دسترسی کاربران", encode({ kind: "users_pending", offset: 0 }))
+    .text(tr(lang, "panel.users.menu_pending"), encode({ kind: "users_pending", offset: 0 }))
     .row()
-    .text("کاربران تأییدشده", encode({ kind: "users_approved", offset: 0 }))
+    .text(tr(lang, "panel.users.menu_approved"), encode({ kind: "users_approved", offset: 0 }))
     .row()
-    .text("لغو دسترسی کاربر", encode({ kind: "users_revoke_menu", offset: 0 }))
+    .text(tr(lang, "panel.users.menu_revoke"), encode({ kind: "users_revoke_menu", offset: 0 }))
     .row()
-    .text("بازگشت", encode({ kind: "menu" }));
+    .text(tr(lang, "panel.back"), encode({ kind: "menu" }));
 }
 
-export function usersMenuText(pending: number, approved: number): string {
+export function usersMenuText(
+  pending: number,
+  approved: number,
+  lang: PanelLang = "fa",
+): string {
   return [
-    "دسترسی کاربران",
+    tr(lang, "panel.users.menu_title"),
     "",
-    "هر کسی که در چت خصوصی به ربات پیام بدهد باید ابتدا تأیید شود؛",
-    "تا آن زمان هیچ پاسخی از مدل نمی‌گیرد و به هیچ ابزاری دسترسی ندارد.",
+    tr(lang, "panel.users.menu_about"),
     "",
-    `در انتظار تأیید: ${pending}`,
-    `تأییدشده: ${approved}`,
+    tr(lang, "panel.users.pending_n", { n: formatNum(pending, lang) }),
+    tr(lang, "panel.users.approved_n", { n: formatNum(approved, lang) }),
   ].join("\n");
 }
 
@@ -40,30 +48,38 @@ export function usersPendingText(
   items: readonly UserAccessRecord[],
   offset: number,
   total: number,
+  lang: PanelLang = "fa",
 ): string {
   if (items.length === 0) {
-    return offset > 0 ? "درخواست دیگری وجود ندارد." : "درخواست دسترسی کاربری وجود ندارد.";
+    return offset > 0
+      ? tr(lang, "panel.users.pending_empty_more")
+      : tr(lang, "panel.users.pending_empty");
   }
   return [
-    `درخواست‌های دسترسی کاربران (${offset + 1}–${offset + items.length} از ${total}):`,
+    tr(lang, "panel.users.pending_title", {
+      from: formatNum(offset + 1, lang),
+      to: formatNum(offset + items.length, lang),
+      total: formatNum(total, lang),
+    }),
     "",
-    ...items.map(describeUser),
+    ...items.map((u) => describeUser(u, lang)),
     "",
-    "تأیید یا رد هر درخواست را انتخاب کنید:",
+    tr(lang, "panel.pending.hint"),
   ].join("\n");
 }
 
 export function usersPendingKeyboard(
   items: readonly UserAccessRecord[],
   offset: number,
+  lang: PanelLang = "fa",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const u of items) {
-    kb.text("تأیید", encode({ kind: "user_approve", userId: u.userId }));
-    kb.text("رد", encode({ kind: "user_reject", userId: u.userId }));
+    kb.text(tr(lang, "panel.pending.approve"), encode({ kind: "user_approve", userId: u.userId }));
+    kb.text(tr(lang, "panel.pending.reject"), encode({ kind: "user_reject", userId: u.userId }));
     kb.row();
   }
-  appendNav(kb, { offset, shown: items.length, list: "users_pending" });
+  appendNav(kb, { offset, shown: items.length, list: "users_pending", lang });
   return kb;
 }
 
@@ -71,14 +87,21 @@ export function usersApprovedText(
   items: readonly UserAccessRecord[],
   offset: number,
   total: number,
+  lang: PanelLang = "fa",
 ): string {
   if (items.length === 0) {
-    return offset > 0 ? "کاربر تأییدشدهٔ دیگری وجود ندارد." : "هیچ کاربر تأییدشده‌ای وجود ندارد.";
+    return offset > 0
+      ? tr(lang, "panel.users.approved_empty_more")
+      : tr(lang, "panel.users.approved_empty");
   }
   return [
-    `کاربران تأییدشده (${offset + 1}–${offset + items.length} از ${total}):`,
+    tr(lang, "panel.users.approved_title", {
+      from: formatNum(offset + 1, lang),
+      to: formatNum(offset + items.length, lang),
+      total: formatNum(total, lang),
+    }),
     "",
-    ...items.map(describeUser),
+    ...items.map((u) => describeUser(u, lang)),
   ].join("\n");
 }
 
@@ -86,20 +109,28 @@ export function usersRevokeText(
   items: readonly UserAccessRecord[],
   offset: number,
   total: number,
+  lang: PanelLang = "fa",
 ): string {
   if (items.length === 0) {
-    return offset > 0 ? "کاربر بیشتری برای لغو وجود ندارد." : "کاربری برای لغو دسترسی وجود ندارد.";
+    return offset > 0
+      ? tr(lang, "panel.users.revoke_empty_more")
+      : tr(lang, "panel.users.revoke_empty");
   }
   return [
-    `کاربری که می‌خواهید دسترسی‌اش را لغو کنید انتخاب کنید (${offset + 1}–${offset + items.length} از ${total}):`,
+    tr(lang, "panel.users.revoke_title", {
+      from: formatNum(offset + 1, lang),
+      to: formatNum(offset + items.length, lang),
+      total: formatNum(total, lang),
+    }),
     "",
-    ...items.map(describeUser),
+    ...items.map((u) => describeUser(u, lang)),
   ].join("\n");
 }
 
 export function usersRevokeKeyboard(
   items: readonly UserAccessRecord[],
   offset: number,
+  lang: PanelLang = "fa",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const u of items) {
@@ -110,6 +141,7 @@ export function usersRevokeKeyboard(
     offset,
     shown: items.length,
     list: "users_revoke_menu",
+    lang,
   });
   return kb;
 }
@@ -117,9 +149,10 @@ export function usersRevokeKeyboard(
 export function usersApprovedKeyboard(
   items: readonly UserAccessRecord[],
   offset: number,
+  lang: PanelLang = "fa",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  appendNav(kb, { offset, shown: items.length, list: "users_approved" });
+  appendNav(kb, { offset, shown: items.length, list: "users_approved", lang });
   return kb;
 }
 
@@ -129,41 +162,56 @@ export function usersApprovedKeyboard(
  * Carries only what the owner needs to decide: the numeric id (the authoritative
  * field) plus the cosmetic name and username.
  */
-export function userRequestNotificationText(u: UserAccessRecord): string {
+export function userRequestNotificationText(
+  u: UserAccessRecord,
+  lang: PanelLang = "fa",
+): string {
   const lines = [
-    "یک کاربر ناشناس در چت خصوصی به ربات پیام داد و منتظر تأیید شماست.",
+    tr(lang, "panel.users.notify_title"),
     "",
-    `شناسهٔ کاربر: ${u.userId}`,
+    tr(lang, "panel.users.notify_id", { v: u.userId }),
   ];
   if (u.firstName !== undefined && u.firstName.length > 0) {
-    lines.push(`نام: ${u.firstName}`);
+    lines.push(tr(lang, "panel.users.notify_name", { v: u.firstName }));
   }
   if (u.username !== undefined && u.username.length > 0) {
-    lines.push(`نام کاربری: @${u.username}`);
+    lines.push(tr(lang, "panel.users.notify_username", { v: u.username }));
   }
-  lines.push("", "تا تأیید شما، این کاربر پاسخی از مدل نمی‌گیرد.");
+  lines.push("", tr(lang, "panel.users.notify_hint"));
   return lines.join("\n");
 }
 
 /** Approve/reject buttons for the notification. */
-export function userApprovalKeyboard(userId: string): InlineKeyboard {
+export function userApprovalKeyboard(userId: string, lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text("تأیید", encode({ kind: "user_approve", userId }))
-    .text("رد", encode({ kind: "user_reject", userId }));
+    .text(tr(lang, "panel.pending.approve"), encode({ kind: "user_approve", userId }))
+    .text(tr(lang, "panel.pending.reject"), encode({ kind: "user_reject", userId }));
 }
 
-/** Message shown to a user whose access is not approved yet. */
-export const USER_NOT_APPROVED =
-  "درخواست شما برای مالک ربات فرستاده شد. پس از تأیید می‌توانید گفت‌وگو کنید.";
+/**
+ * Message shown to a user whose access is not approved yet.
+ *
+ * Kept as a Persian constant for the existing bot.ts import; prefer
+ * {@link userNotApproved} for language-aware rendering.
+ */
+export const USER_NOT_APPROVED = tr("fa", "panel.users.not_approved");
 
 /** Message shown when access was revoked after being approved. */
-export const USER_REVOKED =
-  "دسترسی شما به این ربات لغو شده است.";
+export const USER_REVOKED = tr("fa", "panel.users.revoked");
+
+/** Language-aware variants of the user-facing constants above. */
+export function userNotApproved(lang: PanelLang): string {
+  return tr(lang, "panel.users.not_approved");
+}
+
+export function userRevoked(lang: PanelLang): string {
+  return tr(lang, "panel.users.revoked");
+}
 
 // ---- helpers ----
 
-function describeUser(u: UserAccessRecord): string {
-  const name = u.firstName && u.firstName.length > 0 ? u.firstName : "بی‌نام";
+function describeUser(u: UserAccessRecord, lang: PanelLang): string {
+  const name = u.firstName && u.firstName.length > 0 ? u.firstName : tr(lang, "panel.unnamed");
   const username = u.username && u.username.length > 0 ? ` @${u.username}` : "";
   return `• ${name}${username} (${u.userId})`;
 }
@@ -186,6 +234,7 @@ function appendNav(
     offset: number;
     shown: number;
     list: "users_pending" | "users_approved" | "users_revoke_menu";
+    lang: PanelLang;
   },
 ): void {
   const prev = Math.max(0, o.offset - USER_PAGE_SIZE);
@@ -194,14 +243,14 @@ function appendNav(
   const next = o.offset + USER_PAGE_SIZE;
 
   if (o.offset > 0) {
-    kb.text("قبلی", navData(o.list, prev));
-    if (hasNext) kb.text("بعدی", navData(o.list, next));
+    kb.text(tr(o.lang, "panel.prev"), navData(o.list, prev));
+    if (hasNext) kb.text(tr(o.lang, "panel.next"), navData(o.list, next));
     kb.row();
   } else if (hasNext) {
-    kb.text("بعدی", navData(o.list, next));
+    kb.text(tr(o.lang, "panel.next"), navData(o.list, next));
     kb.row();
   }
-  kb.text("بازگشت", encode({ kind: "users_menu" }));
+  kb.text(tr(o.lang, "panel.back"), encode({ kind: "users_menu" }));
 }
 
 function navData(

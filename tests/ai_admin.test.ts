@@ -443,7 +443,15 @@ describe("AI admin workflow", () => {
     const h = harness();
     const active = activeProvider(h);
     const c = fakeCtx({ id: OWNER_ID });
+    // First tap only asks: the key must survive until the confirmation.
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_clear_key", providerId: active.providerId }));
+    expect(h.providers.credentialStatus(active.providerId)).toBe("set");
+    expect(c.sent.map((s) => s.text).join("\n")).toContain("پاک شود");
+    // Second tap clears.
+    await h.ai.handleCallback(
+      c.ctx,
+      encode({ kind: "ai_clear_key_confirm", providerId: active.providerId }),
+    );
     expect(h.providers.credentialStatus(active.providerId)).toBe("unset");
     h.storage.close();
   });
@@ -509,6 +517,14 @@ describe("AI admin workflow", () => {
     const c1 = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c1.ctx, encode({ kind: "ai_delete", providerId: active.providerId }));
     expect(h.storage.getProvider(active.providerId)).toBeDefined();
+    // The first tap only asks for confirmation, even for a deletable provider.
+    await h.ai.handleCallback(
+      c1.ctx,
+      encode({ kind: "ai_delete_confirm", providerId: active.providerId }),
+    );
+    // Still the active provider: the confirmation refuses, it does not delete.
+    expect(h.storage.getProvider(active.providerId)).toBeDefined();
+    expect(c1.sent.map((s) => s.text).join("\n")).toContain("در حال استفاده");
 
     // Add a second provider and switch to it.
     const p2 = h.providers.create({
@@ -524,6 +540,11 @@ describe("AI admin workflow", () => {
 
     const c2 = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c2.ctx, encode({ kind: "ai_delete", providerId: active.providerId }));
+    expect(h.storage.getProvider(active.providerId)).toBeDefined();
+    await h.ai.handleCallback(
+      c2.ctx,
+      encode({ kind: "ai_delete_confirm", providerId: active.providerId }),
+    );
     expect(h.storage.getProvider(active.providerId)).toBeUndefined();
     h.storage.close();
   });

@@ -1,6 +1,7 @@
 import { bootstrapMessage } from "./core/app";
 import { loadConfig, requireBotToken } from "./config/config";
 import { createBot, PERSONALITY_PREF_KEY } from "./bot/bot";
+import { publicMenuCommands, ownerMenuCommands } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
 import type { Bot } from "grammy";
@@ -60,7 +61,7 @@ import { authorizeToolUse, toToolActor } from "./auth/tool_bridge";
 import { McpManager, mcpTools } from "./mcp/bridge";
 import { loadMcpConfig, describeIssues } from "./mcp/config";
 import { RateLimiter } from "./core/rate_limit";
-import { UsageService, formatCost } from "./core/usage";
+import { UsageService } from "./core/usage";
 import { Logger } from "./core/logger";
 import { startHealthServer } from "./core/health";
 import type { Tool, ToolActor } from "./tools/types";
@@ -447,6 +448,8 @@ async function main(): Promise<void> {
     auth,
     admin,
     groups,
+    // Panels follow the owner's /lang choice (same as AiAdminController).
+    prefs: (u, k) => storage.getUserPref(u, k),
     notify: async (chatId, text, keyboard) => {
       if (!botApi) return false;
       try {
@@ -474,7 +477,7 @@ async function main(): Promise<void> {
         toolCalls: summary.all.toolCalls,
         inputTokens: summary.all.inputTokens,
         outputTokens: summary.all.outputTokens,
-        cost: formatCost(summary.estimatedUsd),
+        costUsd: summary.estimatedUsd,
         estimated: summary.estimated,
       };
     },
@@ -486,6 +489,8 @@ async function main(): Promise<void> {
     auth,
     admin,
     users,
+    // Panels follow the owner's /lang choice (same as AiAdminController).
+    prefs: (u, k) => storage.getUserPref(u, k),
     notify: async (chatId, text, keyboard) => {
       if (!botApi) return false;
       try {
@@ -604,8 +609,19 @@ async function main(): Promise<void> {
     // Owner-only commands are scoped to the owner's chat so other users never
     // see them; handlers ALSO gate at runtime (menu hiding is not a security
     // boundary).
-    const allDefs = [...SESSION_COMMAND_DEFS, ...SYSTEM_COMMAND_DEFS, ...AUTO_COMMAND_DEFS];
-    const publicDefs = allDefs.filter((d) => !d.ownerOnly);
+    //
+    // The 10 built-in commands (start/help/voice/…) are not part of the Hermes
+    // modules, so they are prepended here from menu.ts: core commands first,
+    // then the Hermes groups in module order (session → system → automation).
+    // Public scope shows the non-owner entries; the owner scope shows
+    // everything.
+    const hermesDefs: HermesCommandDef[] = [
+      ...SESSION_COMMAND_DEFS,
+      ...SYSTEM_COMMAND_DEFS,
+      ...AUTO_COMMAND_DEFS,
+    ];
+    const publicDefs = publicMenuCommands(hermesDefs);
+    const ownerDefs = ownerMenuCommands(hermesDefs);
     const toMenu = (defs: HermesCommandDef[], fa: boolean) =>
       defs.map((d) => ({ command: d.command, description: fa ? d.descriptionFa : d.descriptionEn }));
     const setMenu = (
@@ -624,8 +640,8 @@ async function main(): Promise<void> {
     void setMenu(toMenu(publicDefs, false), { language_code: "en" });
     if (identity.ownerId !== undefined) {
       const ownerScope: BotCommandScope = { type: "chat", chat_id: identity.ownerId };
-      void setMenu(toMenu(allDefs, true), { scope: ownerScope });
-      void setMenu(toMenu(allDefs, false), { scope: ownerScope, language_code: "en" });
+      void setMenu(toMenu(ownerDefs, true), { scope: ownerScope });
+      void setMenu(toMenu(ownerDefs, false), { scope: ownerScope, language_code: "en" });
     }
   }
 

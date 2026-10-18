@@ -277,7 +277,8 @@ describe("owner group workflow", () => {
     await h.panel.handleCallback(c.ctx as never, encode({ kind: "status" }));
     const text = c.sent.map((s) => s.text).join("\n");
     expect(text).toContain("وضعیت سیستم");
-    expect(text).toContain("در انتظار تأیید: 1");
+    // Persian digits in the fa panel.
+    expect(text).toContain("در انتظار تأیید: ۱");
     // No secret surfaces.
     expect(text).not.toContain("TELEGRAM_BOT_TOKEN");
     expect(text).not.toContain("OWNER_TELEGRAM_ID");

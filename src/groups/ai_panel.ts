@@ -1,5 +1,6 @@
 /**
- * AI management panel UI — Persian text and inline keyboards.
+ * AI management panel UI — inline keyboards and text, rendered from the panel
+ * string table (`panel_strings.ts`).
  *
  * Rendering only: no authorization, no state change. Every button behind these
  * views is re-checked by AdminBoundary at execution time, exactly like the group
@@ -7,29 +8,33 @@
  *
  * Credentials are shown ONLY as set/unset. No key, no header, no URL with a
  * credential ever reaches this module's output.
+ *
+ * `lang` defaults to Persian (the owner's ground truth); the English mirror
+ * comes from the same table. No user-facing literal lives in this file.
  */
 import { InlineKeyboard } from "grammy";
 import { encode } from "./callbacks";
 import { ADAPTER_TEMPLATES, PROVIDER_PRESETS } from "../ai/adapter";
 import type { ModelView, ProviderView } from "../ai/provider_service";
+import { formatNum, formatTime, tr, type PanelLang } from "./panel_strings";
 
-export function aiMenuKeyboard(): InlineKeyboard {
+export function aiMenuKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text("پروایدرها", encode({ kind: "ai_providers" }))
+    .text(tr(lang, "panel.ai.menu.providers"), encode({ kind: "ai_providers" }))
     .row()
-    .text("انتخاب پروایدر و مدل فعال", encode({ kind: "ai_select_menu" }))
+    .text(tr(lang, "panel.ai.menu.select"), encode({ kind: "ai_select_menu" }))
     .row()
-    .text("جایگزین مطالبه‌ای (Failover)", encode({ kind: "fo_menu" }))
+    .text(tr(lang, "panel.ai.menu.failover"), encode({ kind: "fo_menu" }))
     .row()
-    .text("جستجوی وب", encode({ kind: "search_menu" }))
+    .text(tr(lang, "panel.ai.menu.search"), encode({ kind: "search_menu" }))
     .row()
-    .text("وضعیت عملیاتی", encode({ kind: "ai_status" }))
+    .text(tr(lang, "panel.ai.menu.status"), encode({ kind: "ai_status" }))
     .row()
-    .text("بازگشت", encode({ kind: "menu" }));
+    .text(tr(lang, "panel.back"), encode({ kind: "menu" }));
 }
 
-export function aiMenuText(): string {
-  return ["مدیریت هوش مصنوعی", "یک گزینه را انتخاب کنید:"].join("\n");
+export function aiMenuText(lang: PanelLang = "fa"): string {
+  return [tr(lang, "panel.ai.menu_title"), tr(lang, "panel.ai.menu_hint")].join("\n");
 }
 
 // ---------- failover ----------
@@ -51,108 +56,142 @@ export interface FailoverView {
   rows: readonly FailoverRow[];
 }
 
-export function failoverText(v: FailoverView): string {
-  const state = v.enabled ? "فعال" : "غیرفعال (پیش‌فرض)";
+export function failoverText(v: FailoverView, lang: PanelLang = "fa"): string {
+  const state = v.enabled ? tr(lang, "panel.fo.state_on") : tr(lang, "panel.fo.state_off");
+  const unset = tr(lang, "panel.fo.unset");
   const lines = [
-    "جایگزین مطالبه‌ای (Failover)",
+    tr(lang, "panel.fo.title"),
     "",
-    `وضعیت: ${state}`,
-    `حداکثر تلاش: ${v.maxAttempts}`,
-    `مدت هر تلاش: ${v.timeoutMs} میلی‌ثانیه`,
+    tr(lang, "panel.fo.state", { v: state }),
+    tr(lang, "panel.fo.max_attempts", { n: formatNum(v.maxAttempts, lang) }),
+    tr(lang, "panel.fo.timeout", { n: formatNum(v.timeoutMs, lang) }),
     "",
-    `انتخاب اصلی: ${v.primaryLabel ?? "تنظیم‌نشده"} / ${v.primaryModelLabel ?? "تنظیم‌نشده"}`,
+    tr(lang, "panel.fo.primary", {
+      p: v.primaryLabel ?? unset,
+      m: v.primaryModelLabel ?? unset,
+    }),
     "",
   ];
 
   if (v.rows.length === 0) {
-    lines.push("جایگزینی تنظیم نشده است.", "با حالت خاموش، درخواست هرگز به پروایدر دیگری نمی‌رود.");
+    lines.push(tr(lang, "panel.fo.empty"), tr(lang, "panel.fo.empty_hint"));
   } else {
-    lines.push("جایگزین‌ها به ترتیب اولویت:");
+    lines.push(tr(lang, "panel.fo.list_title"));
     v.rows.forEach((r, i) => {
-      const note = r.enabled ? "" : " (غیرفعال — تا فعال نشود استفاده نمی‌شود)";
-      lines.push(`${i + 1}. ${r.providerLabel} / ${r.modelLabel}${note}`);
+      const note = r.enabled ? "" : tr(lang, "panel.fo.row_disabled_note");
+      lines.push(
+        tr(lang, "panel.fo.row", {
+          i: formatNum(i + 1, lang),
+          p: r.providerLabel,
+          m: r.modelLabel,
+          note,
+        }),
+      );
     });
-    lines.push("", "فقط در صورت فعال بودن، پروایدرهای غیرفعال نادیده گرفته می‌شوند.");
+    lines.push("", tr(lang, "panel.fo.skip_note"));
   }
   return lines.join("\n");
 }
 
-export function failoverKeyboard(v: FailoverView): InlineKeyboard {
+export function failoverKeyboard(v: FailoverView, lang: PanelLang = "fa"): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text(v.enabled ? "غیرفعال کردن" : "فعال کردن", encode({ kind: "fo_toggle" }))
+    .text(
+      v.enabled ? tr(lang, "panel.fo.toggle_off") : tr(lang, "panel.fo.toggle_on"),
+      encode({ kind: "fo_toggle" }),
+    )
     .row()
-    .text(`حداکثر تلاش: ${v.maxAttempts}`, encode({ kind: "fo_attempts" }))
+    .text(
+      tr(lang, "panel.fo.max_attempts", { n: formatNum(v.maxAttempts, lang) }),
+      encode({ kind: "fo_attempts" }),
+    )
     .row()
-    .text(`زمان هر تلاش: ${Math.round(v.timeoutMs / 1000)} ثانیه`, encode({ kind: "fo_timeout" }))
+    .text(
+      tr(lang, "panel.fo.timeout_btn", { n: formatNum(Math.round(v.timeoutMs / 1000), lang) }),
+      encode({ kind: "fo_timeout" }),
+    )
     .row();
 
   v.rows.forEach((r) => {
     if (r.index > 0) {
       kb.text("↑", encode({ kind: "fo_move_up", index: r.index })).row();
     }
-    kb.text(`حذف ${r.providerLabel}`, encode({ kind: "fo_remove", index: r.index })).row();
+    kb.text(tr(lang, "panel.fo.remove_btn", { label: r.providerLabel }), encode({ kind: "fo_remove", index: r.index })).row();
   });
 
-  kb.text("افزودن جایگزین", encode({ kind: "fo_add_form" })).row();
-  kb.text("بازگشت", encode({ kind: "ai_menu" }));
+  kb.text(tr(lang, "panel.fo.add"), encode({ kind: "fo_add_form" })).row();
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_menu" }));
   return kb;
 }
 
 /** The attempt-count picker, within the supported 1..4. */
-export function attemptsKeyboard(current: number): InlineKeyboard {
+export function attemptsKeyboard(current: number, lang: PanelLang = "fa"): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const n of [1, 2, 3, 4]) {
     const marker = n === current ? " ✓" : "";
-    kb.text(`${n}${marker}`, encode({ kind: "fo_attempts_set", value: n }));
+    kb.text(`${formatNum(n, lang)}${marker}`, encode({ kind: "fo_attempts_set", value: n }));
   }
-  kb.row().text("بازگشت", encode({ kind: "fo_menu" }));
+  kb.row().text(tr(lang, "panel.back"), encode({ kind: "fo_menu" }));
   return kb;
 }
 
-export function attemptsText(current: number): string {
-  return ["حداکثر تلاش", "", `مقدار فعلی: ${current}`, "عدد جدید را انتخاب کنید (۱ تا ۴):"].join(
-    "\n",
-  );
+export function attemptsText(current: number, lang: PanelLang = "fa"): string {
+  return [
+    tr(lang, "panel.fo.attempts_title"),
+    "",
+    tr(lang, "panel.fo.attempts_current", { n: formatNum(current, lang) }),
+    tr(lang, "panel.fo.attempts_hint"),
+  ].join("\n");
 }
 
 /** The timeout picker, within the documented 1000..60000 ms. */
-export function timeoutKeyboard(current: number): InlineKeyboard {
+export function timeoutKeyboard(current: number, lang: PanelLang = "fa"): InlineKeyboard {
   const options = [5000, 10000, 15000, 30000, 60000];
   const kb = new InlineKeyboard();
   for (const ms of options) {
     const marker = ms === current ? " ✓" : "";
-    kb.text(`${Math.round(ms / 1000)}ث${marker}`, encode({ kind: "fo_timeout_set", value: ms }));
+    kb.text(
+      tr(lang, "panel.fo.timeout_sec", { n: formatNum(Math.round(ms / 1000), lang) }) + marker,
+      encode({ kind: "fo_timeout_set", value: ms }),
+    );
   }
-  kb.row().text("بازگشت", encode({ kind: "fo_menu" }));
+  kb.row().text(tr(lang, "panel.back"), encode({ kind: "fo_menu" }));
   return kb;
 }
 
-export function timeoutText(current: number): string {
+export function timeoutText(current: number, lang: PanelLang = "fa"): string {
   return [
-    "زمان هر تلاش",
+    tr(lang, "panel.fo.timeout_title"),
     "",
-    `مقدار فعلی: ${current} میلی‌ثانیه`,
-    "مقدار جدید را انتخاب کنید (۱ تا ۶۰ ثانیه):",
+    tr(lang, "panel.fo.timeout_current", { n: formatNum(current, lang) }),
+    tr(lang, "panel.fo.timeout_hint"),
   ].join("\n");
 }
 
 /** Preview before a candidate is committed. */
-export function addConfirmText(providerLabel: string, modelLabel: string): string {
+export function addConfirmText(
+  providerLabel: string,
+  modelLabel: string,
+  lang: PanelLang = "fa",
+): string {
   return [
-    "افزودن جایگزین",
+    tr(lang, "panel.fo.add"),
     "",
-    `پروایدر: ${providerLabel}`,
-    `مدل: ${modelLabel}`,
+    tr(lang, "panel.fo.preview_provider", { v: providerLabel }),
+    tr(lang, "panel.fo.preview_model", { v: modelLabel }),
     "",
-    "برای افزودن به انتهای فهرست تأیید کنید.",
+    tr(lang, "panel.fo.preview_hint"),
   ].join("\n");
 }
 
-export function addConfirmKeyboard(providerId: number, modelId: number): InlineKeyboard {
+export function addConfirmKeyboard(
+  providerId: number,
+  modelId: number,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
   return new InlineKeyboard()
-    .text("تأیید و افزودن", encode({ kind: "fo_add_confirm", providerId, modelId }))
+    .text(tr(lang, "panel.fo.add_confirm_btn"), encode({ kind: "fo_add_confirm", providerId, modelId }))
     .row()
-    .text("بازگشت", encode({ kind: "fo_add_form" }));
+    .text(tr(lang, "panel.back"), encode({ kind: "fo_add_form" }));
 }
 
 // ---------- local-target exception ----------
@@ -163,32 +202,42 @@ export function addConfirmKeyboard(providerId: number, modelId: number): InlineK
  * The warning states the exposure plainly, because this is the one setting that
  * widens the SSRF boundary. It is per-provider and owner-only.
  */
-export function localTargetConfirmText(providerLabel: string, currentlyAllowed: boolean): string {
-  const action = currentlyAllowed ? "لغو دسترسی محلی" : "اجازهٔ دسترسی محلی";
+export function localTargetConfirmText(
+  providerLabel: string,
+  currentlyAllowed: boolean,
+  lang: PanelLang = "fa",
+): string {
+  const action = currentlyAllowed ? tr(lang, "panel.local.revoke") : tr(lang, "panel.local.grant");
   return [
-    `${action} برای «${providerLabel}»`,
+    tr(lang, "panel.local.title", { action, label: providerLabel }),
     "",
-    "با این تنظیم، این پروایدر می‌تواند به آدرس‌های داخلی یا خصوصی وصل شود:",
-    "localhost، 127.0.0.0/8، 10.0.0.0/8، 172.16.0.0/12، 192.168.0.0/16، 169.254.0.0/16",
+    tr(lang, "panel.local.warn1"),
+    tr(lang, "panel.local.ranges"),
     "",
-    "این تنها برای نصب محلی یک سرویس روی همین ماشین مناسب است.",
-    "در یک سراختار عمومی این تنظیم را روشن نکنید.",
+    tr(lang, "panel.local.warn2"),
+    tr(lang, "panel.local.warn3"),
     "",
-    "تغییر مسیر (redirect) همیشه مسدود است و با این تنظیم باز نمی‌شود.",
-    currentlyAllowed ? "" : "وضعیت فعلی: دسترسی محلی بسته است.",
+    tr(lang, "panel.local.warn4"),
+    currentlyAllowed ? "" : tr(lang, "panel.local.current_closed"),
   ]
     .filter((l) => l.length > 0)
     .join("\n");
 }
 
-export function localTargetKeyboard(providerId: number, currentlyAllowed: boolean): InlineKeyboard {
+export function localTargetKeyboard(
+  providerId: number,
+  currentlyAllowed: boolean,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
   return new InlineKeyboard()
     .text(
-      currentlyAllowed ? "تأیید: دسترسی محلی بسته شود" : "تأیید: دسترسی محلی باز شود",
+      currentlyAllowed
+        ? tr(lang, "panel.local.confirm_close")
+        : tr(lang, "panel.local.confirm_open"),
       encode({ kind: "fo_local_confirm", providerId }),
     )
     .row()
-    .text("بازگشت", encode({ kind: "ai_provider", providerId }));
+    .text(tr(lang, "panel.back"), encode({ kind: "ai_provider", providerId }));
 }
 
 // ---------- operational status ----------
@@ -211,27 +260,44 @@ export interface StatusView {
   note: string | undefined;
 }
 
-export function statusText(v: StatusView): string {
+export function statusText(v: StatusView, lang: PanelLang = "fa"): string {
+  const unset = tr(lang, "panel.fo.unset");
   const lines = [
-    "وضعیت عملیاتی هوش مصنوعی",
+    tr(lang, "panel.aistatus.title"),
     "",
-    `انتخاب اصلی: ${v.primaryProvider ?? "تنظیم‌نشده"} / ${v.primaryModel ?? "تنظیم‌نشده"}`,
-    `جایگزین: ${v.failoverEnabled ? "فعال" : "غیرفعال"} — ${v.candidateCount} تنظیم‌شده، ${v.activeCandidateCount} آماده`,
-    `پیکربندی اجرا با پیکربندی ذخیره‌شده: ${v.runtimeMatchesPersisted ? "همخوان" : "ناهمخوان"}`,
+    tr(lang, "panel.aistatus.primary", {
+      p: v.primaryProvider ?? unset,
+      m: v.primaryModel ?? unset,
+    }),
+    tr(lang, "panel.aistatus.fo", {
+      state: v.failoverEnabled ? tr(lang, "panel.fo.state_on") : tr(lang, "panel.fo.state_off"),
+      n: formatNum(v.candidateCount, lang),
+      a: formatNum(v.activeCandidateCount, lang),
+    }),
+    tr(lang, "panel.aistatus.sync", {
+      v: v.runtimeMatchesPersisted
+        ? tr(lang, "panel.aistatus.in_sync")
+        : tr(lang, "panel.aistatus.out_sync"),
+    }),
     "",
-    "پروایدرها:",
+    tr(lang, "panel.aistatus.providers_title"),
   ];
 
   for (const p of v.providers) {
     const flags: string[] = [];
-    if (!p.enabled) flags.push("غیرفعال");
-    if (!p.hasCredential) flags.push("بدون کلید");
-    if (p.allowLocal) flags.push("دسترسی محلی");
-    const suffix = flags.length > 0 ? ` (${flags.join(", ")})` : "";
-    let test = "تست: ثبت نشده";
+    if (!p.enabled) flags.push(tr(lang, "panel.aistatus.flag_disabled"));
+    if (!p.hasCredential) flags.push(tr(lang, "panel.aistatus.flag_nokey"));
+    if (p.allowLocal) flags.push(tr(lang, "panel.aistatus.flag_local"));
+    const suffix = flags.length > 0 ? ` (${flags.join(lang === "fa" ? "، " : ", ")})` : "";
+    let test = tr(lang, "panel.aistatus.test_none");
     if (p.lastTestOk !== undefined && p.lastTestAt !== undefined) {
-      const verdict = p.lastTestOk ? "موفق" : "ناموفق";
-      test = `آخرین تست: ${verdict} — ${formatTime(p.lastTestAt)}`;
+      const verdict = p.lastTestOk
+        ? tr(lang, "panel.aistatus.test_ok")
+        : tr(lang, "panel.aistatus.test_fail");
+      test = tr(lang, "panel.aistatus.test_last", {
+        v: verdict,
+        t: formatTime(p.lastTestAt, lang),
+      });
     }
     lines.push(`• ${p.label}${suffix} — ${test}`);
   }
@@ -242,168 +308,218 @@ export function statusText(v: StatusView): string {
   return lines.join("\n");
 }
 
-export function statusKeyboard(): InlineKeyboard {
+export function statusKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text("تست همهٔ پروایدرها", encode({ kind: "ai_status" }))
+    .text(tr(lang, "panel.aistatus.probe_all"), encode({ kind: "ai_probe_all" }))
     .row()
-    .text("بازگشت", encode({ kind: "ai_menu" }));
-}
-
-/** Short, safe rendering of a timestamp. */
-function formatTime(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number): string => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    .text(tr(lang, "panel.back"), encode({ kind: "ai_menu" }));
 }
 
 /** Provider list with status. Keys appear only as set/unset. */
 export function providersText(
   providers: readonly ProviderView[],
+  lang: PanelLang = "fa",
 ): string {
   if (providers.length === 0) {
-    return "هیچ پروایدری ثبت نشده است.\n\nبرای افزودن پروایدر از دکمهٔ زیر استفاده کنید.";
+    return tr(lang, "panel.providers.empty");
   }
-  const lines = ["پروایدرها:"];
+  const lines = [tr(lang, "panel.providers.title")];
   for (const p of providers) {
-    const state = p.enabled ? "فعال" : "غیرفعال";
-    const key = p.hasCredential ? "تنظیم‌شده" : "تنظیم‌نشده";
+    const state = p.enabled
+      ? tr(lang, "panel.providers.state_on")
+      : tr(lang, "panel.providers.state_off");
+    const key = p.hasCredential
+      ? tr(lang, "panel.providers.key_set")
+      : tr(lang, "panel.providers.key_unset");
     lines.push(
       "",
-      `• ${p.label} — ${state}`,
-      `  اتصال: ${p.adapterLabel}`,
-      `  کلید: ${key}`,
-      `  مدل‌ها: ${p.modelCount}`,
+      tr(lang, "panel.providers.item", {
+        label: p.label,
+        state,
+        adapter: p.adapterLabel,
+        key,
+        n: formatNum(p.modelCount, lang),
+      }),
     );
   }
   return lines.join("\n");
 }
 
-export function providersKeyboard(): InlineKeyboard {
+export function providersKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text("افزودن پروایدر", encode({ kind: "ai_add_form" }))
+    .text(tr(lang, "panel.providers.add"), encode({ kind: "ai_add_form" }))
     .row()
-    .text("بازگشت", encode({ kind: "ai_menu" }));
+    .text(tr(lang, "panel.back"), encode({ kind: "ai_menu" }));
 }
 
-export function providerText(p: ProviderView): string {
-  const state = p.enabled ? "فعال" : "غیرفعال";
-  const key = p.hasCredential ? "تنظیم‌شده" : "تنظیم‌نشده";
+export function providerText(p: ProviderView, lang: PanelLang = "fa"): string {
+  const state = p.enabled
+    ? tr(lang, "panel.providers.state_on")
+    : tr(lang, "panel.providers.state_off");
+  const key = p.hasCredential
+    ? tr(lang, "panel.providers.key_set")
+    : tr(lang, "panel.providers.key_unset");
   const lines = [
-    `پروایدر: ${p.label}`,
-    `وضعیت: ${state}`,
-    `نوع اتصال: ${p.adapterLabel}`,
-    `کلید: ${key}`,
+    tr(lang, "panel.provider.title", { label: p.label }),
+    tr(lang, "panel.provider.state", { v: state }),
+    tr(lang, "panel.provider.adapter", { v: p.adapterLabel }),
+    tr(lang, "panel.provider.key", { v: key }),
     // Pool keys appear only as a count: key material is never listed.
-    `کلیدهای پشتیبان: ${p.poolKeyCount}`,
-    `تعداد مدل‌ها: ${p.modelCount}`,
+    tr(lang, "panel.provider.pool", { n: formatNum(p.poolKeyCount, lang) }),
+    tr(lang, "panel.provider.models", { n: formatNum(p.modelCount, lang) }),
   ];
   if (p.lastTestOk !== undefined) {
-    const when = p.lastTestAt !== undefined ? formatTime(p.lastTestAt) : "";
-    const verdict = p.lastTestOk ? "موفق" : "ناموفق";
-    lines.push(`آخرین تست اتصال: ${verdict}${when.length > 0 ? ` (${when})` : ""}`);
-    if (p.lastTestMessage !== undefined) lines.push(`پیام تست: ${p.lastTestMessage}`);
+    const when = p.lastTestAt !== undefined ? formatTime(p.lastTestAt, lang) : "";
+    const verdict = p.lastTestOk
+      ? tr(lang, "panel.aistatus.test_ok")
+      : tr(lang, "panel.aistatus.test_fail");
+    lines.push(
+      tr(lang, "panel.provider.lasttest", {
+        v: verdict,
+        t: when.length > 0 ? ` (${when})` : "",
+      }),
+    );
+    if (p.lastTestMessage !== undefined) lines.push(tr(lang, "panel.provider.test_msg", { v: p.lastTestMessage }));
   } else {
-    lines.push("آخرین تست اتصال: ثبت نشده");
+    lines.push(tr(lang, "panel.provider.lasttest_none"));
   }
   return lines.join("\n");
 }
 
-export function providerKeyboard(p: ProviderView): InlineKeyboard {
+export function providerKeyboard(p: ProviderView, lang: PanelLang = "fa"): InlineKeyboard {
   const kb = new InlineKeyboard()
-    .text(p.enabled ? "غیرفعال کردن" : "فعال کردن", encode({ kind: "ai_toggle", providerId: p.id }))
+    .text(
+      p.enabled ? tr(lang, "panel.provider.disable") : tr(lang, "panel.provider.enable"),
+      encode({ kind: "ai_toggle", providerId: p.id }),
+    )
     .row()
-    .text("تست اتصال", encode({ kind: "ai_test", providerId: p.id }))
+    .text(tr(lang, "panel.provider.test"), encode({ kind: "ai_test", providerId: p.id }))
     .row()
-    .text("مدل‌ها", encode({ kind: "ai_models", providerId: p.id }))
+    .text(tr(lang, "panel.provider.models_btn"), encode({ kind: "ai_models", providerId: p.id }))
     .row()
-    .text("جایگزینی کلید", encode({ kind: "ai_edit", providerId: p.id }))
+    .text(tr(lang, "panel.provider.edit_key"), encode({ kind: "ai_edit", providerId: p.id }))
     .row()
     // Backup keys: added through the same message-entry flow as the primary
     // key (owner-only, PERM_MANAGE), stored in the encrypted credential pool
     // as "backup-N". They are tried after the primary key on auth/transport
     // failures; they are never displayed.
-    .text("کلید پشتیبان", encode({ kind: "ai_pool_key", providerId: p.id }))
+    .text(tr(lang, "panel.provider.pool_key"), encode({ kind: "ai_pool_key", providerId: p.id }))
     .row();
   if (p.hasCredential) {
-    kb.text("پاک کردن کلید", encode({ kind: "ai_clear_key", providerId: p.id })).row();
+    kb.text(tr(lang, "panel.provider.clear_key"), encode({ kind: "ai_clear_key", providerId: p.id })).row();
   }
   if (p.canListModels) {
-    kb.text("دریافت مدل‌ها", encode({ kind: "ai_discover", providerId: p.id })).row();
+    kb.text(tr(lang, "panel.provider.discover"), encode({ kind: "ai_discover", providerId: p.id })).row();
   }
   // The local-target exception is deliberately out of the way: it widens the
   // SSRF boundary, so it is a separate, warned step rather than a header flag.
   kb.text(
-    p.allowLocal ? "دسترسی محلی: باز" : "دسترسی محلی: بسته",
+    p.allowLocal ? tr(lang, "panel.local.btn_open") : tr(lang, "panel.local.btn_closed"),
     encode({ kind: "fo_local_menu", providerId: p.id }),
   ).row();
-  kb.text("حذف پروایدر", encode({ kind: "ai_delete", providerId: p.id })).row();
-  kb.text("بازگشت", encode({ kind: "ai_providers" }));
+  kb.text(tr(lang, "panel.provider.delete"), encode({ kind: "ai_delete", providerId: p.id })).row();
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_providers" }));
   return kb;
 }
 
+/**
+ * Provider picker for the active provider/model selection flow.
+ *
+ * Buttons open the model picker for that provider (`ai_select_provider`); the
+ * provider's own management screen is one level down in the providers list.
+ */
 export function providerPickerKeyboard(
   providers: readonly ProviderView[],
+  lang: PanelLang = "fa",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const p of providers) {
     if (!p.enabled) continue;
-    const marker = p.modelCount > 0 ? "" : " (بدون مدل)";
-    kb.text(`${p.label}${marker}`, encode({ kind: "ai_provider", providerId: p.id })).row();
+    const marker = p.modelCount > 0 ? "" : tr(lang, "panel.select.no_model");
+    kb.text(`${p.label}${marker}`, encode({ kind: "ai_select_provider", providerId: p.id })).row();
   }
-  kb.text("بازگشت", encode({ kind: "ai_menu" }));
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_select_menu" }));
   return kb;
 }
 
-export function selectMenuText(models: readonly ModelView[], providerLabel: string): string {
+export function selectMenuText(
+  models: readonly ModelView[],
+  providerLabel: string,
+  lang: PanelLang = "fa",
+): string {
   const active = models.find((m) => m.isDefault);
+  const unset = tr(lang, "panel.select.unset");
   return [
-    "انتخاب پروایدر و مدل فعال",
+    tr(lang, "panel.select.title"),
     "",
-    `پروایدر انتخابی: ${providerLabel}`,
-    `مدل پیش‌فرض: ${active?.label ?? "تعیین‌نشده"}`,
+    tr(lang, "panel.select.provider", { v: providerLabel }),
+    tr(lang, "panel.select.model", { v: active?.label ?? unset }),
   ].join("\n");
 }
 
-export function modelPickerKeyboard(models: readonly ModelView[]): InlineKeyboard {
+export function modelPickerKeyboard(
+  models: readonly ModelView[],
+  lang: PanelLang = "fa",
+): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const m of models) {
     const marker = m.isDefault ? " ✓" : "";
     kb.text(`${m.label}${marker}`, encode({ kind: "ai_model_default", modelId: m.id })).row();
   }
-  kb.text("بازگشت", encode({ kind: "ai_select_menu" }));
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_select_menu" }));
   return kb;
 }
 
-export function modelsText(models: readonly ModelView[], providerLabel: string): string {
+export function modelsText(
+  models: readonly ModelView[],
+  providerLabel: string,
+  lang: PanelLang = "fa",
+): string {
   if (models.length === 0) {
     return [
-      `مدل‌های پروایدر ${providerLabel}`,
+      tr(lang, "panel.models.title", { label: providerLabel }),
       "",
-      "هیچ مدلی ثبت نشده است.",
-      "مدل‌ها را می‌توانید با دکمهٔ «دریافت مدل‌ها» بگیرید یا دستی اضافه کنید.",
+      tr(lang, "panel.models.empty"),
+      tr(lang, "panel.models.empty_hint"),
     ].join("\n");
   }
-  const lines = [`مدل‌های پروایدر ${providerLabel}`, ""];
+  const lines = [tr(lang, "panel.models.title", { label: providerLabel }), ""];
   for (const m of models) {
     const flags: string[] = [];
-    if (m.isDefault) flags.push("پیش‌فرض");
-    if (!m.enabled) flags.push("غیرفعال");
-    const suffix = flags.length > 0 ? ` (${flags.join("، ")})` : "";
-    lines.push(`• ${m.label}${suffix}`);
-    lines.push(`  شناسه: ${m.modelId}`);
+    if (m.isDefault) flags.push(tr(lang, "panel.models.flag_default"));
+    if (!m.enabled) flags.push(tr(lang, "panel.models.flag_disabled"));
+    const suffix = flags.length > 0 ? ` (${flags.join(lang === "fa" ? "، " : ", ")})` : "";
+    lines.push(tr(lang, "panel.models.row", { label: m.label, suffix, id: m.modelId }));
   }
   return lines.join("\n");
 }
 
-export function modelsKeyboard(models: readonly ModelView[]): InlineKeyboard {
+/**
+ * Model list keyboard. «افزودن مدل» sits above «بازگشت», and the back path
+ * returns to the provider screen this list was opened from.
+ */
+export function modelsKeyboard(
+  models: readonly ModelView[],
+  providerId: number,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const m of models) {
-    kb.text(m.isDefault ? "پیش‌فرض ✓" : "انتخاب پیش‌فرض", encode({ kind: "ai_model_default", modelId: m.id }));
-    kb.text(m.enabled ? "غیرفعال" : "فعال", encode({ kind: "ai_model_toggle", modelId: m.id }));
-    kb.text("حذف", encode({ kind: "ai_model_delete", modelId: m.id }));
+    kb.text(
+      m.isDefault
+        ? tr(lang, "panel.models.default_mark")
+        : tr(lang, "panel.models.pick_default"),
+      encode({ kind: "ai_model_default", modelId: m.id }),
+    );
+    kb.text(
+      m.enabled ? tr(lang, "panel.models.disable") : tr(lang, "panel.models.enable"),
+      encode({ kind: "ai_model_toggle", modelId: m.id }),
+    );
+    kb.text(tr(lang, "panel.models.delete"), encode({ kind: "ai_model_delete", modelId: m.id }));
     kb.row();
   }
-  kb.text("بازگشت", encode({ kind: "ai_providers" }));
+  kb.text(tr(lang, "panel.models.add"), encode({ kind: "ai_model_add_form", providerId })).row();
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_provider", providerId }));
   return kb;
 }
 
@@ -414,7 +530,7 @@ export function modelsKeyboard(models: readonly ModelView[]): InlineKeyboard {
  * a label and a key instead of transcribing a URL. The generic adapter types
  * follow, for anything not listed.
  */
-export function adapterKeyboard(): InlineKeyboard {
+export function adapterKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const p of PROVIDER_PRESETS) {
     kb.text(p.label, encode({ kind: "ai_add_preset", preset: p.id })).row();
@@ -423,35 +539,86 @@ export function adapterKeyboard(): InlineKeyboard {
   for (const t of ADAPTER_TEMPLATES) {
     kb.text(t.label, encode({ kind: "ai_add_adapter", adapter: t.type })).row();
   }
-  kb.text("بازگشت", encode({ kind: "ai_menu" }));
+  kb.text(tr(lang, "panel.back"), encode({ kind: "ai_menu" }));
   return kb;
 }
 
-export function addFormText(adapter: string): string {
+export function addFormText(adapter: string, lang: PanelLang = "fa"): string {
   const t = ADAPTER_TEMPLATES.find((x) => x.type === adapter);
   const notes = t?.capabilities.notes;
   return [
-    "افزودن پروایدر",
+    tr(lang, "panel.add.title"),
     "",
-    "این پیام را پاسخ بدهید (reply) و مقادیر را خط‌به‌خط بفرستید:",
+    tr(lang, "panel.add.instructions"),
     "",
-    `نام نمایشی: <هر نامی که دوست دارید>`,
-    `آدرس سرویس: <base URL>`,
-    `کلید API: <کلید شما>`,
-    ...(notes !== undefined ? ["", `نکته: ${notes}`] : []),
+    tr(lang, "panel.add.label_line"),
+    tr(lang, "panel.add.url_line"),
+    tr(lang, "panel.add.key_line"),
+    ...(notes !== undefined ? ["", tr(lang, "panel.add.note", { v: notes })] : []),
     "",
-    "برای لغو، /admin را بفرستید.",
+    tr(lang, "panel.add.cancel_hint"),
   ].join("\n");
 }
 
-/** Confirmation shown before a destructive action. */
-export function confirmDeleteProviderText(p: ProviderView): string {
-  return [
-    "حذف پروایدر",
-    "",
-    `آیا «${p.label}» حذف شود؟`,
-    `تعداد مدل‌های آن: ${p.modelCount}`,
-    "",
-    "برای تأیید دوباره دکمهٔ حذف را بزنید.",
-  ].join("\n");
+/** Keyboard for free-text form screens: an explicit cancel, nothing else. */
+export function formCancelKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
+  return new InlineKeyboard().text(tr(lang, "panel.cancel"), encode({ kind: "ai_form_cancel" }));
+}
+
+/** Two-tap confirmation before a provider is deleted. */
+export function confirmDeleteProviderText(p: ProviderView, lang: PanelLang = "fa"): string {
+  return tr(lang, "panel.provider.confirm_delete_q", {
+    label: p.label,
+    n: formatNum(p.modelCount, lang),
+  });
+}
+
+export function confirmDeleteProviderKeyboard(
+  providerId: number,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(tr(lang, "panel.confirm_delete"), encode({ kind: "ai_delete_confirm", providerId }))
+    .row()
+    .text(tr(lang, "panel.cancel"), encode({ kind: "ai_provider", providerId }));
+}
+
+/** Two-tap confirmation before a model is deleted. */
+export function confirmDeleteModelText(
+  modelLabel: string,
+  lang: PanelLang = "fa",
+): string {
+  return tr(lang, "panel.models.confirm_q", { label: modelLabel });
+}
+
+export function confirmDeleteModelKeyboard(
+  modelId: number,
+  providerId: number,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(
+      tr(lang, "panel.confirm_delete"),
+      encode({ kind: "ai_model_delete_confirm", modelId }),
+    )
+    .row()
+    .text(tr(lang, "panel.cancel"), encode({ kind: "ai_models", providerId }));
+}
+
+/** Two-tap confirmation before a provider key is cleared. */
+export function confirmClearKeyText(
+  providerLabel: string,
+  lang: PanelLang = "fa",
+): string {
+  return tr(lang, "panel.provider.confirm_clear_q", { label: providerLabel });
+}
+
+export function confirmClearKeyKeyboard(
+  providerId: number,
+  lang: PanelLang = "fa",
+): InlineKeyboard {
+  return new InlineKeyboard()
+    .text(tr(lang, "panel.confirm_clear"), encode({ kind: "ai_clear_key_confirm", providerId }))
+    .row()
+    .text(tr(lang, "panel.cancel"), encode({ kind: "ai_provider", providerId }));
 }

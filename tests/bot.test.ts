@@ -1,28 +1,144 @@
 import { describe, expect, test } from "bun:test";
-import { buildMainMenu, replyForCallback, CALLBACKS, MAIN_MENU_LABELS } from "../src/bot/menu";
+import {
+  buildMainMenu,
+  buildBackKeyboard,
+  menuKeyboardFor,
+  replyForCallback,
+  editMenuMessage,
+  startScreenText,
+  CALLBACKS,
+  MAIN_MENU_LABELS,
+} from "../src/bot/menu";
+import { gateUser, type UserPrefStore } from "../src/bot/bot";
 import { shouldHandleMessage } from "../src/bot/filter";
+import { Storage } from "../src/storage/storage";
+import { UserAccessService } from "../src/auth/user_service";
+import { t, LANG_PREF_KEY } from "../src/i18n";
 
 // ---------- menu ----------
 describe("menu", () => {
-  test("menu has 3 buttons with correct labels", () => {
+  test("menu has 6 section buttons in 3 grouped rows with correct labels", () => {
     const kb = buildMainMenu();
-    const row = kb.inline_keyboard[0]!;
-    expect(row.length).toBe(3);
-    expect(row.map((b) => b.text)).toEqual([
+    expect(kb.inline_keyboard.length).toBe(3);
+    expect(kb.inline_keyboard[0]!.map((b) => b.text)).toEqual([
       MAIN_MENU_LABELS.chat,
       MAIN_MENU_LABELS.tools,
-      MAIN_MENU_LABELS.about,
     ]);
+    expect(kb.inline_keyboard[1]!.map((b) => b.text)).toEqual([
+      MAIN_MENU_LABELS.commands,
+      MAIN_MENU_LABELS.settings,
+    ]);
+    expect(kb.inline_keyboard[2]!.map((b) => b.text)).toEqual([
+      MAIN_MENU_LABELS.about,
+      MAIN_MENU_LABELS.help,
+    ]);
+  });
+
+  test("button callback data stays stable", () => {
+    const kb = buildMainMenu();
+    const data = kb.inline_keyboard
+      .flat()
+      .map((b) => (b as { callback_data?: string }).callback_data);
+    expect(data).toEqual([
+      CALLBACKS.chat,
+      CALLBACKS.tools,
+      CALLBACKS.commands,
+      CALLBACKS.settings,
+      CALLBACKS.about,
+      CALLBACKS.help,
+    ]);
+    // The original three callbacks keep their values (in-flight keyboards).
+    expect(CALLBACKS.chat).toBe("menu:chat");
+    expect(CALLBACKS.tools).toBe("menu:tools");
+    expect(CALLBACKS.about).toBe("menu:about");
   });
 
   test("each callback returns a reply", () => {
     for (const cb of Object.values(CALLBACKS)) {
-      expect(replyForCallback(cb).length).toBeGreaterThan(0);
+      expect(replyForCallback(cb).length, cb).toBeGreaterThan(0);
     }
   });
 
   test("unknown callback returns fallback", () => {
     expect(replyForCallback("menu:nope")).toBe("گزینهٔ نامشخص.");
+  });
+
+  test("chat screen is not a 'coming soon' placeholder", () => {
+    const text = replyForCallback(CALLBACKS.chat);
+    expect(text).toContain("فقط بنویس");
+    expect(text).not.toContain("به‌زودی");
+  });
+
+  test("about screen drops the beta positioning", () => {
+    expect(replyForCallback(CALLBACKS.about)).not.toContain("آزمایشی");
+  });
+
+  test("tools fallback is honest when no tool service is attached", () => {
+    const text = replyForCallback(CALLBACKS.tools, undefined);
+    expect(text.length).toBeGreaterThan(0);
+    expect(text).not.toContain("مرحلهٔ بعد");
+  });
+
+  test("home renders the start screen", () => {
+    expect(replyForCallback(CALLBACKS.home)).toBe(startScreenText("fa"));
+    expect(startScreenText("fa")).toContain("/help");
+  });
+
+  test("menuKeyboardFor: home gets the full menu, sub-screens get a back button", () => {
+    const home = menuKeyboardFor(CALLBACKS.home);
+    expect(home.inline_keyboard.length).toBe(3);
+    for (const cb of [CALLBACKS.chat, CALLBACKS.tools, CALLBACKS.commands, CALLBACKS.settings, CALLBACKS.about, CALLBACKS.help] as const) {
+      const sub = menuKeyboardFor(cb);
+      expect(sub.inline_keyboard.length, cb).toBe(1);
+      const btn = sub.inline_keyboard[0]![0]! as { text: string; callback_data?: string };
+      expect(btn.text).toBe(MAIN_MENU_LABELS.back);
+      expect(btn.callback_data).toBe(CALLBACKS.home);
+    }
+    expect(
+      (buildBackKeyboard().inline_keyboard[0]![0]! as { callback_data?: string }).callback_data,
+    ).toBe(CALLBACKS.home);
+  });
+
+  test("editMenuMessage edits in place", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      editMessageText: async (text: string) => {
+        calls.push(`edit:${text}`);
+      },
+      reply: async () => {
+        calls.push("reply");
+      },
+    };
+    await editMenuMessage(ctx, "hello", buildBackKeyboard());
+    expect(calls).toEqual(["edit:hello"]);
+  });
+
+  test("editMenuMessage swallows 'message is not modified' without stacking a reply", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      editMessageText: async () => {
+        throw new Error("Bad Request: message is not modified");
+      },
+      reply: async () => {
+        calls.push("reply");
+      },
+    };
+    await editMenuMessage(ctx, "hello", buildBackKeyboard());
+    expect(calls).toEqual([]);
+  });
+
+  test("editMenuMessage falls back to reply when the message cannot be edited", async () => {
+    const calls: string[] = [];
+    const ctx = {
+      editMessageText: async () => {
+        throw new Error("Bad Request: message to edit not found");
+      },
+      reply: async (text: string) => {
+        calls.push(`reply:${text}`);
+      },
+    };
+    await editMenuMessage(ctx, "hello", buildBackKeyboard());
+    expect(calls).toEqual(["reply:hello"]);
   });
 });
 
@@ -88,5 +204,80 @@ describe("message routing", () => {
 
   test("no message → ignore", () => {
     expect(shouldHandleMessage(ctx({ hasMessage: false }), BOT_ID)).toBe(false);
+  });
+});
+
+// ---------- gateUser denial language ----------
+
+function gateCtx(userId: number) {
+  const replies: string[] = [];
+  return {
+    replies,
+    ctx: {
+      chat: { id: 1, type: "private" as const },
+      from: { id: userId },
+      reply: async (text: string) => {
+        replies.push(text);
+      },
+    },
+  };
+}
+
+function prefsWith(lang: string | undefined): UserPrefStore {
+  return {
+    getUserPref: (_uid: string, _key: string) => lang,
+    setUserPref: () => {},
+  };
+}
+
+describe("gateUser denial language", () => {
+  test("a revoked user with English UI gets the English denial", async () => {
+    const storage = Storage.open(":memory:");
+    try {
+      const users = new UserAccessService(storage);
+      users.registerUser({ userId: "7" });
+      users.approve("7", "owner");
+      users.revoke("7", "owner");
+      const f = gateCtx(7);
+      const ok = await gateUser(f.ctx as never, { users, prefs: prefsWith("en") });
+      expect(ok).toBe(false);
+      expect(f.replies).toEqual([t("gate.user_revoked", "en")]);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("a pending user with English UI gets the English not-approved note", async () => {
+    const storage = Storage.open(":memory:");
+    try {
+      const users = new UserAccessService(storage);
+      users.registerUser({ userId: "7" });
+      const f = gateCtx(7);
+      const ok = await gateUser(f.ctx as never, { users, prefs: prefsWith("en") });
+      expect(ok).toBe(false);
+      expect(f.replies).toEqual([t("gate.user_not_approved", "en")]);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("without a language pref the denial stays Persian", async () => {
+    const storage = Storage.open(":memory:");
+    try {
+      const users = new UserAccessService(storage);
+      users.registerUser({ userId: "7" });
+      users.approve("7", "owner");
+      users.revoke("7", "owner");
+      const f = gateCtx(7);
+      const ok = await gateUser(f.ctx as never, { users });
+      expect(ok).toBe(false);
+      expect(f.replies).toEqual([t("gate.user_revoked", "fa")]);
+    } finally {
+      storage.close();
+    }
+  });
+
+  test("LANG_PREF_KEY is the pref the gate reads", () => {
+    expect(LANG_PREF_KEY).toBe("lang");
   });
 });

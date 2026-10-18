@@ -16,8 +16,12 @@ export interface Personality {
   name: string;
   /** Persian label shown to the user. */
   labelFa: string;
+  /** English label shown to the user. */
+  labelEn: string;
   /** One-line Persian description shown in /personality. */
   descriptionFa: string;
+  /** One-line English description shown in /personality. */
+  descriptionEn: string;
   /**
    * Short addition appended to the system prompt. Empty means "no change"
    * (the `default` skin).
@@ -30,20 +34,26 @@ export const BUILT_IN_PERSONALITIES: Readonly<Record<string, Personality>> = {
   default: {
     name: "default",
     labelFa: "معمولی",
+    labelEn: "Standard",
     descriptionFa: "رفتار عادی بابی؛ بدون تغییر در لحن.",
+    descriptionEn: "BOBI's normal behavior; no tone change.",
     systemAddition: "",
   },
   concise: {
     name: "concise",
     labelFa: "خلاصه‌گو",
+    labelEn: "Concise",
     descriptionFa: "پاسخ‌های کوتاه و فشرده؛ بدون مقدمه‌چینی.",
+    descriptionEn: "Short, dense replies; no preamble.",
     systemAddition:
       "پاسخ‌ها را تا حد امکان کوتاه و فشرده بنویس؛ فقط نکتهٔ اصلی را بگو و از مقدمه و توضیح اضافه خودداری کن.",
   },
   playful: {
     name: "playful",
     labelFa: "شوخ‌طبع",
+    labelEn: "Playful",
     descriptionFa: "لحن سرزنده و شوخ؛ ولی همیشه مفید.",
+    descriptionEn: "Lively and witty tone; always helpful.",
     systemAddition:
       "کمی شوخ‌طبع و سرزنده بنویس؛ می‌توانی بامزه باشی، ولی هیچ‌وقت مفید بودن را فدای شوخی نکن.",
   },

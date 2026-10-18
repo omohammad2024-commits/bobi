@@ -55,6 +55,8 @@ import type { AuthorizationService } from "../auth/service";
 import type { UserPrefStore } from "./bot";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import { gateGroup, gateUser, isOwnerSender, senderLang } from "./bot";
+import { hasConfirmFlag } from "./cmd_session";
+import { progressMessage, truncateLabel, withTyping } from "./ux";
 import { tr, type AutoLang } from "./cmd_auto_strings";
 
 // ---------------------------------------------------------------------------
@@ -409,6 +411,11 @@ function queueKey(userId: string, chatId: string): string {
 /**
  * /queue — queue a prompt for later.
  *
+ * `clear` is two-step: bare `/queue clear` only shows what would be
+ * destroyed (count + preview) and the exact `/queue clear --confirm`
+ * command; the wipe runs only with the flag. The flag is matched as an
+ * exact token, so "--confirmx" cannot smuggle consent.
+ *
  * HONEST LIMITATION: the queue is stored per conversation and can be
  * listed/cleared, but automatically prepending it to the user's next message
  * needs a seam in the engine's message path (coordinator follow-up). Nothing
@@ -435,9 +442,27 @@ export function handleQueue(
   }
 
   if (sub === "clear") {
-    const n = (queues.get(key) ?? []).length;
+    const items = queues.get(key) ?? [];
+    if (!hasConfirmFlag(arg)) {
+      if (items.length === 0) return tr(lang, "cmd_auto.queue.empty");
+      // Two-step: show what will be destroyed and the exact confirmation.
+      // The preview echoes the caller's own queued texts, truncated —
+      // plain text, no parse_mode, so nothing in them can inject markup.
+      const preview =
+        items
+          .slice(0, 3)
+          .map((t, i) => `${i + 1}. ${truncateLabel(t, 60)}`)
+          .join("\n") +
+        (items.length > 3
+          ? "\n" + tr(lang, "cmd_auto.queue.clear_more", { n: items.length - 3 })
+          : "");
+      return tr(lang, "cmd_auto.queue.clear_confirm", {
+        n: items.length,
+        preview,
+      });
+    }
     queues.delete(key);
-    return tr(lang, "cmd_auto.queue.cleared", { n });
+    return tr(lang, "cmd_auto.queue.cleared", { n: items.length });
   }
 
   if (sub === "" || sub === "help") {
@@ -584,6 +609,9 @@ interface GoalRow {
  * /goal set <text> | show | clear — thin wrapper over the add_goal /
  * list_goals / complete_goal tools, executed with the owner's server-built
  * actor. Owner-only at the command layer AND at the tool layer.
+ *
+ * `clear` is two-step: bare `/goal clear` shows the active goals that would
+ * be completed plus the exact confirmation; only `--confirm` closes them.
  */
 export async function handleGoal(
   deps: AutoDeps,
@@ -620,6 +648,29 @@ export async function handleGoal(
     const list = await callToolAs(deps, "list_goals", { status: "active" }, actor);
     if (!list.ok) return list.message ?? tr(lang, "cmd_auto.tool_failed");
     const goals = (list.data as { goals: GoalRow[] }).goals ?? [];
+    if (!hasConfirmFlag(arg)) {
+      if (goals.length === 0) return tr(lang, "cmd_auto.goal.show_empty");
+      // Two-step: name the goals that would leave the active list and show
+      // the exact confirmation. "clear" completes goals; the copy says so.
+      const preview =
+        goals
+          .slice(0, 5)
+          .map((g) =>
+            tr(lang, "cmd_auto.goal.item", {
+              id: g.id,
+              status: g.status,
+              title: truncateLabel(g.title, 60),
+            }),
+          )
+          .join("\n") +
+        (goals.length > 5
+          ? "\n" + tr(lang, "cmd_auto.goal.clear_more", { n: goals.length - 5 })
+          : "");
+      return tr(lang, "cmd_auto.goal.clear_confirm", {
+        n: goals.length,
+        preview,
+      });
+    }
     let n = 0;
     for (const g of goals) {
       const done = await callToolAs(deps, "complete_goal", { id: g.id }, actor);
@@ -659,6 +710,10 @@ async function listAllGoals(
 
 /**
  * /subgoal add <parent-id> <text> | list [parent-id] | clear <parent-id>.
+ *
+ * `clear` is two-step: bare `clear` shows the scope (one parent, or ALL
+ * subgoals when no parent id is given) plus a preview and the exact
+ * confirmation command; only `--confirm` closes them.
  */
 export async function handleSubgoal(
   deps: AutoDeps,
@@ -711,9 +766,49 @@ export async function handleSubgoal(
         )
         .join("\n");
     }
+    // sub === "clear": two-step. Bare `clear` only shows what would be
+    // closed (scope + preview) and the exact confirmation command —
+    // including the no-parent-id form, which closes EVERY subgoal.
+    const activeSubs = subs.filter((g) => g.status === "active");
+    if (!hasConfirmFlag(arg)) {
+      if (activeSubs.length === 0) return tr(lang, "cmd_auto.subgoal.list_empty");
+      const parent =
+        parentId !== undefined
+          ? list.goals!.find((g) => g.id === parentId)
+          : undefined;
+      const scope =
+        parent !== undefined
+          ? tr(lang, "cmd_auto.subgoal.clear_scope_parent", {
+              title: truncateLabel(parent.title, 50),
+            })
+          : tr(lang, "cmd_auto.subgoal.clear_scope_all");
+      const preview =
+        activeSubs
+          .slice(0, 5)
+          .map((g) =>
+            tr(lang, "cmd_auto.subgoal.item", {
+              id: g.id,
+              status: g.status,
+              title: truncateLabel(g.title, 60),
+            }),
+          )
+          .join("\n") +
+        (activeSubs.length > 5
+          ? "\n" + tr(lang, "cmd_auto.subgoal.clear_more", { n: activeSubs.length - 5 })
+          : "");
+      const cmd =
+        parentId !== undefined
+          ? `/subgoal clear ${parentId} --confirm`
+          : "/subgoal clear --confirm";
+      return tr(lang, "cmd_auto.subgoal.clear_confirm", {
+        n: activeSubs.length,
+        scope,
+        preview,
+        cmd,
+      });
+    }
     let n = 0;
-    for (const g of subs) {
-      if (g.status !== "active") continue;
+    for (const g of activeSubs) {
       const done = await callToolAs(deps, "complete_goal", { id: g.id }, actor);
       if (done.ok) n++;
     }
@@ -1762,11 +1857,14 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     if (!(await gateUser(ctx, deps))) return;
     const sender = senderOf(ctx);
     if (!sender) return;
+    // One status message, edited in place with the result — not two
+    // messages. Overflow chunks (past 4096) go out as follow-ups.
+    const progress = await progressMessage(ctx, tr(lang, "cmd_auto.refine.working"));
+    const send = (chunk: string): Promise<void> => replyLong(ctx, chunk);
     try {
-      await replyLong(ctx, tr(lang, "cmd_auto.refine.working"));
-      await replyLong(ctx, await handleRefine(d, sender, lang));
+      await progress.deliver(await handleRefine(d, sender, lang), send);
     } catch {
-      await replyLong(ctx, tr(lang, "cmd_auto.tool_failed"));
+      await progress.deliver(tr(lang, "cmd_auto.tool_failed"), send);
     }
   });
 
@@ -1778,7 +1876,12 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
-      await replyLong(ctx, await handleReview(d, sender, commandArg(ctx), lang));
+      // The delegate tool runs a bounded child agent — tens of seconds of
+      // silence without the typing indicator.
+      await replyLong(
+        ctx,
+        await withTyping(ctx, () => handleReview(d, sender, commandArg(ctx), lang)),
+      );
     } catch {
       await replyLong(ctx, tr(lang, "cmd_auto.tool_failed"));
     }
@@ -1792,7 +1895,10 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
-      await replyLong(ctx, await handlePlan(d, sender, commandArg(ctx), lang));
+      await replyLong(
+        ctx,
+        await withTyping(ctx, () => handlePlan(d, sender, commandArg(ctx), lang)),
+      );
     } catch {
       await replyLong(ctx, tr(lang, "cmd_auto.tool_failed"));
     }
@@ -1806,7 +1912,10 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
     const sender = senderOf(ctx);
     if (!sender) return;
     try {
-      await replyLong(ctx, await handleMoa(d, sender, commandArg(ctx), lang));
+      await replyLong(
+        ctx,
+        await withTyping(ctx, () => handleMoa(d, sender, commandArg(ctx), lang)),
+      );
     } catch {
       await replyLong(ctx, tr(lang, "cmd_auto.tool_failed"));
     }

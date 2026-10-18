@@ -226,7 +226,7 @@ describe("panel rendering", () => {
 
   test("a keyed provider without a key is reported as unusable", () => {
     const text = searchMenuText({ provider: "tavily", hasKey: false, usable: false });
-    expect(text).toContain("تنظیم نشده");
+    expect(text).toContain("تنظیم‌نشده");
     expect(text).toContain("نشان داده نمی‌شود");
   });
 

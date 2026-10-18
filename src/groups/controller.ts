@@ -6,11 +6,16 @@
  * from the trusted `ctx.from.id` and each decision goes through
  * `AdminBoundary.runAdmin`, which re-checks identity and the required
  * permission at execution time and audits the outcome.
+ *
+ * Panel button clicks edit the panel message in place (editMessageText) instead
+ * of stacking a new message per click. The /admin command itself still opens
+ * with a new message.
  */
 import { Context, InlineKeyboard } from "grammy";
 import type { AdminBoundary } from "../auth/admin_boundary";
 import type { AuthorizationService } from "../auth/service";
 import type { Permission } from "../auth/roles";
+import { resolveLang } from "../i18n";
 import { decode, encode, type PanelAction } from "./callbacks";
 import { GroupAccessService } from "./service";
 import {
@@ -29,6 +34,7 @@ import {
   revokeText,
   statusText,
 } from "./panel";
+import { tr, type PanelLang } from "./panel_strings";
 
 export interface PanelOptions {
   auth: AuthorizationService;
@@ -44,9 +50,14 @@ export interface PanelOptions {
     toolCalls: number;
     inputTokens: number;
     outputTokens: number;
-    cost: string;
+    costUsd: number;
     estimated: boolean;
   };
+  /**
+   * Owner language preference reader. Panels follow the owner's /lang choice;
+   * Persian when unset.
+   */
+  prefs?: (userId: string, key: string) => string | undefined;
 }
 
 /**
@@ -85,6 +96,7 @@ export class PanelController {
   private readonly notify: PanelOptions["notify"];
   private readonly statusInfo: () => { provider: string; model: string };
   private readonly usageInfo: PanelOptions["usageInfo"];
+  private readonly prefs: PanelOptions["prefs"];
 
   constructor(opts: PanelOptions) {
     this.auth = opts.auth;
@@ -93,6 +105,7 @@ export class PanelController {
     this.notify = opts.notify;
     this.statusInfo = opts.statusInfo;
     this.usageInfo = opts.usageInfo;
+    this.prefs = opts.prefs;
   }
 
   /** Actor from a trusted context; undefined when identity is absent. */
@@ -102,13 +115,21 @@ export class PanelController {
     return this.auth.actorFromTelegramUser(from);
   }
 
+  /** The owner's panel language: Persian unless they chose English. */
+  private langFor(ctx: Context): PanelLang {
+    const id = ctx.from?.id;
+    if (id === undefined || this.prefs === undefined) return "fa";
+    return resolveLang(String(id), this.prefs);
+  }
+
   /** `/admin` — open the panel for the owner only. */
   async openPanel(ctx: Context): Promise<void> {
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
     // Reading the panel requires the admin-view permission at execution time.
     const result = await this.admin.runAdmin(
       { actor, operation: "panel.open", permission: PERM_VIEW },
-      () => ({ text: panelMenuText(), keyboard: panelMenuKeyboard() }),
+      () => ({ text: panelMenuText(lang), keyboard: panelMenuKeyboard(lang) }),
     );
 
     if (!result.ok) {
@@ -147,6 +168,7 @@ export class PanelController {
 
   private async dispatch(ctx: Context, action: PanelAction): Promise<void> {
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
 
     switch (action.kind) {
       case "menu":
@@ -159,14 +181,17 @@ export class PanelController {
           () => {
             const s = this.statusInfo();
             const usage = this.usageInfo?.();
-            const text = statusText({
-              pending: this.groups.countPending(),
-              approved: this.groups.countApproved(),
-              provider: s.provider,
-              model: s.model,
-              ...(usage !== undefined ? { usage } : {}),
-            });
-            return { text, keyboard: backKeyboard() };
+            const text = statusText(
+              {
+                pending: this.groups.countPending(),
+                approved: this.groups.countApproved(),
+                provider: s.provider,
+                model: s.model,
+                ...(usage !== undefined ? { usage } : {}),
+              },
+              lang,
+            );
+            return { text, keyboard: backKeyboard(lang) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -177,7 +202,7 @@ export class PanelController {
       case "pending": {
         const r = await this.admin.runAdmin(
           { actor, operation: "panel.pending", permission: PERM_REVIEW },
-          () => this.pendingView(action.offset),
+          () => this.pendingView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -187,7 +212,7 @@ export class PanelController {
       case "approved": {
         const r = await this.admin.runAdmin(
           { actor, operation: "panel.approved", permission: PERM_REVIEW },
-          () => this.approvedView(action.offset),
+          () => this.approvedView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -197,7 +222,7 @@ export class PanelController {
       case "revoke_menu": {
         const r = await this.admin.runAdmin(
           { actor, operation: "panel.revoke_menu", permission: PERM_REVIEW },
-          () => this.revokeView(action.offset),
+          () => this.revokeView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -205,15 +230,15 @@ export class PanelController {
       }
 
       case "approve":
-        await this.decide(ctx, actor, "approve", action.chatId);
+        await this.decide(ctx, actor, "approve", action.chatId, lang);
         return;
 
       case "reject":
-        await this.decide(ctx, actor, "reject", action.chatId);
+        await this.decide(ctx, actor, "reject", action.chatId, lang);
         return;
 
       case "revoke":
-        await this.decide(ctx, actor, "revoke", action.chatId);
+        await this.decide(ctx, actor, "revoke", action.chatId, lang);
         return;
     }
   }
@@ -236,35 +261,35 @@ export class PanelController {
   }
 
   /** The pending page, read fresh so a decision made elsewhere is reflected. */
-  private pendingView(offset: number): { text: string; keyboard: unknown } {
+  private pendingView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.groups.countPending();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.groups.listPending(PAGE_SIZE, start);
     return {
-      text: pendingText(items, start, total),
-      keyboard: pendingKeyboard(items, start),
+      text: pendingText(items, start, total, lang),
+      keyboard: pendingKeyboard(items, start, lang),
     };
   }
 
   /** The approved-groups page. */
-  private approvedView(offset: number): { text: string; keyboard: unknown } {
+  private approvedView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.groups.countApproved();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.groups.listApproved(PAGE_SIZE, start);
     return {
-      text: approvedText(items, start, total),
-      keyboard: approvedKeyboard(items, start),
+      text: approvedText(items, start, total, lang),
+      keyboard: approvedKeyboard(items, start, lang),
     };
   }
 
   /** The same approved page, framed as a revoke picker. */
-  private revokeView(offset: number): { text: string; keyboard: unknown } {
+  private revokeView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.groups.countApproved();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.groups.listApproved(PAGE_SIZE, start);
     return {
-      text: revokeText(items, start, total),
-      keyboard: revokeKeyboard(items, start),
+      text: revokeText(items, start, total, lang),
+      keyboard: revokeKeyboard(items, start, lang),
     };
   }
 
@@ -274,6 +299,7 @@ export class PanelController {
     actor: ReturnType<PanelController["actorFor"]>,
     kind: "approve" | "reject" | "revoke",
     chatId: string,
+    lang: PanelLang,
   ): Promise<void> {
     const r = await this.admin.runAdmin(
       {
@@ -304,18 +330,14 @@ export class PanelController {
     const t = r.data;
     if (!t.ok) {
       // Missing record or a state that forbids this transition (stale click).
-      await this.render(ctx, PANEL_STALE, backKeyboard());
+      await this.render(ctx, PANEL_STALE, backKeyboard(lang));
       return;
     }
 
     // Re-render from the database inside the SAME authorized run, so the
     // refresh is covered by the boundary's error handling. Showing "done"
     // before the follow-up read would report a success the store may not hold.
-    const done = {
-      approve: "دسترسی گروه تأیید شد.",
-      reject: "درخواست گروه رد شد.",
-      revoke: "دسترسی گروه لغو شد.",
-    }[kind];
+    const done = tr(lang, `panel.group.decided.${kind}`);
 
     const refresh = await this.admin.runAdmin(
       {
@@ -325,13 +347,13 @@ export class PanelController {
         permission: PERM_REVIEW,
         targetId: chatId,
       },
-      () => (kind === "revoke" ? this.revokeView(0) : this.pendingView(0)),
+      () => (kind === "revoke" ? this.revokeView(0, lang) : this.pendingView(0, lang)),
     );
 
     if (!refresh.ok) {
       // The decision was persisted, but the refreshed view failed: report the
       // outcome the owner actually achieved without inventing list content.
-      await this.render(ctx, done, backKeyboard());
+      await this.render(ctx, done, backKeyboard(lang));
       return;
     }
 
@@ -376,16 +398,22 @@ export class PanelController {
     await safeSend(ctx, PANEL_DENIED);
   }
 
+  /**
+   * Render a panel view.
+   *
+   * Button clicks edit the panel message in place; the /admin command itself
+   * arrives as a new message and is answered with a new message.
+   */
   private async render(ctx: Context, text: string, keyboard: unknown): Promise<void> {
     await safeAnswer(ctx);
-    await safeSend(ctx, text, keyboard);
+    await safeEditOrSend(ctx, text, keyboard);
   }
 }
 
 function approvalKeyboard(chatId: string): InlineKeyboard {
   return new InlineKeyboard()
-    .text("تأیید", encode({ kind: "approve", chatId }))
-    .text("رد", encode({ kind: "reject", chatId }));
+    .text(tr("fa", "panel.pending.approve"), encode({ kind: "approve", chatId }))
+    .text(tr("fa", "panel.pending.reject"), encode({ kind: "reject", chatId }));
 }
 
 /** Answer the callback query so Telegram stops its loading indicator. */
@@ -409,6 +437,34 @@ async function safeSend(ctx: Context, text: string, keyboard?: unknown): Promise
     // Logged as a sanitized operational note only.
     console.error("[sol] panel: telegram send failed");
   }
+}
+
+/**
+ * Edit the panel message in place when this render answers a button click;
+ * otherwise send a new message.
+ *
+ * A failed edit (stale, deleted, or unchanged message) is swallowed without
+ * falling back to a reply: stacking a new message would undo the whole point.
+ */
+async function safeEditOrSend(ctx: Context, text: string, keyboard?: unknown): Promise<void> {
+  const qc = ctx as unknown as {
+    callbackQuery?: unknown;
+    editMessageText?: (text: string, other?: { reply_markup?: unknown }) => Promise<unknown>;
+  };
+  if (qc.callbackQuery !== undefined && typeof qc.editMessageText === "function") {
+    try {
+      await qc.editMessageText.call(
+        ctx,
+        text,
+        keyboard !== undefined ? { reply_markup: keyboard } : undefined,
+      );
+      return;
+    } catch {
+      // Stale, deleted, or byte-identical message: leave it alone.
+    }
+    return;
+  }
+  await safeSend(ctx, text, keyboard);
 }
 
 /** Sanitized error note; never the message, payload, or stack trace. */

@@ -225,8 +225,8 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
     en: "Stored value for the owner: {value} (not applied yet — only the env var affects requests)",
   },
   "cmd_system.reasoning.bad": {
-    fa: "❌ مقدار معتبر: off، low، medium یا high",
-    en: "❌ Valid values: off, low, medium or high",
+    fa: "❌ مقدار نامعتبره؛ مجاز: off، low، medium یا high",
+    en: "❌ Invalid value; allowed: off, low, medium or high",
   },
   "cmd_system.reasoning.set": {
     fa: "✅ سطح استدلال ذخیره شد: {value}\n⚠️ برای اعمال روی درخواست‌ها، متغیر {env} را تنظیم و ربات را راه‌اندازی مجدد کن.",
@@ -236,8 +236,8 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
   // ---------- /autoprune ----------
 
   "cmd_system.autoprune.show_on": {
-    fa: "🧹 حذف خودکار نشست‌ها: روشن ✅ (آستانه: {days} روز)\n⚠️ اجرای واقعی حذف هنوز پیاده‌سازی نشده است (پیگیری هماهنگ‌کننده).",
-    en: "🧹 Auto-prune sessions: on ✅ (threshold: {days} days)\n⚠️ The actual pruning job is not implemented yet (coordinator follow-up).",
+    fa: "🧹 حذف خودکار نشست‌ها: روشن ✅ (آستانه: {days} روز)\n⚠️ حذف واقعی هنوز کار نمی‌کنه.",
+    en: "🧹 Auto-prune sessions: on ✅ (threshold: {days} days)\n⚠️ Actual pruning isn't working yet.",
   },
   "cmd_system.autoprune.show_off": {
     fa: "🧹 حذف خودکار نشست‌ها: خاموش",
@@ -248,8 +248,8 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
     en: "❌ Usage: /autoprune on [days] | /autoprune off — e.g. /autoprune on 30",
   },
   "cmd_system.autoprune.set": {
-    fa: "✅ حذف خودکار تنظیم شد: {state}\n⚠️ اجرای واقعی حذف هنوز پیاده‌سازی نشده است.",
-    en: "✅ Auto-prune set: {state}\n⚠️ The actual pruning job is not implemented yet.",
+    fa: "✅ حذف خودکار تنظیم شد: {state}\n⚠️ حذف واقعی هنوز کار نمی‌کنه.",
+    en: "✅ Auto-prune set: {state}\n⚠️ Actual pruning isn't working yet.",
   },
 
   // ---------- /tools ----------
@@ -275,8 +275,8 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
     en: " (disabled)",
   },
   "cmd_system.tools.note": {
-    fa: "\nℹ️ فعال/غیرفعال‌کردن ابزار از این دستور پشتیبانی نمی‌شود (متد عمومی در رجیستری وجود ندارد)؛ فقط فهرست.",
-    en: "\nℹ️ Enabling/disabling tools is not supported from this command (no public registry method); list-only.",
+    fa: "\nℹ️ فعال/غیرفعال‌کردن ابزار از این دستور پشتیبانی نمی‌شود؛ فقط فهرست.",
+    en: "\nℹ️ Enabling/disabling tools is not supported from this command; list-only.",
   },
 
   // ---------- /skills ----------
@@ -416,8 +416,8 @@ const STRINGS: Record<string, Record<SysLang, string>> = {
   // ---------- /pause ----------
 
   "cmd_system.pause.on": {
-    fa: "⏸ ربات متوقف شد (حالت اضطراری). برای ادامه: /pause off\n⚠️ اتصال این پرچم به زمان‌بند/ضربان‌قلب، پیگیری هماهنگ‌کننده است.",
-    en: "⏸ Bot paused (emergency mode). To resume: /pause off\n⚠️ Wiring this flag into the scheduler/heartbeat is a coordinator follow-up.",
+    fa: "⏸ ربات متوقف شد (حالت اضطراری). برای ادامه: /pause off\n⚠️ این پرچم فعلاً روی زمان‌بند و ضربان‌قلب اثر نمی‌ذاره.",
+    en: "⏸ Bot paused (emergency mode). To resume: /pause off\n⚠️ This flag doesn't affect the scheduler or heartbeat yet.",
   },
   "cmd_system.pause.off": {
     fa: "▶️ ربات از حالت توقف خارج شد.",

@@ -4,10 +4,23 @@ import {
   replyForCallback,
   buildLangKeyboard,
   isLangCallback,
+  menuKeyboardFor,
+  editMenuMessage,
+  startScreenText,
+  helpTitle,
+  helpGroupTitle,
+  helpEntryLine,
   CALLBACKS,
   LANG_CALLBACKS,
+  type HelpGroup,
 } from "./menu";
 import { shouldHandleMessage } from "./filter";
+import { toolProgressLabel } from "./ux";
+import {
+  buildPersonalityKeyboard,
+  parsePersonalityCallback,
+  PERSONALITY_CALLBACK_PREFIX,
+} from "./ux";
 import { t, resolveLang, LANG_PREF_KEY, type Lang } from "../i18n";
 import type { ConversationEngine } from "../conversation/engine";
 import { EngineError } from "../conversation/engine";
@@ -25,7 +38,6 @@ import type { UserAccessService } from "../auth/user_service";
 import type { UserPanelController } from "../auth/user_controller";
 import { checkUserAccess, userDenialNote } from "../auth/user_enforcement";
 import type { Storage } from "../storage/storage";
-import { USER_NOT_APPROVED, USER_REVOKED } from "../auth/user_panel";
 import { extractMedia, hasMedia, describeMediaPart, MAX_MEDIA_PER_REPLY } from "./media";
 import { createModerator } from "../moderation/index";
 import type { RateLimiter } from "../core/rate_limit";
@@ -212,6 +224,7 @@ export async function gateUser(
     users?: UserAccessService;
     auth?: AuthorizationService;
     userPanel?: UserPanelController;
+    prefs?: UserPrefStore;
   },
 ): Promise<boolean> {
   const { users } = deps;
@@ -247,9 +260,13 @@ export async function gateUser(
   console.error(
     `[sol] user blocked: ${userDenialNote({ userId, isOwner, chatType: ctx.chat.type }, decision)}`,
   );
+  // Denial speaks the sender's language (defaults to Persian).
+  const lang = senderLang(ctx, deps.prefs);
   await safeReply(
     ctx,
-    decision.state === "revoked" ? USER_REVOKED : USER_NOT_APPROVED,
+    decision.state === "revoked"
+      ? t("gate.user_revoked", lang)
+      : t("gate.user_not_approved", lang),
   );
   return false;
 }
@@ -277,7 +294,7 @@ async function safeReply(
  * Every method is best-effort: if Telegram refuses the edit, the run continues
  * and the final answer is still delivered.
  */
-function createProgress(ctx: Context) {
+function createProgress(ctx: Context, lang: Lang) {
   let messageId: number | undefined;
   let sent = false;
 
@@ -285,7 +302,7 @@ function createProgress(ctx: Context) {
     /** Post the initial "working on it" message. */
     async start(): Promise<void> {
       try {
-        const msg = await ctx.reply(PROGRESS_THINKING);
+        const msg = await ctx.reply(t(PROGRESS_THINKING_KEY, lang));
         messageId = msg.message_id;
         sent = true;
       } catch {
@@ -320,29 +337,15 @@ function createProgress(ctx: Context) {
   };
 }
 
-const PROGRESS_THINKING = "در حال فکر کردن…";
+const PROGRESS_THINKING_KEY = "progress.thinking";
 
-/** A short Persian label for a tool, for the progress line. */
-const TOOL_PROGRESS_LABELS: Readonly<Record<string, string>> = {
-  calculator: "محاسبه",
-  date_time: "بررسی تاریخ",
-  text_utilities: "تحلیل متن",
-  unit_converter: "تبدیل واحد",
-  fetch_url: "خواندن صفحه",
-  web_search: "جستجوی وب",
-  remember: "ذخیره در حافظه",
-  recall: "جستجوی حافظه",
-  forget: "پاک کردن از حافظه",
-  remind_at: "تنظیم یادآور",
-  list_reminders: "فهرست یادآورها",
-  cancel_reminder: "لغو یادآور",
-};
-
-/** The progress line for one step. Returns undefined for steps not shown. */
-function progressText(step: AgentStep): string | undefined {
+/** The progress line for one step, in the sender's language. */
+function progressText(step: AgentStep, lang: Lang): string | undefined {
   if (step.kind !== "tool") return undefined;
-  const label = TOOL_PROGRESS_LABELS[step.name] ?? step.name;
-  return step.status === "ok" ? `در حال ${label}…` : `${label} انجام شد.`;
+  const label = toolProgressLabel(lang, step.name);
+  return step.status === "ok"
+    ? t("progress.tool_running", lang, { label })
+    : t("progress.tool_done", lang, { label });
 }
 
 /**
@@ -364,7 +367,8 @@ async function takeMessageBudget(ctx: Context, deps: BotDeps): Promise<boolean> 
 
   const seconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1_000));
   console.error("[sol] rate limited: user message budget");
-  await safeReply(ctx, `کمی سریع پیش می‌روی. حدود ${seconds} ثانیهٔ دیگر دوباره تلاش کن.`);
+  const lang = senderLang(ctx, deps.prefs);
+  await safeReply(ctx, t("ratelimit.wait", lang, { seconds }));
   return false;
 }
 
@@ -585,82 +589,98 @@ export async function handleVoiceCommand(
 
 // ---------------------------------------------------------------- /help ----
 
+/** /help sections, in display order. Re-exported from menu.ts for tests. */
+export type { HelpGroup };
+
 /** One row of the /help listing. */
 export interface CommandHelpEntry {
   name: string;
   descriptionFa: string;
   /** Owner-only entries are hidden from everyone else. */
   ownerOnly: boolean;
+  /** /help section this command is listed under. */
+  group: HelpGroup;
+  /** Example argument, rendered after the command (Persian). */
+  exampleFa?: string;
+  /** Example argument, rendered after the command (English). */
+  exampleEn?: string;
 }
 
-/** Every command the bot registers, with a one-line Persian description. */
+/**
+ * Every command the bot registers, with a one-line Persian description,
+ * its /help section, and an example argument where one is genuinely useful.
+ *
+ * descriptionFa must stay byte-identical to the central `help.cmd.<name>`
+ * pack value (asserted in tests/i18n.test.ts).
+ */
 export const COMMAND_HELP: readonly CommandHelpEntry[] = [
-  { name: "start", descriptionFa: "شروع و نمایش منوی اصلی", ownerOnly: false },
-  { name: "help", descriptionFa: "راهنمای دستورها", ownerOnly: false },
-  { name: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", ownerOnly: false },
-  { name: "lang", descriptionFa: "تغییر زبان رابط کاربری", ownerOnly: false },
-  { name: "voice", descriptionFa: "روشن/خاموش کردن پاسخ صوتی", ownerOnly: false },
-  { name: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", ownerOnly: false },
-  { name: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", ownerOnly: false },
-  { name: "stop", descriptionFa: "توقف پاسخ در حال اجرا", ownerOnly: false },
-  { name: "admin", descriptionFa: "پنل مدیریت ربات", ownerOnly: true },
-  { name: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", ownerOnly: true },
-  // ---- Hermes-parity commands (Stage 2): session ----
-  { name: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", ownerOnly: false },
-  { name: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", ownerOnly: false },
-  { name: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", ownerOnly: false },
-  { name: "undo", descriptionFa: "بازگشت و بازنویسی", ownerOnly: false },
-  { name: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", ownerOnly: false },
-  { name: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", ownerOnly: false },
-  { name: "resume", descriptionFa: "ازسرگیری نشست", ownerOnly: false },
-  { name: "sessions", descriptionFa: "نشست‌های قبلی", ownerOnly: false },
-  { name: "status", descriptionFa: "وضعیت", ownerOnly: false },
-  { name: "context", descriptionFa: "وضعیت حافظهٔ زمینه", ownerOnly: false },
-  { name: "busy", descriptionFa: "رفتار هنگام مشغولی", ownerOnly: false },
-  { name: "whoami", descriptionFa: "نقش من", ownerOnly: false },
-  { name: "footer", descriptionFa: "پانویس فنی", ownerOnly: false },
-  { name: "version", descriptionFa: "نسخهٔ بابی", ownerOnly: false },
-  { name: "new", descriptionFa: "شروع نشست تازه", ownerOnly: false },
-  // ---- automation & knowledge (user) ----
-  { name: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", ownerOnly: false },
-  { name: "btw", descriptionFa: "پرسش جانبی", ownerOnly: false },
-  { name: "queue", descriptionFa: "صف‌بندی پیام", ownerOnly: false },
-  { name: "steer", descriptionFa: "تزریق راهنمایی", ownerOnly: false },
-  { name: "agents", descriptionFa: "ایجنت‌های فعال", ownerOnly: false },
-  { name: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", ownerOnly: false },
-  { name: "blueprint", descriptionFa: "اتوماسیون از قالب", ownerOnly: false },
-  { name: "refine", descriptionFa: "استخراج درس از گفت‌وگو", ownerOnly: false },
-  { name: "review", descriptionFa: "بازبینی مستقل", ownerOnly: false },
-  { name: "plan", descriptionFa: "طرح اجرایی", ownerOnly: false },
-  { name: "moa", descriptionFa: "اجرای چندمدلی", ownerOnly: false },
-  { name: "memory", descriptionFa: "مدیریت حافظه", ownerOnly: false },
-  { name: "bundles", descriptionFa: "بسته‌های مهارت", ownerOnly: false },
-  // ---- system (owner-only) ----
-  { name: "snapshot", descriptionFa: "پشتیبان‌گیری از وضعیت", ownerOnly: true },
-  { name: "restart", descriptionFa: "راه‌اندازی مجدد ربات", ownerOnly: true },
-  { name: "update", descriptionFa: "به‌روزرسانی بابی", ownerOnly: true },
-  { name: "debug", descriptionFa: "گزارش اشکال‌زدایی", ownerOnly: true },
-  { name: "usage", descriptionFa: "مصرف توکن", ownerOnly: true },
-  { name: "insights", descriptionFa: "تحلیل مصرف", ownerOnly: true },
-  { name: "model", descriptionFa: "تغییر مدل", ownerOnly: true },
-  { name: "reasoning", descriptionFa: "سطح استدلال", ownerOnly: true },
-  { name: "autoprune", descriptionFa: "حذف خودکار نشست‌ها", ownerOnly: true },
-  { name: "tools", descriptionFa: "مدیریت ابزارها", ownerOnly: true },
-  { name: "skills", descriptionFa: "مدیریت مهارت‌ها", ownerOnly: true },
-  { name: "curator", descriptionFa: "نگهداری حافظه", ownerOnly: true },
-  { name: "plugins", descriptionFa: "افزونه‌ها", ownerOnly: true },
-  { name: "reload_mcp", descriptionFa: "بارگذاری مجدد MCP", ownerOnly: true },
-  { name: "reload_skills", descriptionFa: "اسکن مجدد مهارت‌ها", ownerOnly: true },
-  { name: "approve", descriptionFa: "تأیید درخواست", ownerOnly: true },
-  { name: "deny", descriptionFa: "رد درخواست", ownerOnly: true },
-  { name: "sethome", descriptionFa: "کانال اصلی", ownerOnly: true },
-  { name: "pause", descriptionFa: "توقف اضطراری", ownerOnly: true },
-  { name: "goal", descriptionFa: "هدف ماندگار", ownerOnly: true },
-  { name: "subgoal", descriptionFa: "زیراهداف", ownerOnly: true },
-  { name: "heartbeat", descriptionFa: "یادآور دوره‌ای", ownerOnly: true },
-  { name: "loop", descriptionFa: "تکرار خودکار", ownerOnly: true },
-  { name: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", ownerOnly: true },
-  { name: "learn", descriptionFa: "آموزش مهارت", ownerOnly: true },
+  // ---- general ----
+  { name: "start", descriptionFa: "شروع و نمایش منوی اصلی", ownerOnly: false, group: "general" },
+  { name: "help", descriptionFa: "راهنمای دستورها", ownerOnly: false, group: "general" },
+  { name: "voice", descriptionFa: "روشن/خاموش کردن پاسخ صوتی", ownerOnly: false, group: "general" },
+  { name: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", ownerOnly: false, group: "general" },
+  { name: "stop", descriptionFa: "توقف پاسخ در حال اجرا", ownerOnly: false, group: "general" },
+  { name: "lang", descriptionFa: "تغییر زبان رابط کاربری", ownerOnly: false, group: "general" },
+  { name: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", ownerOnly: false, group: "general" },
+  { name: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", ownerOnly: false, group: "general" },
+  // ---- session ----
+  { name: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "20", exampleEn: "20" },
+  { name: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", ownerOnly: false, group: "session", exampleFa: "json", exampleEn: "json" },
+  { name: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", ownerOnly: false, group: "session" },
+  { name: "undo", descriptionFa: "بازگشت و بازنویسی", ownerOnly: false, group: "session", exampleFa: "2", exampleEn: "2" },
+  { name: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "resume", descriptionFa: "ازسرگیری نشست", ownerOnly: false, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
+  { name: "sessions", descriptionFa: "نشست‌های قبلی", ownerOnly: false, group: "session" },
+  { name: "status", descriptionFa: "وضعیت", ownerOnly: false, group: "session" },
+  { name: "context", descriptionFa: "وضعیت حافظهٔ زمینه", ownerOnly: false, group: "session" },
+  { name: "busy", descriptionFa: "رفتار هنگام مشغولی", ownerOnly: false, group: "session", exampleFa: "queue", exampleEn: "queue" },
+  { name: "whoami", descriptionFa: "نقش من", ownerOnly: false, group: "session" },
+  { name: "footer", descriptionFa: "پانویس فنی", ownerOnly: false, group: "session", exampleFa: "on", exampleEn: "on" },
+  { name: "version", descriptionFa: "نسخهٔ بابی", ownerOnly: false, group: "session" },
+  { name: "new", descriptionFa: "شروع نشست تازه", ownerOnly: false, group: "session" },
+  // ---- automation ----
+  { name: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", ownerOnly: false, group: "automation", exampleFa: "خلاصهٔ اخبار", exampleEn: "news summary" },
+  { name: "btw", descriptionFa: "پرسش جانبی", ownerOnly: false, group: "automation", exampleFa: "این چیه؟", exampleEn: "what is this?" },
+  { name: "queue", descriptionFa: "صف‌بندی پیام", ownerOnly: false, group: "automation", exampleFa: "متن پیام", exampleEn: "message text" },
+  { name: "steer", descriptionFa: "تزریق راهنمایی", ownerOnly: false, group: "automation", exampleFa: "کوتاه جواب بده", exampleEn: "keep it short" },
+  { name: "agents", descriptionFa: "ایجنت‌های فعال", ownerOnly: false, group: "automation" },
+  { name: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", ownerOnly: false, group: "automation" },
+  { name: "blueprint", descriptionFa: "اتوماسیون از قالب", ownerOnly: false, group: "automation" },
+  { name: "refine", descriptionFa: "استخراج درس از گفت‌وگو", ownerOnly: false, group: "automation" },
+  { name: "review", descriptionFa: "بازبینی مستقل", ownerOnly: false, group: "automation" },
+  { name: "plan", descriptionFa: "طرح اجرایی", ownerOnly: false, group: "automation", exampleFa: "کمپین تابستانه", exampleEn: "summer campaign" },
+  { name: "moa", descriptionFa: "اجرای چندمدلی", ownerOnly: false, group: "automation", exampleFa: "کدوم گوشی؟", exampleEn: "which phone?" },
+  { name: "memory", descriptionFa: "مدیریت حافظه", ownerOnly: false, group: "automation" },
+  { name: "bundles", descriptionFa: "بسته‌های مهارت", ownerOnly: false, group: "automation" },
+  // ---- owner ----
+  { name: "admin", descriptionFa: "پنل مدیریت ربات", ownerOnly: true, group: "owner" },
+  { name: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", ownerOnly: true, group: "owner" },
+  { name: "snapshot", descriptionFa: "پشتیبان‌گیری از وضعیت", ownerOnly: true, group: "owner" },
+  { name: "restart", descriptionFa: "راه‌اندازی مجدد ربات", ownerOnly: true, group: "owner" },
+  { name: "update", descriptionFa: "به‌روزرسانی بابی", ownerOnly: true, group: "owner" },
+  { name: "debug", descriptionFa: "گزارش اشکال‌زدایی", ownerOnly: true, group: "owner" },
+  { name: "usage", descriptionFa: "مصرف توکن", ownerOnly: true, group: "owner" },
+  { name: "insights", descriptionFa: "تحلیل مصرف", ownerOnly: true, group: "owner" },
+  { name: "model", descriptionFa: "تغییر مدل", ownerOnly: true, group: "owner" },
+  { name: "reasoning", descriptionFa: "سطح استدلال", ownerOnly: true, group: "owner", exampleFa: "low", exampleEn: "low" },
+  { name: "autoprune", descriptionFa: "حذف خودکار نشست‌ها", ownerOnly: true, group: "owner" },
+  { name: "tools", descriptionFa: "مدیریت ابزارها", ownerOnly: true, group: "owner" },
+  { name: "skills", descriptionFa: "مدیریت مهارت‌ها", ownerOnly: true, group: "owner" },
+  { name: "curator", descriptionFa: "نگهداری حافظه", ownerOnly: true, group: "owner" },
+  { name: "plugins", descriptionFa: "افزونه‌ها", ownerOnly: true, group: "owner" },
+  { name: "reload_mcp", descriptionFa: "بارگذاری مجدد MCP", ownerOnly: true, group: "owner" },
+  { name: "reload_skills", descriptionFa: "اسکن مجدد مهارت‌ها", ownerOnly: true, group: "owner" },
+  { name: "approve", descriptionFa: "تأیید درخواست", ownerOnly: true, group: "owner" },
+  { name: "deny", descriptionFa: "رد درخواست", ownerOnly: true, group: "owner" },
+  { name: "sethome", descriptionFa: "کانال اصلی", ownerOnly: true, group: "owner" },
+  { name: "pause", descriptionFa: "توقف اضطراری", ownerOnly: true, group: "owner" },
+  { name: "goal", descriptionFa: "هدف ماندگار", ownerOnly: true, group: "owner", exampleFa: "ورزش روزانه", exampleEn: "daily exercise" },
+  { name: "subgoal", descriptionFa: "زیراهداف", ownerOnly: true, group: "owner", exampleFa: "پیاده‌روی", exampleEn: "a walk" },
+  { name: "heartbeat", descriptionFa: "یادآور دوره‌ای", ownerOnly: true, group: "owner" },
+  { name: "loop", descriptionFa: "تکرار خودکار", ownerOnly: true, group: "owner" },
+  { name: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", ownerOnly: true, group: "owner" },
+  { name: "learn", descriptionFa: "آموزش مهارت", ownerOnly: true, group: "owner" },
 ];
 
 /**
@@ -672,15 +692,25 @@ export function visibleCommandHelp(isOwner: boolean): readonly CommandHelpEntry[
   return isOwner ? COMMAND_HELP : COMMAND_HELP.filter((c) => !c.ownerOnly);
 }
 
-/** Render the /help text. Pure, for tests. */
+/** Render the /help text, grouped by category with usage examples. Pure, for tests. */
 export function formatCommandHelp(
   entries: readonly CommandHelpEntry[],
   lang: Lang = "fa",
 ): string {
-  const lines = entries.map((c) =>
-    t("help.entry", lang, { name: c.name, description: t(`help.cmd.${c.name}`, lang) }),
-  );
-  return [t("help.title", lang), ...lines].join("\n");
+  const order: HelpGroup[] = ["general", "session", "automation", "owner"];
+  const parts: string[] = [helpTitle(lang)];
+  for (const group of order) {
+    const inGroup = entries.filter((e) => e.group === group);
+    if (inGroup.length === 0) continue;
+    parts.push("", helpGroupTitle(group, lang));
+    for (const c of inGroup) {
+      const example = lang === "fa" ? c.exampleFa : c.exampleEn;
+      parts.push(
+        helpEntryLine(c.name, t(`help.cmd.${c.name}`, lang), example, lang),
+      );
+    }
+  }
+  return parts.join("\n");
 }
 
 /**
@@ -715,11 +745,17 @@ export async function handleHelpCommand(
 export const PERSONALITY_PREF_KEY = "personality";
 
 /** The environment /reset needs: the engine's cancel + history clearing. */
-export type ResetEnv = { engine: Pick<ConversationEngine, "cancel" | "clearHistory"> };
+export type ResetEnv = {
+  engine: Pick<ConversationEngine, "cancel" | "clearHistory">;
+  storage?: Pick<Storage, "countMessages">;
+};
 
 /**
  * /reset: clear THIS conversation's history — messages plus the rolling
- * summary — for the current chat only.
+ * summary — for the current chat only. DESTRUCTIVE, so it is two-step: a
+ * bare /reset only shows the warning and the exact confirmation command;
+ * `/reset --confirm` executes. The flag is matched as an exact token —
+ * "--confirmx" does not count, so a crafted argument cannot smuggle consent.
  *
  * The storage layer deletes by (userId, chatId), so another chat's history
  * is untouched. An in-flight turn is cancelled first, so a run that finishes
@@ -730,6 +766,7 @@ export async function handleResetCommand(
   ctx: {
     chat?: { id: number | string } | undefined;
     from?: { id: number | string } | undefined;
+    message?: { text?: string } | undefined;
     reply(text: string): Promise<unknown>;
   },
   env: ResetEnv,
@@ -738,6 +775,24 @@ export async function handleResetCommand(
   if (ctx.chat === undefined || ctx.from === undefined) return;
   const userId = String(ctx.from.id);
   const conversationId = String(ctx.chat.id);
+  const raw = ctx.message?.text;
+  const confirmed =
+    raw !== undefined &&
+    raw
+      .trim()
+      .split(/\s+/)
+      .some((p) => p.toLowerCase() === "--confirm");
+  if (!confirmed) {
+    // Preview what will be destroyed, like /new does.
+    let n = 0;
+    try {
+      n = env.storage?.countMessages(userId, conversationId) ?? 0;
+    } catch {
+      // A failed read still asks for confirmation; it just can't preview.
+    }
+    await safeReply(ctx, t("reset.confirm", lang, { n }));
+    return;
+  }
   env.engine.cancel(conversationId);
   stopTurn(conversationId);
   env.engine.clearHistory({ conversationId, userId });
@@ -775,7 +830,7 @@ export async function handlePersonalityCommand(
   ctx: {
     from?: { id: number | string } | undefined;
     message?: { text?: string } | undefined;
-    reply(text: string): Promise<unknown>;
+    reply(text: string, extra?: Record<string, unknown>): Promise<unknown>;
   },
   env: PersonalityCommandEnv,
   lang: Lang = "fa",
@@ -790,7 +845,8 @@ export async function handlePersonalityCommand(
     ctx.message?.text !== undefined ? commandArg(ctx.message.text) : undefined;
 
   if (rawArg === undefined) {
-    // Show current skin plus the full list, with the current one marked.
+    // Show current skin plus the full list, with the current one marked,
+    // and tap-to-pick buttons.
     let current: string | undefined;
     try {
       current = resolvePersonalityName(env.prefs.getUserPref(userId, PERSONALITY_PREF_KEY));
@@ -799,20 +855,31 @@ export async function handlePersonalityCommand(
       current = undefined;
     }
     const currentName = current ?? "default";
-    const lines = personalityNames().map((n) => {
-      const skin = getPersonality(n);
-      const mark = n === currentName ? t("personality.current_mark", lang) : "";
+    const skins = personalityNames().map((n) => getPersonality(n)!);
+    const lines = skins.map((skin) => {
+      const mark = skin.name === currentName ? t("personality.current_mark", lang) : "";
       return t("personality.list_item", lang, {
-        name: n,
-        label: skin?.labelFa ?? n,
-        description: skin?.descriptionFa ?? "",
+        name: skin.name,
+        label: lang === "en" ? skin.labelEn : skin.labelFa,
+        description: lang === "en" ? skin.descriptionEn : skin.descriptionFa,
         mark,
       });
     });
-    await safeReply(
-      ctx,
-      [t("personality.current_title", lang), ...lines, "", t("personality.usage", lang)].join("\n"),
+    const keyboard = buildPersonalityKeyboard(
+      skins.map((s) => ({
+        name: s.name,
+        label: lang === "en" ? s.labelEn : s.labelFa,
+      })),
+      currentName,
+      lang,
     );
+    const text = [t("personality.current_title", lang), ...lines, "", t("personality.usage", lang)].join("\n");
+    try {
+      await ctx.reply(text, { reply_markup: keyboard });
+    } catch {
+      // Best effort: fall back to the text-only reply.
+      await safeReply(ctx, text);
+    }
     return;
   }
 
@@ -833,7 +900,8 @@ export async function handlePersonalityCommand(
     await safeReply(ctx, t("prefs.save_failed", lang));
     return;
   }
-  const label = getPersonality(name)?.labelFa ?? name;
+  const skin = getPersonality(name);
+  const label = lang === "en" ? skin?.labelEn ?? name : skin?.labelFa ?? name;
   await safeReply(ctx, t("personality.changed", lang, { label }));
 }
 
@@ -1142,7 +1210,9 @@ async function runTurnInner(
   const actor = deps.tools ? toolActorFor(deps.tools, deps.auth, ctx) : undefined;
 
   // Show that work has started; a tool-using run can take tens of seconds.
-  const progress = createProgress(ctx);
+  // Progress lines speak the sender's language.
+  const lang = senderLang(ctx, deps.prefs);
+  const progress = createProgress(ctx, lang);
   await progress.start();
 
   try {
@@ -1182,7 +1252,7 @@ async function runTurnInner(
     // dropped: the user sent something and deserves to know it did not arrive.
     if (text.length === 0 && finalParts.length === 0) {
       await progress.finish();
-      await safeReply(ctx, describeNothingUsable(media.skipped));
+      await safeReply(ctx, describeNothingUsable(media.skipped, lang));
       return;
     }
 
@@ -1193,7 +1263,7 @@ async function runTurnInner(
       ...(actor !== undefined ? { actor } : {}),
       ...(finalParts.length > 0 ? { parts: finalParts } : {}),
       onProgress: (step) => {
-        const line = progressText(step);
+        const line = progressText(step, lang);
         if (line !== undefined) void progress.update(line);
       },
     });
@@ -1204,7 +1274,7 @@ async function runTurnInner(
 
     // An attachment that could not be used is named before the answer, so the
     // model's reply is not read as a comment on something it never received.
-    const note = describeSkipped(media.skipped);
+    const note = describeSkipped(media.skipped, lang);
     if (note.length > 0) await ctx.reply(note);
 
     // The reply goes out as voice messages when the sender enabled voice
@@ -1222,7 +1292,7 @@ async function runTurnInner(
     // A run that hit a budget got a best-effort answer; saying so is more
     // honest than presenting it as complete.
     if (out.truncated) {
-      await ctx.reply("برای این پاسخ به سقف تعداد مراحل رسیدم؛ اگر لازم است دقیق‌تر بپرس.");
+      await ctx.reply(t("reply.truncated", lang));
     }
     // Recorded after delivery: the spend already happened, so a failed send
     // must not hide it.
@@ -1237,29 +1307,35 @@ async function runTurnInner(
     // Clear the status line first: leaving "thinking…" above an error message
     // would suggest the bot is still working.
     await progress.finish();
-    await replyToFailure(ctx, err);
+    await replyToFailure(ctx, err, lang);
     // Technical detail stays in logs, never the secret or payload.
     console.error("[bobi] conversation error:", errToLog(err));
   }
 }
 
-/** A short note about attachments that could not be used. */
-function describeSkipped(skipped: readonly { kind: string; reason: string }[]): string {
+/** A short note about attachments that could not be used. Exported for tests. */
+export function describeSkipped(
+  skipped: readonly { kind: string; reason: string }[],
+  lang: Lang,
+): string {
   if (skipped.length === 0) return "";
   const lines = skipped.map((s) =>
     s.reason === "too_large"
-      ? `• ${s.kind}: حجمش بیش از حد مجاز بود.`
+      ? t("media.skipped_too_large", lang, { kind: s.kind })
       : s.reason === "unsupported"
-        ? `• ${s.kind}: این نوع فایل پشتیبانی نمی‌شود.`
-        : `• ${s.kind}: دریافت نشد.`,
+        ? t("media.skipped_unsupported", lang, { kind: s.kind })
+        : t("media.skipped_other", lang, { kind: s.kind }),
   );
-  return ["این پیوست‌ها استفاده نشدند:", ...lines].join("\n");
+  return [t("media.skipped_title", lang), ...lines].join("\n");
 }
 
-/** The reply when a message carried nothing that could be used. */
-function describeNothingUsable(skipped: readonly { kind: string; reason: string }[]): string {
-  const note = describeSkipped(skipped);
-  return note.length > 0 ? note : "پیام خالی است.";
+/** The reply when a message carried nothing that could be used. Exported for tests. */
+export function describeNothingUsable(
+  skipped: readonly { kind: string; reason: string }[],
+  lang: Lang,
+): string {
+  const note = describeSkipped(skipped, lang);
+  return note.length > 0 ? note : t("media.empty", lang);
 }
 
 export function createBot(token: string, deps: BotDeps): Bot {
@@ -1298,7 +1374,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   // tools menu button and the conversation engine — is gated separately.
   bot.command("start", async (ctx) => {
     const lang = senderLang(ctx, deps.prefs);
-    await ctx.reply(t("start.greeting", lang), {
+    await ctx.reply(startScreenText(lang), {
       reply_markup: buildMainMenu(lang),
     });
   });
@@ -1424,7 +1500,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   });
 
   // ---- menu buttons ----
-  bot.on("callback_query:data", async (ctx) => {
+  bot.on("callback_query:data", async (ctx, next) => {
     const data = ctx.callbackQuery.data;
 
     // The owner panel is checked BEFORE the group gate on purpose: an owner
@@ -1456,21 +1532,57 @@ export function createBot(token: string, deps: BotDeps): Bot {
       await handleLangCallback(ctx, deps, data, lang);
       return;
     }
+    // The personality picker (tap-to-pick skins from /personality). Its own
+    // namespace; the payload is re-validated against the built-in skins and
+    // the gates re-run, so a forged callback can't set anything invalid.
+    if (data.startsWith(PERSONALITY_CALLBACK_PREFIX)) {
+      const lang = senderLang(ctx, deps.prefs);
+      if (!(await gateGroup(ctx, groups, lang))) return;
+      if (!(await gateUser(ctx, deps))) return;
+      const name = parsePersonalityCallback(data);
+      await ctx.answerCallbackQuery().catch(() => undefined);
+      if (name === undefined || deps.prefs === undefined) return;
+      const userId = ctx.from !== undefined ? String(ctx.from.id) : "";
+      if (userId === "") return;
+      try {
+        deps.prefs.setUserPref(userId, PERSONALITY_PREF_KEY, name);
+      } catch {
+        await safeReply(ctx, t("prefs.save_failed", lang));
+        return;
+      }
+      const skin = getPersonality(name);
+      const label = lang === "en" ? skin?.labelEn ?? name : skin?.labelFa ?? name;
+      await safeReply(ctx, t("personality.changed", lang, { label }));
+      return;
+    }
     // Ordinary menu buttons DO depend on group approval, so the gate applies.
     for (const cb of Object.values(CALLBACKS)) {
       if (data !== cb) continue;
       const lang = senderLang(ctx, deps.prefs);
       if (!(await gateGroup(ctx, groups, lang))) return;
       if (!(await gateUser(ctx, deps))) return;
-      // The tools entry shows the real list of active tools from the Registry.
-      // Visibility is not authorization — the Executor still checks per run.
-      const active = cb === CALLBACKS.tools ? deps.tools?.listActiveNames() : undefined;
       await ctx.answerCallbackQuery();
-      await ctx.reply(replyForCallback(cb, active, lang), { reply_markup: buildMainMenu(lang) });
+      // The help button renders the same grouped, owner-filtered listing as
+      // /help — owner-only commands never leak through the menu.
+      // Sub-screens edit the message in place instead of stacking replies;
+      // every sub-screen carries a back button, so there are no dead ends.
+      const text =
+        cb === CALLBACKS.help
+          ? formatCommandHelp(visibleCommandHelp(isOwnerSender(ctx, deps)), lang)
+          : replyForCallback(
+              cb,
+              cb === CALLBACKS.tools ? deps.tools?.listActiveNames() : undefined,
+              lang,
+            );
+      await editMenuMessage(ctx, text, menuKeyboardFor(cb, lang));
       return;
     }
 
-    // Unknown callback data: answered so Telegram stops its loading indicator.
+    // Not handled by this router: hand off to downstream namespace handlers
+    // (sess:, mdl:, pers: — registered after this middleware). A downstream
+    // handler answers the query itself; if none matches, answer here so
+    // Telegram stops the loading indicator.
+    await next();
     await ctx.answerCallbackQuery().catch(() => undefined);
   });
 
@@ -1561,26 +1673,27 @@ export function createBot(token: string, deps: BotDeps): Bot {
   return bot;
 }
 
-/** Short Persian message per error kind; technical detail stays in logs. */
-function userFacingMessage(err: unknown): string {
+/** Short message per error kind, in the sender's language; technical detail stays in logs. Exported for tests. */
+export function userFacingMessage(err: unknown, lang: Lang): string {
+  // A newer message replaced this run: the user already moved on, so
+  // replying about the abandoned one would be noise. Silence needs no key
+  // (the parity test forbids empty translations).
+  if (err instanceof EngineError && err.kind === "superseded") return "";
   if (err instanceof EngineError) {
     switch (err.kind) {
-      case "empty_input": return "پیام خالی است.";
-      case "empty_response": return "پاسخی دریافت نشد؛ دوباره تلاش کن.";
-      case "auth": return "سرویس در دسترس نیست (احراز هویت).";
-      case "quota": return "سقف استفاده پر شده؛ کمی بعد تلاش کن.";
-      case "network": return "خطای شبکه؛ دوباره تلاش کن.";
+      case "empty_input": return t("media.empty", lang);
+      case "empty_response": return t("error.empty_response", lang);
+      case "auth": return t("error.auth", lang);
+      case "quota": return t("error.quota", lang);
+      case "network": return t("error.network", lang);
       case "timeout":
-      case "aborted": return "پاسخ خیلی طول کشید؛ لغو شد.";
-      case "overloaded": return "سیستم شلوغ است؛ لحظه‌ای بعد تلاش کن.";
-      // A newer message replaced this run: the user already moved on, so
-      // replying about the abandoned one would be noise.
-      case "superseded": return "";
-      default: return "خطای موقت؛ دوباره تلاش کن.";
+      case "aborted": return t("error.timeout", lang);
+      case "overloaded": return t("error.overloaded", lang);
+      default: return t("error.unknown", lang);
     }
   }
   if (isToolError(err)) return userMessageFor(err.kind);
-  return "خطای غیرمنتظره.";
+  return t("error.unexpected", lang);
 }
 
 /**
@@ -1589,8 +1702,8 @@ function userFacingMessage(err: unknown): string {
  * Returns false when nothing was sent, so the caller can skip logging a turn
  * that produced no visible outcome.
  */
-async function replyToFailure(ctx: Context, err: unknown): Promise<boolean> {
-  const message = userFacingMessage(err);
+async function replyToFailure(ctx: Context, err: unknown, lang: Lang): Promise<boolean> {
+  const message = userFacingMessage(err, lang);
   if (message.length === 0) return false;
   try {
     await ctx.reply(message);

@@ -5,11 +5,15 @@
  * proof of authority: the actor is rebuilt from the trusted `ctx.from.id` and
  * each decision goes through `AdminBoundary.runAdmin`, which re-checks identity
  * and the required permission at execution time and audits the outcome.
+ *
+ * Panel button clicks edit the panel message in place (editMessageText) instead
+ * of stacking a new message per click.
  */
 import type { Context } from "grammy";
 import type { AdminBoundary } from "./admin_boundary";
 import type { AuthorizationService } from "./service";
 import type { Permission } from "./roles";
+import { resolveLang } from "../i18n";
 import { decode, type PanelAction } from "../groups/callbacks";
 import { PANEL_DENIED, PANEL_STALE } from "../groups/panel";
 import type { UserAccessService } from "./user_service";
@@ -26,6 +30,7 @@ import {
   usersRevokeKeyboard,
   usersRevokeText,
 } from "./user_panel";
+import { tr, type PanelLang } from "../groups/panel_strings";
 
 export interface UserPanelOptions {
   auth: AuthorizationService;
@@ -33,6 +38,11 @@ export interface UserPanelOptions {
   users: UserAccessService;
   /** Dry-run sink for owner notifications; injected so tests need no network. */
   notify: (chatId: string, text: string, keyboard: unknown) => Promise<boolean>;
+  /**
+   * Owner language preference reader. Panels follow the owner's /lang choice;
+   * Persian when unset.
+   */
+  prefs?: (userId: string, key: string) => string | undefined;
 }
 
 /**
@@ -50,18 +60,27 @@ export class UserPanelController {
   private readonly admin: AdminBoundary;
   private readonly users: UserAccessService;
   private readonly notify: UserPanelOptions["notify"];
+  private readonly prefs: UserPanelOptions["prefs"];
 
   constructor(opts: UserPanelOptions) {
     this.auth = opts.auth;
     this.admin = opts.admin;
     this.users = opts.users;
     this.notify = opts.notify;
+    this.prefs = opts.prefs;
   }
 
   private actorFor(ctx: Context) {
     const from = ctx.from;
     if (!from) return undefined;
     return this.auth.actorFromTelegramUser(from);
+  }
+
+  /** The owner's panel language: Persian unless they chose English. */
+  private langFor(ctx: Context): PanelLang {
+    const id = ctx.from?.id;
+    if (id === undefined || this.prefs === undefined) return "fa";
+    return resolveLang(String(id), this.prefs);
   }
 
   /**
@@ -79,14 +98,15 @@ export class UserPanelController {
 
   private async dispatch(ctx: Context, action: PanelAction): Promise<void> {
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
 
     switch (action.kind) {
       case "users_menu": {
         const r = await this.admin.runAdmin(
           { actor, operation: "users.menu", permission: PERM_MANAGE },
           () => ({
-            text: usersMenuText(this.users.countPending(), this.users.countApproved()),
-            keyboard: usersMenuKeyboard(),
+            text: usersMenuText(this.users.countPending(), this.users.countApproved(), lang),
+            keyboard: usersMenuKeyboard(lang),
           }),
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -97,7 +117,7 @@ export class UserPanelController {
       case "users_pending": {
         const r = await this.admin.runAdmin(
           { actor, operation: "users.pending", permission: PERM_MANAGE },
-          () => this.pendingView(action.offset),
+          () => this.pendingView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -107,7 +127,7 @@ export class UserPanelController {
       case "users_approved": {
         const r = await this.admin.runAdmin(
           { actor, operation: "users.approved", permission: PERM_MANAGE },
-          () => this.approvedView(action.offset),
+          () => this.approvedView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -117,7 +137,7 @@ export class UserPanelController {
       case "users_revoke_menu": {
         const r = await this.admin.runAdmin(
           { actor, operation: "users.revoke_menu", permission: PERM_MANAGE },
-          () => this.revokeView(action.offset),
+          () => this.revokeView(action.offset, lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -125,15 +145,15 @@ export class UserPanelController {
       }
 
       case "user_approve":
-        await this.decide(ctx, actor, "approve", action.userId);
+        await this.decide(ctx, actor, "approve", action.userId, lang);
         return;
 
       case "user_reject":
-        await this.decide(ctx, actor, "reject", action.userId);
+        await this.decide(ctx, actor, "reject", action.userId, lang);
         return;
 
       case "user_revoke":
-        await this.decide(ctx, actor, "revoke", action.userId);
+        await this.decide(ctx, actor, "revoke", action.userId, lang);
         return;
 
       default:
@@ -155,28 +175,34 @@ export class UserPanelController {
     return offset;
   }
 
-  private pendingView(offset: number): { text: string; keyboard: unknown } {
+  private pendingView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.users.countPending();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.users.listPending(USER_PAGE_SIZE, start);
-    return { text: usersPendingText(items, start, total), keyboard: usersPendingKeyboard(items, start) };
+    return {
+      text: usersPendingText(items, start, total, lang),
+      keyboard: usersPendingKeyboard(items, start, lang),
+    };
   }
 
-  private approvedView(offset: number): { text: string; keyboard: unknown } {
+  private approvedView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.users.countApproved();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.users.listApproved(USER_PAGE_SIZE, start);
     return {
-      text: usersApprovedText(items, start, total),
-      keyboard: usersApprovedKeyboard(items, start),
+      text: usersApprovedText(items, start, total, lang),
+      keyboard: usersApprovedKeyboard(items, start, lang),
     };
   }
 
-  private revokeView(offset: number): { text: string; keyboard: unknown } {
+  private revokeView(offset: number, lang: PanelLang): { text: string; keyboard: unknown } {
     const total = this.users.countApproved();
     const start = this.pageStart(this.normalizeOffset(offset), total);
     const items = this.users.listApproved(USER_PAGE_SIZE, start);
-    return { text: usersRevokeText(items, start, total), keyboard: usersRevokeKeyboard(items, start) };
+    return {
+      text: usersRevokeText(items, start, total, lang),
+      keyboard: usersRevokeKeyboard(items, start, lang),
+    };
   }
 
   /** Approve / reject / revoke behind the boundary, per target user. */
@@ -185,6 +211,7 @@ export class UserPanelController {
     actor: ReturnType<UserPanelController["actorFor"]>,
     kind: "approve" | "reject" | "revoke",
     userId: string,
+    lang: PanelLang,
   ): Promise<void> {
     const r = await this.admin.runAdmin(
       {
@@ -214,28 +241,24 @@ export class UserPanelController {
 
     if (!r.data.ok) {
       // Missing record or a state that forbids this transition (stale click).
-      await this.render(ctx, PANEL_STALE, usersMenuKeyboard());
+      await this.render(ctx, PANEL_STALE, usersMenuKeyboard(lang));
       return;
     }
 
-    const done = {
-      approve: "دسترسی کاربر تأیید شد.",
-      reject: "درخواست کاربر رد شد.",
-      revoke: "دسترسی کاربر لغو شد.",
-    }[kind];
+    const done = tr(lang, `panel.users.decided.${kind}`);
 
     // Re-render from the database inside the SAME authorized run, so the
     // refresh is covered by the boundary's error handling. Showing "done"
     // before the follow-up read would report a success the store may not hold.
     const refresh = await this.admin.runAdmin(
       { actor, operation: `user.${kind}.refresh`, permission: PERM_MANAGE, targetId: userId },
-      () => (kind === "revoke" ? this.revokeView(0) : this.pendingView(0)),
+      () => (kind === "revoke" ? this.revokeView(0, lang) : this.pendingView(0, lang)),
     );
 
     if (!refresh.ok) {
       // The decision was persisted, but the refreshed view failed: report the
       // outcome the owner actually achieved without inventing list content.
-      await this.render(ctx, done, usersMenuKeyboard());
+      await this.render(ctx, done, usersMenuKeyboard(lang));
       return;
     }
 
@@ -276,9 +299,15 @@ export class UserPanelController {
     await safeSend(ctx, PANEL_DENIED);
   }
 
+  /**
+   * Render a panel view.
+   *
+   * Button clicks edit the panel message in place; anything else arrives as a
+   * new message and is answered with a new message.
+   */
   private async render(ctx: Context, text: string, keyboard: unknown): Promise<void> {
     await safeAnswer(ctx);
-    await safeSend(ctx, text, keyboard);
+    await safeEditOrSend(ctx, text, keyboard);
   }
 }
 
@@ -309,4 +338,32 @@ async function safeSend(ctx: Context, text: string, keyboard?: unknown): Promise
   } catch {
     // Delivery is best-effort; the state change already happened.
   }
+}
+
+/**
+ * Edit the panel message in place when this render answers a button click;
+ * otherwise send a new message.
+ *
+ * A failed edit (stale, deleted, or unchanged message) is swallowed without
+ * falling back to a reply: stacking a new message would undo the whole point.
+ */
+async function safeEditOrSend(ctx: Context, text: string, keyboard?: unknown): Promise<void> {
+  const qc = ctx as unknown as {
+    callbackQuery?: unknown;
+    editMessageText?: (text: string, other?: { reply_markup?: unknown }) => Promise<unknown>;
+  };
+  if (qc.callbackQuery !== undefined && typeof qc.editMessageText === "function") {
+    try {
+      await qc.editMessageText.call(
+        ctx,
+        text,
+        keyboard !== undefined ? { reply_markup: keyboard } : undefined,
+      );
+      return;
+    } catch {
+      // Stale, deleted, or byte-identical message: leave it alone.
+    }
+    return;
+  }
+  await safeSend(ctx, text, keyboard);
 }

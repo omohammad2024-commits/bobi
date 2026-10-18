@@ -321,14 +321,20 @@ describe("/btw", () => {
 // ---------------------------------------------------------------------------
 
 describe("/queue", () => {
-  test("add / list / clear round-trip", () => {
+  test("add / list / clear round-trip (clear is two-step)", () => {
     const deps = depsWith();
     expect(handleQueue(deps, A, "اولین کار")).toContain("مورد 1");
     expect(handleQueue(deps, A, "دومین کار")).toContain("مورد 2");
     const list = handleQueue(deps, A, "list");
     expect(list).toContain("اولین کار");
     expect(list).toContain("دومین کار");
-    expect(handleQueue(deps, A, "clear")).toContain("2 مورد");
+    // Bare "clear" only shows the confirm prompt — the queue survives.
+    const confirm = handleQueue(deps, A, "clear");
+    expect(confirm).toContain("2 مورد");
+    expect(confirm).toContain("/queue clear --confirm");
+    expect(handleQueue(deps, A, "list")).toContain("اولین کار");
+    // Confirmed: actually cleared.
+    expect(handleQueue(deps, A, "clear --confirm")).toContain("2 مورد حذف شد");
     expect(handleQueue(deps, A, "list")).toContain("خالی");
   });
 
@@ -445,7 +451,13 @@ describe("/goal", () => {
     const showOut = await handleGoal(deps, OWNER, true, "show");
     expect(showOut).toContain("#7");
 
-    const clearOut = await handleGoal(deps, OWNER, true, "clear");
+    // Bare "clear" only asks for confirmation — nothing is completed.
+    const confirmOut = await handleGoal(deps, OWNER, true, "clear");
+    expect(confirmOut).toContain("/goal clear --confirm");
+    expect(confirmOut).toContain("ورزش");
+    expect(calls.some((c) => c.tool === "complete_goal")).toBe(false);
+
+    const clearOut = await handleGoal(deps, OWNER, true, "clear --confirm");
     expect(clearOut).toContain("1 هدف");
     expect(calls.some((c) => c.tool === "complete_goal")).toBe(true);
   });
@@ -499,16 +511,29 @@ describe("/subgoal", () => {
     expect(created[0]!.title.startsWith("↳ ورزش")).toBe(true);
   });
 
-  test("list filters subgoals; clear completes them", async () => {
+  test("list filters subgoals; clear needs --confirm, then completes them", async () => {
     const { tools, completed } = subgoalTools();
     const deps = authDeps({ tools });
     await handleSubgoal(deps, OWNER, true, "add 7 دویدن صبح");
     const list = await handleSubgoal(deps, OWNER, true, "list");
     expect(list).toContain("↳ ورزش");
     expect(list).not.toMatch(/(^|\n)#7 /);
-    const clear = await handleSubgoal(deps, OWNER, true, "clear 7");
+    // Bare "clear 7" only shows the scope + preview; nothing is completed.
+    const confirm = await handleSubgoal(deps, OWNER, true, "clear 7");
+    expect(confirm).toContain("/subgoal clear 7 --confirm");
+    expect(completed).toEqual([]);
+    const clear = await handleSubgoal(deps, OWNER, true, "clear 7 --confirm");
     expect(clear).toContain("1 زیرهدف");
     expect(completed).toEqual([11]);
+  });
+
+  test("clear without a parent id names the ALL-goals scope in its confirm", async () => {
+    const { tools } = subgoalTools();
+    const deps = authDeps({ tools });
+    await handleSubgoal(deps, OWNER, true, "add 7 دویدن صبح");
+    const confirm = await handleSubgoal(deps, OWNER, true, "clear");
+    expect(confirm).toContain("/subgoal clear --confirm");
+    expect(confirm).toContain("همهٔ اهداف");
   });
 
   test("missing parent reports parent_missing", async () => {

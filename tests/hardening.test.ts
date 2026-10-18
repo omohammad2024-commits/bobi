@@ -425,7 +425,10 @@ describe("usage accounting", () => {
   test("cost formatting is readable at small and large values", () => {
     expect(formatCost(0)).toContain("۰");
     expect(formatCost(0.001)).toContain("کمتر از");
-    expect(formatCost(1.5)).toContain("1.50");
+    // Persian digits by default…
+    expect(formatCost(1.5)).toContain("۱٫۵۰");
+    // …Latin digits in English.
+    expect(formatCost(1.5, "en")).toContain("1.50");
     expect(formatTokens(1234567)).toBe("1,234,567");
   });
 });

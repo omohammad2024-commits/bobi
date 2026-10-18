@@ -68,6 +68,7 @@ export const en: LanguagePack = {
 
   // ---- /reset ----
   "reset.done": "This conversation's history was cleared. 🧹",
+  "reset.confirm": "⚠️ This wipes {n} messages in this conversation for good.\nIf you're sure: /reset --confirm",
 
   // ---- /compress ----
   "compress.compressed":
@@ -91,6 +92,9 @@ export const en: LanguagePack = {
   // ---- gates ----
   "gate.group_not_ready":
     "This bot is not active in this group yet. The bot owner must approve access first.",
+  "gate.user_not_approved":
+    "Your request was sent to the bot owner. You can start chatting once it's approved.",
+  "gate.user_revoked": "Your access to this bot has been revoked.",
   "help.cmd.history": "Show conversation history",
   "help.cmd.save": "Export the conversation to a file",
   "help.cmd.retry": "Retry the last message",
@@ -144,4 +148,24 @@ export const en: LanguagePack = {
   "help.cmd.loop": "Repeating task loop",
   "help.cmd.cron": "Scheduled tasks",
   "help.cmd.learn": "Draft a new skill",
+  "progress.thinking": "Thinking…",
+  "progress.tool_running": "{label}…",
+  "progress.tool_done": "{label} done.",
+
+  // ---- rate limit / turn errors (bot.ts §11c) ----
+  "ratelimit.wait": "You're going a bit fast; try again in about {seconds} seconds.",
+  "reply.truncated": "I hit this reply's step budget; ask more specifically for more detail.",
+  "media.skipped_title": "These attachments couldn't be used:",
+  "media.skipped_too_large": "• {kind}: over the size limit.",
+  "media.skipped_unsupported": "• {kind}: this file type isn't supported.",
+  "media.skipped_other": "• {kind}: couldn't be fetched.",
+  "media.empty": "The message is empty.",
+  "error.empty_response": "I got no reply; try again.",
+  "error.auth": "The service is unavailable (authentication).",
+  "error.quota": "The usage quota is full; try again in a bit.",
+  "error.network": "Network error; try again.",
+  "error.timeout": "The reply took too long; it was cancelled.",
+  "error.overloaded": "The system is busy; try again in a moment.",
+  "error.unknown": "Temporary error; try again.",
+  "error.unexpected": "Unexpected error.",
 };

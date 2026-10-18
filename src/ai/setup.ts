@@ -139,25 +139,40 @@ export function setupFromPreset(
 }
 
 /** The prompt shown when the owner picks a preset: one line, the key. */
-export function setupPrompt(preset: ProviderPreset): string {
+export function setupPrompt(preset: ProviderPreset, lang: "fa" | "en" = "fa"): string {
+  const en = lang === "en";
   const lines = [
-    `افزودن ${preset.label}`,
+    en ? `Adding ${preset.label}` : `افزودن ${preset.label}`,
     "",
-    "کلید API را در پیام بعدی بفرست. همین.",
+    en ? "Send the API key in your next message. That's it." : "کلید API را در پیام بعدی بفرست. همین.",
   ];
 
   if (preset.suggestedModel !== undefined) {
-    lines.push("", `مدل ${preset.suggestedModel} خودکار اضافه و فعال می‌شود.`);
+    lines.push(
+      "",
+      en
+        ? `Model ${preset.suggestedModel} will be added and activated automatically.`
+        : `مدل ${preset.suggestedModel} خودکار اضافه و فعال می‌شود.`,
+    );
   }
   if (preset.requiredPlaceholder !== undefined) {
     lines.push(
       "",
-      `⚠️ این سرویس به ${preset.requiredPlaceholder} هم نیاز دارد.`,
-      `کلید و مقدار را با کاما بفرست:  کلید, ${preset.requiredPlaceholder}`,
+      en
+        ? `⚠️ This service also needs ${preset.requiredPlaceholder}.`
+        : `⚠️ این سرویس به ${preset.requiredPlaceholder} هم نیاز دارد.`,
+      en
+        ? `Send key and value separated by a comma:  key, ${preset.requiredPlaceholder}`
+        : `کلید و مقدار را با کاما بفرست:  کلید, ${preset.requiredPlaceholder}`,
     );
   }
 
-  lines.push("", `نکته: ${preset.note}`, "", "برای لغو، /admin را بفرستید.");
+  lines.push(
+    "",
+    en ? `Note: ${preset.note}` : `نکته: ${preset.note}`,
+    "",
+    en ? "To cancel, use the Cancel button below." : "برای لغو، دکمهٔ «انصراف» را بزن.",
+  );
   return lines.join("\n");
 }
 

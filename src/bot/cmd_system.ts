@@ -30,6 +30,14 @@
 import type { Bot, Context } from "grammy";
 import { InputFile } from "grammy";
 import {
+  buildModelKeyboard,
+  MODEL_CALLBACK_PREFIX,
+  parseModelSwitchCallback,
+  withTyping,
+  formatCount,
+  faDigits,
+} from "./ux";
+import {
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -253,6 +261,11 @@ export function formatFaDate(ms: number): string {
   return new Date(ms).toLocaleString("fa-IR");
 }
 
+/** Date/time in the UI language (fa-IR with Persian digits, en-US otherwise). */
+export function formatDate(ms: number, lang: SysLang): string {
+  return new Date(ms).toLocaleString(lang === "en" ? "en-US" : "fa-IR");
+}
+
 // ------------------------------------------------------------ /snapshot ----
 
 export interface SnapshotEnv {
@@ -332,7 +345,7 @@ export function handleSnapshotList(lang: SysLang, dir: string): SystemResult {
       tr(lang, "cmd_system.snapshot.list_item", {
         name: e.name,
         size: formatBytes(e.sizeBytes),
-        when: formatFaDate(e.mtimeMs),
+        when: formatDate(e.mtimeMs, lang),
       }),
     );
     return {
@@ -609,8 +622,14 @@ export interface UsageModelRow extends UsageTotals {
   modelId: string;
 }
 
-function formatNum(n: number): string {
-  return n.toLocaleString("en-US");
+function formatNum(n: number, lang: SysLang): string {
+  return formatCount(n, lang);
+}
+
+/** Decimal cost with the right digits for the language. */
+function formatCostLocal(n: number, lang: SysLang): string {
+  const s = n.toFixed(4);
+  return lang === "en" ? s : faDigits(s).replace(/\./g, "٫");
 }
 
 export function handleUsage(
@@ -622,19 +641,19 @@ export function handleUsage(
   const lines = [
     `📊 ${tr(lang, "cmd_system.usage.today")}`,
     tr(lang, "cmd_system.usage.tokens", {
-      input: formatNum(today.inputTokens),
-      output: formatNum(today.outputTokens),
-      runs: formatNum(today.runs),
+      input: formatNum(today.inputTokens, lang),
+      output: formatNum(today.outputTokens, lang),
+      runs: formatNum(today.runs, lang),
     }),
-    tr(lang, "cmd_system.usage.cost", { cost: today.costUsd.toFixed(4) }),
+    tr(lang, "cmd_system.usage.cost", { cost: formatCostLocal(today.costUsd, lang) }),
     "",
     `📊 ${tr(lang, "cmd_system.usage.week")}`,
     tr(lang, "cmd_system.usage.tokens", {
-      input: formatNum(week.inputTokens),
-      output: formatNum(week.outputTokens),
-      runs: formatNum(week.runs),
+      input: formatNum(week.inputTokens, lang),
+      output: formatNum(week.outputTokens, lang),
+      runs: formatNum(week.runs, lang),
     }),
-    tr(lang, "cmd_system.usage.cost", { cost: week.costUsd.toFixed(4) }),
+    tr(lang, "cmd_system.usage.cost", { cost: formatCostLocal(week.costUsd, lang) }),
   ];
   if (topModels.length > 0) {
     lines.push("", tr(lang, "cmd_system.usage.by_model"));
@@ -642,8 +661,8 @@ export function handleUsage(
       lines.push(
         tr(lang, "cmd_system.usage.model_item", {
           model: m.modelId,
-          tokens: formatNum(m.inputTokens + m.outputTokens),
-          runs: formatNum(m.runs),
+          tokens: formatNum(m.inputTokens + m.outputTokens, lang),
+          runs: formatNum(m.runs, lang),
         }),
       );
     }
@@ -689,8 +708,8 @@ export function handleInsights(
     lines.push(
       tr(lang, "cmd_system.insights.day_item", {
         day: d.day,
-        tokens: formatNum(d.inputTokens + d.outputTokens),
-        runs: formatNum(d.runs),
+        tokens: formatNum(d.inputTokens + d.outputTokens, lang),
+        runs: formatNum(d.runs, lang),
       }),
     );
   }
@@ -700,8 +719,8 @@ export function handleInsights(
       lines.push(
         tr(lang, "cmd_system.usage.model_item", {
           model: m.modelId,
-          tokens: formatNum(m.inputTokens + m.outputTokens),
-          runs: formatNum(m.runs),
+          tokens: formatNum(m.inputTokens + m.outputTokens, lang),
+          runs: formatNum(m.runs, lang),
         }),
       );
     }
@@ -713,6 +732,8 @@ export function handleInsights(
 // --------------------------------------------------------------- /model ----
 
 export interface ModelListItem {
+  /** Numeric model row id (storage) — what `mdl:switch:<id>` callbacks carry. */
+  id: number;
   providerLabel: string;
   label: string;
   modelId: string;
@@ -784,6 +805,63 @@ export function handleModelSwitch(
     }
   }
   return { text: tr(lang, "cmd_system.model.not_found", { name: name.trim() }) };
+}
+
+// ------------------------------------------------------- mdl: callback ----
+
+/** Narrow callback context for the mdl: picker; full Context satisfies it. */
+export interface ModelCallbackCtx {
+  from?: { id: number | string } | undefined;
+  answerCallbackQuery(text?: string): Promise<unknown>;
+  reply(text: string): Promise<unknown>;
+}
+
+/**
+ * `mdl:switch:<id>` — a tap on a /model quick-switch button.
+ *
+ * SECURITY: the payload is validated twice — shape first
+ * (parseModelSwitchCallback: `mdl:switch:<digits>` only), then against the
+ * live catalog: the numeric id must name a model that EXISTS and is ENABLED
+ * (with an enabled provider). A forged id for a disabled or nonexistent
+ * model is rejected with an honest reply, never acted on.
+ *
+ * Owner-ness is enforced by the grammy wrapper (owner check runs first,
+ * like the /model command itself); this core only switches.
+ */
+export async function handleModelSwitchCallback(
+  ctx: ModelCallbackCtx,
+  storage: ModelSwitchStorage,
+  data: string,
+  lang: SysLang,
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery();
+  } catch {
+    // Best effort: Telegram shows the loading indicator briefly.
+  }
+  const id = parseModelSwitchCallback(data);
+  if (id === undefined) {
+    await safeReply(ctx, tr(lang, "cmd_system.model.not_found", { name: "?" }));
+    return;
+  }
+  for (const provider of storage.listProviders()) {
+    for (const model of storage.listModels(provider.id)) {
+      if (model.id !== id) continue;
+      if (!model.enabled || !provider.enabled) {
+        await safeReply(ctx, tr(lang, "cmd_system.model.disabled"));
+        return;
+      }
+      try {
+        storage.setRuntimeSelection({ providerId: provider.id, modelId: model.id });
+      } catch {
+        await safeReply(ctx, tr(lang, "cmd_system.model.not_found", { name: model.label }));
+        return;
+      }
+      await safeReply(ctx, tr(lang, "cmd_system.model.switched", { label: model.label }));
+      return;
+    }
+  }
+  await safeReply(ctx, tr(lang, "cmd_system.model.not_found", { name: String(id) }));
 }
 
 // ----------------------------------------------------------- /reasoning ----
@@ -1511,13 +1589,18 @@ export function registerSystemCommands(
     const g = await gate(ctx, lang);
     if (g === undefined) return;
     const arg = messageArg(ctx);
-    const result = handleSnapshot(
-      lang,
-      { dbPath: o.dbPath, snapshotDir: o.snapshotDir },
-      arg,
-      o.isAnyTurnRunning?.() ?? false,
-      o.now(),
-    );
+    const run = (): SystemResult =>
+      handleSnapshot(
+        lang,
+        { dbPath: o.dbPath, snapshotDir: o.snapshotDir },
+        arg,
+        o.isAnyTurnRunning?.() ?? false,
+        o.now(),
+      );
+    // The DB copy can take a moment on a large database; show typing.
+    const sub0 = (arg ?? "").trim().split(/\s+/)[0]?.toLowerCase() ?? "list";
+    const result =
+      sub0 === "create" ? await withTyping(ctx, async () => run()) : run();
     if (
       arg !== undefined &&
       arg.toLowerCase().startsWith("restore") &&
@@ -1558,10 +1641,13 @@ export function registerSystemCommands(
     const g = await gate(ctx, lang);
     if (g === undefined) return;
     const arg = messageArg(ctx);
-    const result = await handleUpdate(
-      lang,
-      { execGit: o.execGit, repoDir: process.cwd() },
-      flagSet(arg, "--confirm"),
+    // `git pull` can take up to 60s — keep the typing indicator alive.
+    const result = await withTyping(ctx, () =>
+      handleUpdate(
+        lang,
+        { execGit: o.execGit, repoDir: process.cwd() },
+        flagSet(arg, "--confirm"),
+      ),
     );
     audit(deps.storage, {
       operation: "bot.update",
@@ -1698,6 +1784,7 @@ export function registerSystemCommands(
       for (const p of storage.listProviders()) {
         for (const m of storage.listModels(p.id)) {
           items.push({
+            id: m.id,
             providerLabel: p.label,
             label: m.label,
             modelId: m.modelId,
@@ -1706,17 +1793,35 @@ export function registerSystemCommands(
           });
         }
       }
-      await safeReply(
-        ctx,
-        handleModelShow(
-          lang,
-          {
-            ...(provider !== undefined ? { providerLabel: provider.label } : {}),
-            ...(model !== undefined ? { modelLabel: model.label } : {}),
-          },
-          items,
-        ),
+      const text = handleModelShow(
+        lang,
+        {
+          ...(provider !== undefined ? { providerLabel: provider.label } : {}),
+          ...(model !== undefined ? { modelLabel: model.label } : {}),
+        },
+        items,
       );
+      // Quick-switch: one tap-to-pick button per ENABLED model. Disabled
+      // models stay text-only — tapping them would just bounce with the
+      // "disabled" note the list already explains.
+      const switchable = items.filter((i) => i.enabled);
+      if (switchable.length === 0) {
+        await safeReply(ctx, text);
+        return;
+      }
+      const keyboard = buildModelKeyboard(
+        switchable.map((i) => ({
+          id: i.id,
+          label: i.label,
+          isActive: i.isActive,
+        })),
+        lang,
+      );
+      try {
+        await ctx.reply(text, { reply_markup: keyboard });
+      } catch {
+        await safeReply(ctx, text);
+      }
       return;
     }
     const result = handleModelSwitch(lang, storage, name);
@@ -1797,7 +1902,13 @@ export function registerSystemCommands(
     if (g === undefined) return;
     const arg = (messageArg(ctx) ?? "status").toLowerCase();
     if (arg === "run") {
-      await safeReply(ctx, await handleCuratorRun(lang, deps.tools, g.env.ownerId));
+      // The curator tool reads through long-term memory; show typing.
+      await safeReply(
+        ctx,
+        await withTyping(ctx, () =>
+          handleCuratorRun(lang, deps.tools, g.env.ownerId),
+        ),
+      );
       return;
     }
     if (arg === "status") {
@@ -1902,5 +2013,20 @@ export function registerSystemCommands(
       ctx,
       handlePause(lang, deps.prefs, g.env.ownerId, messageArg(ctx)),
     );
+  });
+
+  // ---- mdl: quick-switch buttons (from /model) ----
+  // Its own namespace, like the lang: picker in bot.ts: clicks re-run the
+  // owner check FIRST (the command is owner-only), then the group/user
+  // gates. The numeric id is re-validated against the live model catalog
+  // (existence + enabled) before anything switches. Other namespaces fall
+  // through untouched.
+  bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith(MODEL_CALLBACK_PREFIX)) return;
+    const lang = toSysLang(senderLang(ctx, deps.prefs));
+    const g = await gate(ctx, lang);
+    if (g === undefined) return;
+    await handleModelSwitchCallback(ctx, deps.storage, data, lang);
   });
 }

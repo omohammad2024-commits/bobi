@@ -41,13 +41,19 @@ export type PanelAction =
   | { kind: "ai_test"; providerId: number }
   | { kind: "ai_discover"; providerId: number }
   | { kind: "ai_clear_key"; providerId: number }
+  /** Second tap of the two-step key clearing. */
+  | { kind: "ai_clear_key_confirm"; providerId: number }
   /** Add a pool (backup) credential to a provider via the key-entry flow. */
   | { kind: "ai_pool_key"; providerId: number }
   | { kind: "ai_delete"; providerId: number }
+  /** Second tap of the two-step provider deletion. */
+  | { kind: "ai_delete_confirm"; providerId: number }
   | { kind: "ai_models"; providerId: number }
   | { kind: "ai_model_add_form"; providerId: number }
   | { kind: "ai_model_toggle"; modelId: number }
   | { kind: "ai_model_delete"; modelId: number }
+  /** Second tap of the two-step model deletion. */
+  | { kind: "ai_model_delete_confirm"; modelId: number }
   | { kind: "ai_model_default"; modelId: number }
   | { kind: "ai_select_menu" }
   | { kind: "ai_select_provider"; providerId: number }
@@ -68,6 +74,10 @@ export type PanelAction =
   | { kind: "fo_move_down"; index: number }
   // ---- AI operational status ----
   | { kind: "ai_status" }
+  /** Real probe of every provider; the old button only re-rendered the status. */
+  | { kind: "ai_probe_all" }
+  /** Cancel a free-text form flow (clears the pending state, no write). */
+  | { kind: "ai_form_cancel" }
   // ---- local-target exception ----
   | { kind: "fo_local_menu"; providerId: number }
   | { kind: "fo_local_confirm"; providerId: number }
@@ -83,7 +93,9 @@ export type PanelAction =
   | { kind: "search_menu" }
   | { kind: "search_pick"; provider: string }
   | { kind: "search_set_key_form" }
-  | { kind: "search_clear_key" };
+  | { kind: "search_clear_key" }
+  /** Second tap of the two-step search-key clearing. */
+  | { kind: "search_clear_key_confirm" };
 
 export const CALLBACK_PREFIX = "adm" as const;
 
@@ -137,10 +149,14 @@ export function encode(action: PanelAction): string {
       return `${CALLBACK_PREFIX}:aid:${action.providerId}`;
     case "ai_clear_key":
       return `${CALLBACK_PREFIX}:aik:${action.providerId}`;
+    case "ai_clear_key_confirm":
+      return `${CALLBACK_PREFIX}:aikc:${action.providerId}`;
     case "ai_pool_key":
       return `${CALLBACK_PREFIX}:aipk:${action.providerId}`;
     case "ai_delete":
       return `${CALLBACK_PREFIX}:aix:${action.providerId}`;
+    case "ai_delete_confirm":
+      return `${CALLBACK_PREFIX}:aixc:${action.providerId}`;
     case "ai_models":
       return `${CALLBACK_PREFIX}:aim:${action.providerId}`;
     case "ai_model_add_form":
@@ -149,6 +165,8 @@ export function encode(action: PanelAction): string {
       return `${CALLBACK_PREFIX}:ammt:${action.modelId}`;
     case "ai_model_delete":
       return `${CALLBACK_PREFIX}:ammd:${action.modelId}`;
+    case "ai_model_delete_confirm":
+      return `${CALLBACK_PREFIX}:ammdc:${action.modelId}`;
     case "ai_model_default":
       return `${CALLBACK_PREFIX}:ammf:${action.modelId}`;
     case "ai_select_menu":
@@ -187,6 +205,10 @@ export function encode(action: PanelAction): string {
     // ---- AI operational status ----
     case "ai_status":
       return `${CALLBACK_PREFIX}:aist`;
+    case "ai_probe_all":
+      return `${CALLBACK_PREFIX}:aiprb`;
+    case "ai_form_cancel":
+      return `${CALLBACK_PREFIX}:aifc`;
     // ---- local-target exception ----
     case "fo_local_menu":
       return `${CALLBACK_PREFIX}:folm:${action.providerId}`;
@@ -219,6 +241,8 @@ export function encode(action: PanelAction): string {
       return `${CALLBACK_PREFIX}:sesk`;
     case "search_clear_key":
       return `${CALLBACK_PREFIX}:seck`;
+    case "search_clear_key_confirm":
+      return `${CALLBACK_PREFIX}:seckc`;
   }
 }
 
@@ -279,10 +303,14 @@ export function decode(data: string): PanelAction | undefined {
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_discover", providerId }));
     case "aik":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_clear_key", providerId }));
+    case "aikc":
+      return parseId(arg, parts.length, (providerId) => ({ kind: "ai_clear_key_confirm", providerId }));
     case "aipk":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_pool_key", providerId }));
     case "aix":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_delete", providerId }));
+    case "aixc":
+      return parseId(arg, parts.length, (providerId) => ({ kind: "ai_delete_confirm", providerId }));
     case "aim":
       return parseId(arg, parts.length, (providerId) => ({ kind: "ai_models", providerId }));
     case "amma":
@@ -291,6 +319,8 @@ export function decode(data: string): PanelAction | undefined {
       return parseId(arg, parts.length, (modelId) => ({ kind: "ai_model_toggle", modelId }));
     case "ammd":
       return parseId(arg, parts.length, (modelId) => ({ kind: "ai_model_delete", modelId }));
+    case "ammdc":
+      return parseId(arg, parts.length, (modelId) => ({ kind: "ai_model_delete_confirm", modelId }));
     case "ammf":
       return parseId(arg, parts.length, (modelId) => ({ kind: "ai_model_default", modelId }));
     case "asl":
@@ -335,6 +365,10 @@ export function decode(data: string): PanelAction | undefined {
     // ---- AI operational status ----
     case "aist":
       return parts.length === 2 ? { kind: "ai_status" } : undefined;
+    case "aiprb":
+      return parts.length === 2 ? { kind: "ai_probe_all" } : undefined;
+    case "aifc":
+      return parts.length === 2 ? { kind: "ai_form_cancel" } : undefined;
     // ---- local-target exception ----
     case "folm":
       return parseId(arg, parts.length, (providerId) => ({ kind: "fo_local_menu", providerId }));
@@ -367,6 +401,8 @@ export function decode(data: string): PanelAction | undefined {
       return parts.length === 2 ? { kind: "search_set_key_form" } : undefined;
     case "seck":
       return parts.length === 2 ? { kind: "search_clear_key" } : undefined;
+    case "seckc":
+      return parts.length === 2 ? { kind: "search_clear_key_confirm" } : undefined;
     default:
       return undefined;
   }

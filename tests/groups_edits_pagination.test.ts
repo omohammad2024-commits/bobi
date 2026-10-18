@@ -314,7 +314,7 @@ describe("panel pagination", () => {
     expect(prevData).toBeDefined();
     const c2 = owner();
     await h.panel.handleCallback(c2.ctx as never, prevData!);
-    expect(c2.sent[0]?.text).toContain("از 12");
+    expect(c2.sent[0]?.text).toContain("از ۱۲");
     h.storage.close();
   });
 
@@ -323,7 +323,7 @@ describe("panel pagination", () => {
     manyPending(h, 12);
     const c = owner();
     await h.panel.handleCallback(c.ctx as never, encode({ kind: "pending", offset: 5000 }));
-    expect(c.sent[0]?.text).toContain("11–12 از 12");
+    expect(c.sent[0]?.text).toContain("۱۱–۱۲ از ۱۲");
     h.storage.close();
   });
 
@@ -364,7 +364,7 @@ describe("panel pagination", () => {
 
       const past = owner();
       await h.panel.handleCallback(past.ctx as never, encode({ kind, offset: 4000 }));
-      expect(past.sent[0]?.text).toContain("6–9 از 9");
+      expect(past.sent[0]?.text).toContain("۶–۹ از ۹");
     }
     h.storage.close();
   });

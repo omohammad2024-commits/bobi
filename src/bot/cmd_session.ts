@@ -1,6 +1,7 @@
-import { Bot, InputFile, type Context } from "grammy";
+import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { HermesCommandDef, HermesCommandDeps } from "./cmd_context";
 import {
+  COMMAND_HELP,
   commandArg,
   gateGroup,
   gateUser,
@@ -9,6 +10,12 @@ import {
   stopTurn,
   type UserPrefStore,
 } from "./bot";
+import {
+  buildSessionsKeyboard,
+  parseSessionResumeCallback,
+  SESSION_CALLBACK_PREFIX,
+  formatCount,
+} from "./ux";
 import type { Storage, StoredMessage } from "../storage/storage";
 import {
   EngineError,
@@ -88,14 +95,25 @@ export interface SessionCtx {
   chat?: { id: number | string } | undefined;
   from?: { id: number | string } | undefined;
   message?: { text?: string } | undefined;
-  reply(text: string): Promise<unknown>;
+  /**
+   * The optional `extra` carries reply_markup for tap-to-resume buttons
+   * (/sessions). Callers that only need plain text ignore it; test stubs
+   * taking a single argument stay assignable.
+   */
+  reply(
+    text: string,
+    extra?: { reply_markup?: InlineKeyboard },
+  ): Promise<unknown>;
   replyWithDocument?(doc: InputFile, opts?: { caption?: string }): Promise<unknown>;
 }
 
 export type StorageEnv = { storage: Storage };
 export type PrefsEnv = { prefs?: UserPrefStore };
 export type StoragePrefsEnv = { storage: Storage; prefs?: UserPrefStore };
-export type NewEnv = { engine: Pick<ConversationEngine, "cancel" | "clearHistory"> };
+export type NewEnv = {
+  engine: Pick<ConversationEngine, "cancel" | "clearHistory">;
+  storage: Pick<Storage, "countMessages" | "getConversationSummary">;
+};
 export type RetryEnv = {
   engine: Pick<ConversationEngine, "respond" | "cancel">;
   storage: Storage;
@@ -124,6 +142,32 @@ async function safeReply(
   } catch {
     // Best effort: the user cannot be reached.
   }
+}
+
+/** Reply with an inline keyboard, tolerating delivery failure. */
+async function safeReplyMarkup(
+  ctx: SessionCtx,
+  text: string,
+  replyMarkup: InlineKeyboard,
+): Promise<void> {
+  try {
+    await ctx.reply(text, { reply_markup: replyMarkup });
+  } catch {
+    // Best effort: the user cannot be reached.
+  }
+}
+
+/**
+ * True when the raw command argument contains an EXACT `--confirm` token.
+ * Exact-token matching (never substring): "--confirmx", "--confirmation"
+ * or "--confirm!" do NOT count — a crafted arg cannot smuggle consent.
+ * Pure, for tests.
+ */
+export function hasConfirmFlag(raw: string | undefined): boolean {
+  if (raw === undefined) return false;
+  return raw
+    .split(/\s+/)
+    .some((p) => p.toLowerCase() === "--confirm");
 }
 
 /** Reply long text in Telegram-safe chunks (<=4096 chars each). */
@@ -682,15 +726,13 @@ export async function handleBranchCommand(
 // ---------------------------------------------------------------- /resume ----
 
 /**
- * /resume <name-or-id>: "switch" this chat to a previous conversation.
+ * /resume <name-or-id>: switch this chat to a previous conversation.
  *
- * LIMITATION (honest): the message handler in bot.ts resolves the
- * conversation as String(ctx.chat.id) and does NOT read user_prefs, and this
- * module may not modify it. So a true switch is impossible from here: the
- * handler stores the choice as the `active_conversation:<chatId>` pref (for
- * the coordinator to wire later) and shows the target's recent history, with
- * an explicit note that new messages still continue the current chat's
- * thread until the handler honors the pref.
+ * The choice is stored as the `active_conversation:<chatId>` pref, and the
+ * message path in bot.ts honors it: it format-checks the value, verifies it
+ * names one of THIS user's conversations, and routes the next turns there
+ * (falling back to the default thread on any hiccup). The reply confirms
+ * the switch honestly — no stale "not wired yet" warning.
  */
 export async function handleResumeCommand(
   ctx: SessionCtx,
@@ -755,7 +797,7 @@ export async function handleResumeCommand(
         .map((m) => `${roleLabel(m.role, lang)}: ${truncate(m.content, 300)}`)
         .join("\n\n");
   }
-  text += "\n\n" + tr(lang, "cmd_session.resume_limitation");
+  text += "\n\n" + tr(lang, "cmd_session.resume_active", { name: displayName });
   await replyChunked(ctx, text);
 }
 
@@ -784,9 +826,11 @@ export async function handleSessionsCommand(
     return;
   }
   const shown = sessions.slice(0, 10);
+  const titles = new Map<string, string>();
   const lines = shown.map((s) => {
     const title =
       readPref(env.prefs, ids.userId, titlePrefKey(s.conversationId)) ?? s.conversationId;
+    titles.set(s.conversationId, title);
     const current =
       s.conversationId === ids.chatId ? tr(lang, "cmd_session.sessions_current_mark") : "";
     return tr(lang, "cmd_session.sessions_item", {
@@ -800,7 +844,95 @@ export async function handleSessionsCommand(
   if (sessions.length > shown.length) {
     text += "\n" + tr(lang, "cmd_session.sessions_more", { n: sessions.length - shown.length });
   }
-  await replyChunked(ctx, text);
+  // Tap-to-resume: one button per listed session (except the current one —
+  // resuming it is a no-op). The callback re-validates the id against the
+  // caller's own conversation list, so forged data resumes nothing.
+  const buttons = shown
+    .filter((s) => s.conversationId !== ids.chatId)
+    .map((s) => ({
+      id: s.conversationId,
+      title: titles.get(s.conversationId) ?? s.conversationId,
+    }));
+  if (buttons.length === 0) {
+    await replyChunked(ctx, text);
+    return;
+  }
+  const keyboard = buildSessionsKeyboard(
+    buttons,
+    lang === "en" ? "en" : "fa",
+  );
+  const chunks = splitForTelegram(text);
+  for (let i = 0; i < chunks.length; i++) {
+    if (i === chunks.length - 1) {
+      await safeReplyMarkup(ctx, chunks[i]!, keyboard);
+    } else {
+      await safeReply(ctx, chunks[i]!);
+    }
+  }
+}
+
+// ----------------------------------------------- sess: tap-to-resume ----
+
+/** Narrow callback context for the sess: picker; full Context satisfies it. */
+export interface SessionCallbackCtx {
+  chat?: { id: number | string } | undefined;
+  from?: { id: number | string } | undefined;
+  answerCallbackQuery(text?: string): Promise<unknown>;
+  reply(
+    text: string,
+    extra?: { reply_markup?: InlineKeyboard },
+  ): Promise<unknown>;
+}
+
+/**
+ * `sess:resume:<conversationId>` — a tap on a /sessions resume button.
+ *
+ * SECURITY: the payload is validated twice — shape first
+ * (parseSessionResumeCallback), then OWNERSHIP: the id must name one of the
+ * CALLER's own conversations, exactly like bot.ts's message-path check.
+ * A forged id (someone else's session, or junk) is rejected with an honest
+ * reply, never acted on.
+ *
+ * The switch itself reuses handleResumeCommand through a shimmed message
+ * text, so the button and the typed `/resume <id>` can never drift apart.
+ */
+export async function handleSessionResumeCallback(
+  ctx: SessionCallbackCtx,
+  env: StoragePrefsEnv,
+  data: string,
+  lang: Lang,
+): Promise<void> {
+  try {
+    await ctx.answerCallbackQuery();
+  } catch {
+    // Best effort: Telegram shows the loading indicator briefly.
+  }
+  if (ctx.from === undefined) return;
+  const from = ctx.from;
+  const userId = String(from.id);
+  const conversationId = parseSessionResumeCallback(data);
+  let owned = false;
+  if (conversationId !== undefined) {
+    try {
+      owned =
+        env.storage
+          .listUserConversations(userId)
+          .some((c) => c.conversationId === conversationId) === true;
+    } catch {
+      owned = false;
+    }
+  }
+  if (!owned) {
+    await safeReply(ctx, tr(lang, "cmd_session.resume_not_found"));
+    return;
+  }
+  const shim: SessionCtx = {
+    ...(ctx.chat !== undefined ? { chat: ctx.chat } : {}),
+    from,
+    message: { text: `/resume ${conversationId}` },
+    reply: (text, extra) => ctx.reply(text, extra),
+  };
+  await handleResumeCommand(shim, env, lang);
 }
 
 // ---------------------------------------------------------------- /status ----
@@ -849,13 +981,13 @@ export async function handleStatusCommand(
     tr(lang, "cmd_session.status_model", {
       model: topModel ?? tr(lang, "cmd_session.status_model_unknown"),
     }),
-    tr(lang, "cmd_session.status_messages", { n: messageCount }),
+    tr(lang, "cmd_session.status_messages", { n: formatCount(messageCount, lang) }),
     tr(lang, running ? "cmd_session.status_running_yes" : "cmd_session.status_running_no"),
     tr(lang, "cmd_session.status_tokens", {
-      in: inputTokens.toLocaleString("en-US"),
-      out: outputTokens.toLocaleString("en-US"),
+      in: formatCount(inputTokens, lang),
+      out: formatCount(outputTokens, lang),
     }),
-    tr(lang, "cmd_session.status_requests", { n: runs }),
+    tr(lang, "cmd_session.status_requests", { n: formatCount(runs, lang) }),
   ];
   await safeReply(ctx, lines.join("\n"));
 }
@@ -890,7 +1022,7 @@ export async function handleContextCommand(
   const lines = [
     tr(lang, "cmd_session.context_title"),
     tr(lang, "cmd_session.context_messages", { n: total }),
-    tr(lang, "cmd_session.context_tokens", { n: estTokens.toLocaleString("en-US") }),
+    tr(lang, "cmd_session.context_tokens", { n: formatCount(estTokens, lang) }),
     tr(lang, "cmd_session.context_window", { n: ENGINE_WINDOW }),
     tr(
       lang,
@@ -977,6 +1109,10 @@ export async function handleBusyCommand(
  * /whoami: the sender's role (owner vs approved user) and the command
  * groups they may use. Read-only; ungated like /help. The owner bit comes
  * from the caller (isOwnerSender), proven from the trusted numeric id.
+ *
+ * The command lists are GENERATED from COMMAND_HELP (the same registry
+ * that feeds setMyCommands and /help), so they can never go stale the way
+ * the old hand-written list did.
  */
 export async function handleWhoamiCommand(
   ctx: { from?: { id: number | string } | undefined; reply(text: string): Promise<unknown> },
@@ -984,13 +1120,22 @@ export async function handleWhoamiCommand(
   lang: Lang = "fa",
 ): Promise<void> {
   if (ctx.from === undefined) return;
+  const list = (ownerOnly: boolean): string =>
+    COMMAND_HELP.filter((e) => e.ownerOnly === ownerOnly)
+      .map((e) => `/${e.name}`)
+      .join(" ،");
   const lines = [
     tr(lang, isOwner ? "cmd_session.whoami_owner" : "cmd_session.whoami_user"),
     "",
-    tr(lang, "cmd_session.whoami_groups_user"),
+    tr(lang, "cmd_session.whoami_groups_user", {
+      commands: list(false),
+    }),
   ];
   if (isOwner) {
-    lines.push("", tr(lang, "cmd_session.whoami_groups_owner"));
+    lines.push(
+      "",
+      tr(lang, "cmd_session.whoami_groups_owner", { commands: list(true) }),
+    );
   }
   await safeReply(ctx, lines.join("\n"));
 }
@@ -1066,6 +1211,11 @@ export async function handleVersionCommand(
  * /new: start a fresh session — the /reset pattern exactly (cancel the
  * in-flight turn, stop the bot-layer turn registry, clear messages AND the
  * rolling summary via engine.clearHistory), scoped to this chat only.
+ *
+ * DESTRUCTIVE, so it is two-step like --confirm commands: a bare /new only
+ * shows what will be destroyed (message count + rolling summary) and the
+ * exact confirmation command. `/new --confirm` executes. The flag is
+ * matched as an exact token — "--confirmx" does not count.
  */
 export async function handleNewCommand(
   ctx: SessionCtx,
@@ -1074,6 +1224,23 @@ export async function handleNewCommand(
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
+  if (!hasConfirmFlag(rawArg(ctx))) {
+    let n = 0;
+    let summary = "";
+    try {
+      n = env.storage.countMessages(ids.userId, ids.chatId);
+      if (env.storage.getConversationSummary(ids.userId, ids.chatId) !== undefined) {
+        summary = tr(lang, "cmd_session.new_confirm_summary");
+      }
+    } catch {
+      // A failed read still asks for confirmation; it just can't preview.
+    }
+    await safeReply(
+      ctx,
+      tr(lang, "cmd_session.new_confirm", { n, summary }),
+    );
+    return;
+  }
   env.engine.cancel(ids.chatId);
   stopTurn(ids.chatId);
   env.engine.clearHistory({ conversationId: ids.chatId, userId: ids.userId });
@@ -1141,4 +1308,19 @@ export function registerSessionCommands(bot: Bot, deps: HermesCommandDeps): void
   open("whoami", (ctx, lang) => handleWhoamiCommand(ctx, isOwnerSender(ctx, deps), lang));
   open("version", (ctx, lang) => handleVersionCommand(ctx, deps, lang));
   open("status", (ctx, lang) => handleStatusCommand(ctx, deps, lang));
+
+  // ---- sess: tap-to-resume buttons (from /sessions) ----
+  // Its own namespace, like the lang: picker in bot.ts: clicks re-run the
+  // same group/user gates as the /sessions command, and the id is validated
+  // against the caller's own conversations before anything happens. Other
+  // namespaces fall through untouched (bot.ts's own callback router also
+  // runs and simply answers them).
+  bot.on("callback_query:data", async (ctx) => {
+    const data = ctx.callbackQuery.data;
+    if (!data.startsWith(SESSION_CALLBACK_PREFIX)) return;
+    const lang = senderLang(ctx, deps.prefs);
+    if (!(await gateGroup(ctx, deps.groups, lang))) return;
+    if (!(await gateUser(ctx, deps))) return;
+    await handleSessionResumeCallback(ctx, deps, data, lang);
+  });
 }

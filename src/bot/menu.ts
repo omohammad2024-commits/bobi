@@ -1,35 +1,104 @@
 import { InlineKeyboard } from "grammy";
 import { t, type Lang } from "../i18n";
+import { tr } from "./menu_strings";
+import type { HermesCommandDef } from "./cmd_context";
 
 /**
  * Persian labels for the main menu buttons.
  *
  * Kept as the fa ground truth: buildMainMenu() with the default language must
- * render exactly these strings (asserted in tests).
+ * render exactly these strings (asserted in tests). Labels now live in the
+ * local menu table (`menu_strings.ts`) — the sibling i18n owner folds them
+ * into the central packs later.
  */
 export const MAIN_MENU_LABELS = {
-  chat: "گفت‌وگو",
-  tools: "ابزارها",
-  about: "درباره بابی",
+  chat: tr("fa", "menu.label.chat"),
+  tools: tr("fa", "menu.label.tools"),
+  commands: tr("fa", "menu.label.commands"),
+  settings: tr("fa", "menu.label.settings"),
+  about: tr("fa", "menu.label.about"),
+  help: tr("fa", "menu.label.help"),
+  back: tr("fa", "menu.label.back"),
 } as const;
 
-/** Callback data identifiers — stable, machine-readable. */
+/**
+ * Callback data identifiers — stable, machine-readable.
+ *
+ * Additive: the original three values (`menu:chat`, `menu:tools`,
+ * `menu:about`) are unchanged, so any in-flight keyboards keep working.
+ */
 export const CALLBACKS = {
   chat: "menu:chat",
   tools: "menu:tools",
   about: "menu:about",
+  commands: "menu:commands",
+  settings: "menu:settings",
+  help: "menu:help",
+  home: "menu:home",
 } as const;
 
 /**
- * Placeholder replies for each menu section, in Persian.
+ * Screen texts for each menu section, in Persian.
  *
  * Kept for compatibility; replyForCallback() is the lang-aware entry point.
  */
 export const MENU_REPLIES: Record<(typeof CALLBACKS)[keyof typeof CALLBACKS], string> = {
-  [CALLBACKS.chat]: t("menu.reply.chat", "fa"),
-  [CALLBACKS.tools]: t("menu.reply.tools", "fa"),
-  [CALLBACKS.about]: t("menu.reply.about", "fa"),
+  [CALLBACKS.chat]: tr("fa", "menu.screen.chat"),
+  [CALLBACKS.tools]: tr("fa", "menu.screen.tools_fallback"),
+  [CALLBACKS.about]: tr("fa", "menu.screen.about"),
+  [CALLBACKS.commands]: tr("fa", "menu.screen.commands"),
+  [CALLBACKS.settings]: tr("fa", "menu.screen.settings"),
+  [CALLBACKS.help]: tr("fa", "menu.screen.help"),
+  [CALLBACKS.home]: tr("fa", "menu.start.text"),
 };
+
+/**
+ * The 10 built-in commands that are NOT part of the Hermes command modules
+ * but must appear in Telegram's command menu: core first (start → compress),
+ * then the two owner-only entries.
+ *
+ * Descriptions mirror the central `help.cmd.*` pack values so the menu and
+ * /help never disagree.
+ */
+export const BUILTIN_COMMAND_DEFS: readonly HermesCommandDef[] = [
+  { command: "start", descriptionFa: "شروع و نمایش منوی اصلی", descriptionEn: "Start and show the main menu", ownerOnly: false },
+  { command: "help", descriptionFa: "راهنمای دستورها", descriptionEn: "Command reference", ownerOnly: false },
+  { command: "voice", descriptionFa: "روشن/خاموش کردن پاسخ صوتی", descriptionEn: "Turn voice replies on/off", ownerOnly: false },
+  { command: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", descriptionEn: "Clear this conversation's history", ownerOnly: false },
+  { command: "stop", descriptionFa: "توقف پاسخ در حال اجرا", descriptionEn: "Stop the running reply", ownerOnly: false },
+  { command: "lang", descriptionFa: "تغییر زبان رابط کاربری", descriptionEn: "Change the interface language", ownerOnly: false },
+  { command: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", descriptionEn: "Show or change the reply tone", ownerOnly: false },
+  { command: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", descriptionEn: "Immediately summarize old conversations", ownerOnly: false },
+  { command: "admin", descriptionFa: "پنل مدیریت ربات", descriptionEn: "Bot admin panel", ownerOnly: true },
+  { command: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", descriptionEn: "Manage the AI provider", ownerOnly: true },
+];
+
+/**
+ * Public command-menu entries, in deliberate order: the built-in core
+ * commands first, then the Hermes groups in module order
+ * (session → system → automation), owner-only entries filtered out.
+ * Pure, for tests and for the setMyCommands wiring in index.ts.
+ */
+export function publicMenuCommands(
+  hermesDefs: readonly HermesCommandDef[],
+): HermesCommandDef[] {
+  return [
+    ...BUILTIN_COMMAND_DEFS.filter((d) => !d.ownerOnly),
+    ...hermesDefs.filter((d) => !d.ownerOnly),
+  ];
+}
+
+/**
+ * Owner command-menu entries: everything the public menu shows, plus the
+ * owner-only builtins (admin, ai) right after the core commands, then all
+ * Hermes defs. Pure, for tests and for the setMyCommands wiring in
+ * index.ts.
+ */
+export function ownerMenuCommands(
+  hermesDefs: readonly HermesCommandDef[],
+): HermesCommandDef[] {
+  return [...BUILTIN_COMMAND_DEFS, ...hermesDefs];
+}
 
 /**
  * Persian display names for the built-in tools.
@@ -51,11 +120,38 @@ function toolLabel(name: string, lang: Lang): string {
   return name in TOOL_LABELS ? t(`menu.tool.${name}`, lang) : name;
 }
 
+/** The /start onboarding screen. Shared by the /start handler and menu:home. */
+export function startScreenText(lang: Lang = "fa"): string {
+  return tr(lang, "menu.start.text");
+}
+
+/**
+ * Main menu: 3 rows × 2 buttons, grouped by area
+ * (chat/tools, commands/settings, about/help).
+ */
 export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
-    .text(t("menu.label.chat", lang), CALLBACKS.chat)
-    .text(t("menu.label.tools", lang), CALLBACKS.tools)
-    .text(t("menu.label.about", lang), CALLBACKS.about);
+    .text(tr(lang, "menu.label.chat"), CALLBACKS.chat)
+    .text(tr(lang, "menu.label.tools"), CALLBACKS.tools)
+    .row()
+    .text(tr(lang, "menu.label.commands"), CALLBACKS.commands)
+    .text(tr(lang, "menu.label.settings"), CALLBACKS.settings)
+    .row()
+    .text(tr(lang, "menu.label.about"), CALLBACKS.about)
+    .text(tr(lang, "menu.label.help"), CALLBACKS.help);
+}
+
+/** Single «back» button — every sub-screen gets one, so there are no dead ends. */
+export function buildBackKeyboard(lang: Lang = "fa"): InlineKeyboard {
+  return new InlineKeyboard().text(tr(lang, "menu.label.back"), CALLBACKS.home);
+}
+
+/**
+ * Keyboard for a menu callback: the full menu on the home screen, a back
+ * button on every sub-screen.
+ */
+export function menuKeyboardFor(data: string, lang: Lang = "fa"): InlineKeyboard {
+  return data === CALLBACKS.home ? buildMainMenu(lang) : buildBackKeyboard(lang);
 }
 
 /** Callback data for the /lang language picker — stable, machine-readable. */
@@ -110,9 +206,13 @@ export function toolListText(activeTools: readonly string[], lang: Lang = "fa"):
 }
 
 const REPLY_KEYS: Readonly<Record<string, string>> = {
-  [CALLBACKS.chat]: "menu.reply.chat",
-  [CALLBACKS.tools]: "menu.reply.tools",
-  [CALLBACKS.about]: "menu.reply.about",
+  [CALLBACKS.chat]: "menu.screen.chat",
+  [CALLBACKS.tools]: "menu.screen.tools_fallback",
+  [CALLBACKS.about]: "menu.screen.about",
+  [CALLBACKS.commands]: "menu.screen.commands",
+  [CALLBACKS.settings]: "menu.screen.settings",
+  [CALLBACKS.help]: "menu.screen.help",
+  [CALLBACKS.home]: "menu.start.text",
 };
 
 export function replyForCallback(
@@ -124,6 +224,63 @@ export function replyForCallback(
     return toolListText(activeTools, lang);
   }
   const key = REPLY_KEYS[data];
-  if (key !== undefined) return t(key, lang);
+  if (key !== undefined) return tr(lang, key);
   return t("menu.reply.unknown", lang);
+}
+
+// ---------------------------------------------------------------- help ----
+
+/** /help sections, in display order. */
+export type HelpGroup = "general" | "session" | "automation" | "owner";
+
+/** The grouped-/help title (central pack — kept stable for existing tests). */
+export function helpTitle(lang: Lang = "fa"): string {
+  return t("help.title", lang);
+}
+
+/** Section header for one /help group. */
+export function helpGroupTitle(group: HelpGroup, lang: Lang = "fa"): string {
+  return tr(lang, `menu.help.group.${group}`);
+}
+
+/**
+ * One /help line. With an example argument it renders `/name example`,
+ * otherwise `/name` — both followed by the one-line description.
+ */
+export function helpEntryLine(
+  name: string,
+  description: string,
+  example: string | undefined,
+  lang: Lang = "fa",
+): string {
+  if (example === undefined || example.length === 0) {
+    return tr(lang, "menu.help.entry", { name, description });
+  }
+  return tr(lang, "menu.help.entry_example", { name, example, description });
+}
+
+/**
+ * Edit a menu message in place; fall back to a fresh reply when the message
+ * cannot be edited (too old, deleted, or from another chat).
+ *
+ * A "message is not modified" error means the screen is already showing —
+ * that is silently swallowed instead of stacking a duplicate reply.
+ * Pure-ish: takes a minimal ctx shape so tests can drive it with a fake.
+ */
+export async function editMenuMessage(
+  ctx: {
+    editMessageText(text: string, extra?: Record<string, unknown>): Promise<unknown>;
+    reply(text: string, extra?: Record<string, unknown>): Promise<unknown>;
+  },
+  text: string,
+  keyboard: InlineKeyboard,
+): Promise<void> {
+  const extra = { reply_markup: keyboard };
+  try {
+    await ctx.editMessageText(text, extra);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("message is not modified")) return;
+    await ctx.reply(text, extra);
+  }
 }

@@ -15,7 +15,7 @@ import type { Lang } from "../i18n";
 type Vars = Record<string, string | number>;
 
 const FA: Record<string, string> = {
-  "cmd_session.storage_error": "خطا در خواندن یا ذخیرهٔ اطلاعات. لطفاً دوباره تلاش کنید.",
+  "cmd_session.storage_error": "خطا در خواندن یا ذخیرهٔ اطلاعات؛ دوباره تلاش کن.",
   "cmd_session.prefs_unavailable": "سرویس تنظیمات در دسترس نیست.",
   "cmd_session.prefs_save_failed": "ذخیرهٔ تنظیم ناموفق بود.",
 
@@ -34,54 +34,54 @@ const FA: Record<string, string> = {
   "cmd_session.save_too_large": "گفت‌وگو بیش از حد بزرگ است (بیش از ۵۰۰۰ پیام)؛ این عملیات روی آن پشتیبانی نمی‌شود.",
 
   "cmd_session.retry_none": "پیام کاربری در تاریخچه پیدا نشد؛ چیزی برای تلاش دوباره نیست.",
-  "cmd_session.retry_failed": "تلاش دوباره ناموفق بود. لطفاً دوباره تلاش کنید.",
+  "cmd_session.retry_failed": "تلاش دوباره ناموفق بود؛ دوباره تلاش کن.",
 
-  "cmd_session.undo_usage": "برای حذف نوبت‌های آخر، تعداد را مشخص کنید (۱ تا ۵). مثال: /undo 2",
+  "cmd_session.undo_usage": "برای حذف نوبت‌های آخر، تعداد رو مشخص کن (۱ تا ۵). مثال: /undo 2",
   "cmd_session.undo_bad_arg": "تعداد باید عددی بین ۱ تا ۵ باشد. مثال: /undo 2",
   "cmd_session.undo_nothing": "پیامی برای حذف وجود ندارد.",
-  "cmd_session.undo_done": "✅ {n} نوبت آخر حذف شد و می‌توانید دوباره بنویسید.\nحذف شد:\n{preview}",
+  "cmd_session.undo_done": "✅ {n} نوبت آخر حذف شد؛ می‌تونی دوباره بنویسی.\nحذف شد:\n{preview}",
 
   "cmd_session.title_current": "🏷 عنوان فعلی این گفت‌وگو: {title}",
-  "cmd_session.title_none": "هنوز عنوانی برای این گفت‌وگو تنظیم نشده است. با `/title <متن>` یکی بگذارید.",
+  "cmd_session.title_none": "هنوز عنوانی برای این گفت‌وگو تنظیم نشده است. با `/title <متن>` یکی بذار.",
   "cmd_session.title_too_long": "عنوان حداکثر ۱۲۰ نویسه می‌تواند باشد.",
   "cmd_session.title_set": "✅ عنوان گفت‌وگو تنظیم شد: {title}",
 
-  "cmd_session.branch_usage": "نام شاخه را مشخص کنید. مثال: /branch ایده‌ها",
+  "cmd_session.branch_usage": "نام شاخه رو مشخص کن. مثال: /branch ایده‌ها",
   "cmd_session.branch_bad_name": "نام شاخه نامعتبر است؛ فقط حروف، عدد، خط تیره و زیرخط، حداکثر ۴۰ نویسه.",
   "cmd_session.branch_empty": "این گفت‌وگو هنوز پیامی ندارد؛ چیزی برای شاخه‌سازی نیست.",
-  "cmd_session.branch_done": "🌿 شاخه ساخته شد: `{id}`\n{n} پیام کپی شد. با /sessions می‌توانید آن را ببینید.\n(خلاصهٔ چرخشی کپی نشد — در صورت نیاز با /compress در شاخهٔ جدید بسازید.)",
+  "cmd_session.branch_done": "🌿 شاخه ساخته شد: `{id}`\n{n} پیام کپی شد. با /sessions می‌تونی ببینیش.\n(خلاصهٔ چرخشی کپی نشد — در صورت نیاز با /compress در شاخهٔ جدید بساز.)",
 
-  "cmd_session.resume_usage": "نام یا شناسهٔ نشست را مشخص کنید. فهرست نشست‌ها: /sessions",
-  "cmd_session.resume_not_found": "نشستی با این نام یا شناسه پیدا نشد. /sessions را ببینید.",
+  "cmd_session.resume_usage": "نام یا شناسهٔ نشست رو مشخص کن. فهرست نشست‌ها: /sessions",
+  "cmd_session.resume_not_found": "نشستی با این اسم یا شناسه پیدا نشد؛ /sessions رو ببین.",
   "cmd_session.resume_title": "📂 نشست «{name}» — آخرین {n} پیام:",
   "cmd_session.resume_empty": "(این نشست پیامی ندارد.)",
-  "cmd_session.resume_limitation":
-    "⚠️ توجه: هندلر پیام فعلاً این نشست را به‌عنوان «فعال» نمی‌شناسد؛ پیام‌های بعدی شما همچنان در همین چت ادامه می‌یابد. انتخاب شما ذخیره شد و با سیم‌کشی هندلر (کار coordinator) فعال می‌شود.",
+  "cmd_session.resume_active":
+    "✅ «{name}» به‌عنوان نشست فعال انتخاب شد؛ پیام‌های بعدی‌ات در همین نشست ادامه پیدا می‌کند.",
 
   "cmd_session.sessions_empty": "نشست دیگری ثبت نشده است.",
-  "cmd_session.sessions_title": "💬 نشست‌های شما:",
+  "cmd_session.sessions_title": "💬 نشست‌هات:",
   "cmd_session.sessions_item": "• {title} — {n} پیام — {date}{current}",
   "cmd_session.sessions_current_mark": " (فعلی)",
   "cmd_session.sessions_more": "…و {n} نشست دیگر",
 
   "cmd_session.status_title": "📊 وضعیت نشست",
-  "cmd_session.status_session": "🆔 نشست: {id}",
-  "cmd_session.status_title_line": "🏷 عنوان: {title}",
+  "cmd_session.status_session": "نشست: {id}",
+  "cmd_session.status_title_line": "عنوان: {title}",
   "cmd_session.status_title_none": "—",
-  "cmd_session.status_model": "🤖 مدل: {model}",
+  "cmd_session.status_model": "مدل: {model}",
   "cmd_session.status_model_unknown": "نامشخص",
-  "cmd_session.status_messages": "📩 پیام‌های ذخیره‌شده: {n}",
-  "cmd_session.status_running_yes": "⚙️ در حال اجرا: بله",
-  "cmd_session.status_running_no": "⚙️ در حال اجرا: خیر",
-  "cmd_session.status_tokens": "🔢 توکن امروز: ورودی {in} / خروجی {out}",
-  "cmd_session.status_requests": "📨 درخواست امروز: {n}",
+  "cmd_session.status_messages": "پیام‌های ذخیره‌شده: {n}",
+  "cmd_session.status_running_yes": "در حال اجرا: بله",
+  "cmd_session.status_running_no": "در حال اجرا: خیر",
+  "cmd_session.status_tokens": "توکن امروز: ورودی {in} / خروجی {out}",
+  "cmd_session.status_requests": "درخواست امروز: {n}",
 
   "cmd_session.context_title": "🧠 وضعیت حافظهٔ زمینه",
-  "cmd_session.context_messages": "📩 پیام‌ها: {n}",
-  "cmd_session.context_tokens": "🔢 تخمین توکن‌ها (تقریبی): ~{n}",
-  "cmd_session.context_window": "🪟 پنجرهٔ موتور: {n} پیام آخر",
-  "cmd_session.context_summary_yes": "🗜 خلاصه‌سازی: فعال — تا پیام #{id}",
-  "cmd_session.context_summary_no": "🗜 خلاصه‌سازی: هنوز خلاصه‌ای ساخته نشده",
+  "cmd_session.context_messages": "پیام‌ها: {n}",
+  "cmd_session.context_tokens": "تخمین توکن‌ها (تقریبی): ~{n}",
+  "cmd_session.context_window": "پنجرهٔ موتور: {n} پیام آخر",
+  "cmd_session.context_summary_yes": "خلاصه‌سازی: فعال — تا پیام #{id}",
+  "cmd_session.context_summary_no": "خلاصه‌سازی: هنوز خلاصه‌ای ساخته نشده",
   "cmd_session.context_note": "تخمین توکن = تعداد نویسه‌ها ÷ ۴؛ تقریبی است.",
 
   "cmd_session.busy_current": "⏳ رفتار هنگام مشغولی: {mode}",
@@ -92,11 +92,10 @@ const FA: Record<string, string> = {
   "cmd_session.busy_bad_arg": "گزینه نامعتبر. یکی از: queue ،interrupt ،ignore — مثال: /busy queue",
   "cmd_session.busy_note": "(این ترجیح فعلاً اعلامی است؛ موتور هنوز آن را اعمال نمی‌کند.)",
 
-  "cmd_session.whoami_owner": "👑 شما مالک ربات هستید.",
-  "cmd_session.whoami_user": "👤 شما کاربر تأییدشده هستید.",
-  "cmd_session.whoami_groups_user":
-    "دستورهای نشست: /history ،/save ،/retry ،/undo ،/title ،/branch ،/resume ،/sessions ،/status ،/context ،/new\nترجیح‌ها: /busy ،/footer ،/voice ،/personality ،/lang\nعمومی: /start ،/help ،/stop ،/compress",
-  "cmd_session.whoami_groups_owner": "دستورهای مالک: /admin ،/ai (به‌علاوهٔ همهٔ دستورهای کاربران)",
+  "cmd_session.whoami_owner": "👑 تو مالک رباتی.",
+  "cmd_session.whoami_user": "👤 تو کاربر تأییدشده‌ای.",
+  "cmd_session.whoami_groups_user": "دستورها: {commands}",
+  "cmd_session.whoami_groups_owner": "دستورهای مالک: {commands}",
 
   "cmd_session.footer_current_on": "📝 پانویس فنی پاسخ‌ها: روشن",
   "cmd_session.footer_current_off": "📝 پانویس فنی پاسخ‌ها: خاموش",
@@ -107,6 +106,9 @@ const FA: Record<string, string> = {
 
   "cmd_session.version": "🤖 بابی نسخهٔ {version}",
 
+  "cmd_session.new_confirm":
+    "⚠️ «نشست تازه» یعنی خداحافظی با {n} پیام{summary} — برگشتی در کار نیست.\n\nاگه مطمئنی: /new --confirm",
+  "cmd_session.new_confirm_summary": " و خلاصهٔ چرخشی",
   "cmd_session.new_done": "🆕 نشست تازه شروع شد؛ تاریخچهٔ همین گفت‌وگو پاک شد.",
 };
 
@@ -151,8 +153,8 @@ const EN: Record<string, string> = {
   "cmd_session.resume_not_found": "No session with that name or id. See /sessions.",
   "cmd_session.resume_title": "📂 Session “{name}” — last {n} messages:",
   "cmd_session.resume_empty": "(This session has no messages.)",
-  "cmd_session.resume_limitation":
-    "⚠️ Note: the message handler does not honor the active session yet; your next messages still continue this chat's thread. Your choice was stored and takes effect once the handler is wired (coordinator work).",
+  "cmd_session.resume_active":
+    "✅ “{name}” is now the active session; your next messages continue there.",
 
   "cmd_session.sessions_empty": "No other sessions recorded.",
   "cmd_session.sessions_title": "💬 Your sessions:",
@@ -161,23 +163,23 @@ const EN: Record<string, string> = {
   "cmd_session.sessions_more": "…and {n} more sessions",
 
   "cmd_session.status_title": "📊 Session status",
-  "cmd_session.status_session": "🆔 Session: {id}",
-  "cmd_session.status_title_line": "🏷 Title: {title}",
+  "cmd_session.status_session": "Session: {id}",
+  "cmd_session.status_title_line": "Title: {title}",
   "cmd_session.status_title_none": "—",
-  "cmd_session.status_model": "🤖 Model: {model}",
+  "cmd_session.status_model": "Model: {model}",
   "cmd_session.status_model_unknown": "unknown",
-  "cmd_session.status_messages": "📩 Stored messages: {n}",
-  "cmd_session.status_running_yes": "⚙️ Running: yes",
-  "cmd_session.status_running_no": "⚙️ Running: no",
-  "cmd_session.status_tokens": "🔢 Tokens today: {in} in / {out} out",
-  "cmd_session.status_requests": "📨 Requests today: {n}",
+  "cmd_session.status_messages": "Stored messages: {n}",
+  "cmd_session.status_running_yes": "Running: yes",
+  "cmd_session.status_running_no": "Running: no",
+  "cmd_session.status_tokens": "Tokens today: {in} in / {out} out",
+  "cmd_session.status_requests": "Requests today: {n}",
 
   "cmd_session.context_title": "🧠 Context window status",
-  "cmd_session.context_messages": "📩 Messages: {n}",
-  "cmd_session.context_tokens": "🔢 Token estimate (rough): ~{n}",
-  "cmd_session.context_window": "🪟 Engine window: last {n} messages",
-  "cmd_session.context_summary_yes": "🗜 Summarisation: active — up to message #{id}",
-  "cmd_session.context_summary_no": "🗜 Summarisation: no summary built yet",
+  "cmd_session.context_messages": "Messages: {n}",
+  "cmd_session.context_tokens": "Token estimate (rough): ~{n}",
+  "cmd_session.context_window": "Engine window: last {n} messages",
+  "cmd_session.context_summary_yes": "Summarisation: active — up to message #{id}",
+  "cmd_session.context_summary_no": "Summarisation: no summary built yet",
   "cmd_session.context_note": "Token estimate = character count ÷ 4; rough.",
 
   "cmd_session.busy_current": "⏳ Busy behavior: {mode}",
@@ -190,9 +192,8 @@ const EN: Record<string, string> = {
 
   "cmd_session.whoami_owner": "👑 You are the bot owner.",
   "cmd_session.whoami_user": "👤 You are an approved user.",
-  "cmd_session.whoami_groups_user":
-    "Session commands: /history, /save, /retry, /undo, /title, /branch, /resume, /sessions, /status, /context, /new\nPreferences: /busy, /footer, /voice, /personality, /lang\nGeneral: /start, /help, /stop, /compress",
-  "cmd_session.whoami_groups_owner": "Owner commands: /admin, /ai (plus all user commands)",
+  "cmd_session.whoami_groups_user": "Commands: {commands}",
+  "cmd_session.whoami_groups_owner": "Owner commands: {commands}",
 
   "cmd_session.footer_current_on": "📝 Technical reply footer: on",
   "cmd_session.footer_current_off": "📝 Technical reply footer: off",
@@ -203,6 +204,9 @@ const EN: Record<string, string> = {
 
   "cmd_session.version": "🤖 BOBI version {version}",
 
+  "cmd_session.new_confirm":
+    "⚠️ A fresh session wipes {n} messages{summary} — no way back.\n\nIf you're sure: /new --confirm",
+  "cmd_session.new_confirm_summary": " and the rolling summary",
   "cmd_session.new_done": "🆕 Fresh session started; this conversation's history was cleared.",
 };
 

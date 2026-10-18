@@ -118,11 +118,18 @@ describe("ToolService", () => {
 // ---------- menu ↔ registry wiring ----------
 
 describe("menu wiring", () => {
-  test("the main menu still has three buttons, tools included", () => {
+  test("the main menu has six section buttons in three rows", () => {
     const kb = buildMainMenu();
-    expect(kb.inline_keyboard[0]!.length).toBe(3);
-    const labels = kb.inline_keyboard[0]!.map((b) => b.text);
-    expect(labels).toEqual(["گفت‌وگو", "ابزارها", "درباره بابی"]);
+    expect(kb.inline_keyboard.length).toBe(3);
+    const labels = kb.inline_keyboard.flat().map((b) => b.text);
+    expect(labels).toEqual([
+      "💬 گفت‌وگو",
+      "🛠 ابزارها",
+      "⌨️ فرمان‌ها",
+      "⚙️ تنظیمات",
+      "ℹ️ دربارهٔ بابی",
+      "❓ راهنما",
+    ]);
   });
 
   test("the tools entry renders one line per active tool", () => {

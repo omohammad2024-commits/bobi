@@ -16,7 +16,7 @@ const fa: Record<string, string> = {
   "cmd_auto.owner_only": "این دستور فقط برای مالک است.",
   "cmd_auto.need_tools": "سرویس ابزارها در دسترس نیست؛ این دستور فعلاً کار نمی‌کند.",
   "cmd_auto.tool_failed": "اجرای ابزار ناموفق بود.",
-  "cmd_auto.engine_failed": "اجرای گفتگو ناموفق بود؛ بعداً تلاش کن.",
+  "cmd_auto.engine_failed": "اجرای گفت‌وگو ناموفق بود؛ بعداً تلاش کن.",
   "cmd_auto.empty_prompt": "متن دستور خالی است.",
   "cmd_auto.bad_args": "آرگومان نامعتبر است. راهنما: {hint}",
 
@@ -36,21 +36,24 @@ const fa: Record<string, string> = {
   "cmd_auto.bg.failed_note": "کار پس‌زمینهٔ {id} ناموفق بود: {error}",
   "cmd_auto.bg.help": "استفاده: /bg <دستور> | /bg list | /bg cancel <id>",
 
-  "cmd_auto.btw.thread_kept": "این پرسش در یک گفتگوی جداگانه پاسخ داده شد (شناسه: {id}) و همان‌جا نگه داشته شد؛ رشتهٔ اصلی دست‌نخورده ماند.",
+  "cmd_auto.btw.thread_kept": "پرسش‌ت توی یه گفت‌وگوی جدا (شناسه: {id}) جواب داده شد و همون‌جا مونده؛ گفت‌وگوی اصلی دست‌نخورده‌ست.",
 
   "cmd_auto.queue.added": "به صف اضافه شد (مورد {n}).",
   "cmd_auto.queue.full": "صف پر است (حداکثر {max} مورد).",
   "cmd_auto.queue.empty": "صف خالی است.",
   "cmd_auto.queue.item": "{n}. {text}",
   "cmd_auto.queue.cleared": "صف پاک شد ({n} مورد حذف شد).",
+  "cmd_auto.queue.clear_confirm":
+    "⚠️ {n} مورد از صف پاک می‌شود:\n{preview}\nبرگشت‌پذیر نیست.\n\nاگه مطمئنی: /queue clear --confirm",
+  "cmd_auto.queue.clear_more": "…و {n} مورد دیگر",
   "cmd_auto.queue.note":
-    "یادداشت: تخلیهٔ خودکار صف به پیام بعدی نیازمند اتصال به موتور گفتگوست (در دست پیگیری)؛ فعلاً موارد را دستی کپی کن.",
-  "cmd_auto.queue.help": "استفاده: /queue <متن> | /queue list | /queue clear",
+    "یادداشت: تخلیهٔ خودکار صف هنوز وصل نیست؛ فعلاً موارد رو دستی کپی کن.",
+  "cmd_auto.queue.help": "استفاده: /queue <متن> | /queue list | /queue clear [--confirm]",
 
-  "cmd_auto.steer.pending": "راهنمایی ثبت شد و با پیام بعدی شما اعمال می‌شود.",
-  "cmd_auto.steer.applied": "در حال اجرای فوری با راهنمایی شما…",
+  "cmd_auto.steer.pending": "راهنمایی ثبت شد؛ با پیام بعدی‌ت اعمال می‌شه.",
+  "cmd_auto.steer.applied": "در حال اجرای فوری با راهنمایی‌ت…",
   "cmd_auto.steer.note":
-    "یادداشت: تزریق خودکار به پیام بعدی نیازمند اتصال به موتور گفتگوست (در دست پیگیری).",
+    "یادداشت: تزریق خودکار به پیام بعدی هنوز وصل نیست.",
   "cmd_auto.steer.help": "استفاده: /steer <راهنمایی>",
 
   "cmd_auto.agents.title": "ایجنت‌های فعال:",
@@ -64,14 +67,22 @@ const fa: Record<string, string> = {
   "cmd_auto.goal.show_empty": "هدفی ثبت نشده است.",
   "cmd_auto.goal.item": "#{id} [{status}] {title}",
   "cmd_auto.goal.cleared": "{n} هدف فعال کامل شد.",
-  "cmd_auto.goal.help": "استفاده: /goal set <متن> | /goal show | /goal clear",
+  "cmd_auto.goal.clear_confirm":
+    "⚠️ این {n} هدف «کامل‌شده» می‌شود و از فهرست فعال خارج می‌گردد:\n{preview}\n\nاگه مطمئنی: /goal clear --confirm",
+  "cmd_auto.goal.clear_more": "…و {n} هدف دیگر",
+  "cmd_auto.goal.help": "استفاده: /goal set <متن> | /goal show | /goal clear [--confirm]",
 
   "cmd_auto.subgoal.added": "زیرهدف ثبت شد: {title} (شناسه: {id})",
   "cmd_auto.subgoal.parent_missing": "هدف والدی با شناسهٔ {id} پیدا نشد.",
   "cmd_auto.subgoal.list_empty": "زیرهدفی پیدا نشد.",
   "cmd_auto.subgoal.item": "#{id} [{status}] {title}",
   "cmd_auto.subgoal.cleared": "{n} زیرهدف کامل شد.",
-  "cmd_auto.subgoal.help": "استفاده: /subgoal add <شناسهٔ والد> <متن> | /subgoal list [شناسهٔ والد] | /subgoal clear <شناسهٔ والد>",
+  "cmd_auto.subgoal.clear_confirm":
+    "⚠️ {n} زیرهدف «کامل‌شده» می‌شود ({scope}):\n{preview}\n\nاگه مطمئنی: {cmd}",
+  "cmd_auto.subgoal.clear_more": "…و {n} زیرهدف دیگر",
+  "cmd_auto.subgoal.clear_scope_parent": "هدف «{title}»",
+  "cmd_auto.subgoal.clear_scope_all": "همهٔ اهداف — دقت کن!",
+  "cmd_auto.subgoal.help": "استفاده: /subgoal add <شناسهٔ والد> <متن> | /subgoal list [شناسهٔ والد] | /subgoal clear <شناسهٔ والد> [--confirm]",
 
   "cmd_auto.hb.status_on": "ضربان (heartbeat) فعال است؛ فاصله: {interval}.",
   "cmd_auto.hb.status_off": "ضربان (heartbeat) غیرفعال است.",
@@ -105,7 +116,7 @@ const fa: Record<string, string> = {
   "cmd_auto.bp.bad_args": "آرگومان قالب نامعتبر است. راهنما: {hint}",
   "cmd_auto.bp.help": "استفاده: /blueprint list | /blueprint run <نام> [آرگومان‌ها]",
 
-  "cmd_auto.refine.working": "در حال بازبینی گفتگو و استخراج درس‌ها…",
+  "cmd_auto.refine.working": "در حال بازبینی گفت‌وگو و استخراج درس‌ها…",
   "cmd_auto.refine.no_history": "تاریخچه‌ای برای بازبینی پیدا نشد.",
 
   "cmd_auto.review.failed": "بازبینی ناموفق بود: {error}",
@@ -126,7 +137,7 @@ const fa: Record<string, string> = {
   "cmd_auto.bundles.title": "بسته‌های پیشنهادی مهارت:",
   "cmd_auto.bundles.item": "• {name}: {tools}\n  {desc}",
   "cmd_auto.bundles.unknown": "بستهٔ «{name}» پیدا نشد. بسته‌ها: {names}",
-  "cmd_auto.bundles.used": "بستهٔ «{name}» به‌عنوان جعبه‌ابزار فعال شما ذخیره شد (توصیه‌ای؛ فیلتر ابزارها هنوز آن را اعمال نمی‌کند).",
+  "cmd_auto.bundles.used": "بستهٔ «{name}» به‌عنوان جعبه‌ابزار فعالت ذخیره شد. (فعلاً اعلامیه؛ موتور هنوز اعمالش نمی‌کنه.)",
   "cmd_auto.bundles.no_prefs": "ذخیرهٔ ترجیحات در دسترس نیست.",
   "cmd_auto.bundles.help": "استفاده: /bundles list | /bundles use <نام>",
 };
@@ -162,14 +173,17 @@ const en: Record<string, string> = {
   "cmd_auto.queue.empty": "Queue is empty.",
   "cmd_auto.queue.item": "{n}. {text}",
   "cmd_auto.queue.cleared": "Queue cleared ({n} items removed).",
+  "cmd_auto.queue.clear_confirm":
+    "⚠️ {n} queued items will be removed:\n{preview}\nThis cannot be undone.\n\nIf you're sure: /queue clear --confirm",
+  "cmd_auto.queue.clear_more": "…and {n} more",
   "cmd_auto.queue.note":
-    "Note: auto-draining into your next message needs an engine hook (being followed up); for now copy items manually.",
-  "cmd_auto.queue.help": "Usage: /queue <text> | /queue list | /queue clear",
+    "Note: auto-drain isn't wired yet; for now copy the items manually.",
+  "cmd_auto.queue.help": "Usage: /queue <text> | /queue list | /queue clear [--confirm]",
 
   "cmd_auto.steer.pending": "Guidance saved; it will apply to your next message.",
   "cmd_auto.steer.applied": "Running immediately with your guidance…",
   "cmd_auto.steer.note":
-    "Note: auto-injection into the next message needs an engine hook (being followed up).",
+    "Note: auto-injection into the next message isn't wired yet.",
   "cmd_auto.steer.help": "Usage: /steer <guidance>",
 
   "cmd_auto.agents.title": "Active agents:",
@@ -183,14 +197,22 @@ const en: Record<string, string> = {
   "cmd_auto.goal.show_empty": "No goals saved.",
   "cmd_auto.goal.item": "#{id} [{status}] {title}",
   "cmd_auto.goal.cleared": "{n} active goals completed.",
-  "cmd_auto.goal.help": "Usage: /goal set <text> | /goal show | /goal clear",
+  "cmd_auto.goal.clear_confirm":
+    "⚠️ These {n} goals will be marked completed and leave the active list:\n{preview}\n\nIf you're sure: /goal clear --confirm",
+  "cmd_auto.goal.clear_more": "…and {n} more goals",
+  "cmd_auto.goal.help": "Usage: /goal set <text> | /goal show | /goal clear [--confirm]",
 
   "cmd_auto.subgoal.added": "Subgoal saved: {title} (ID: {id})",
   "cmd_auto.subgoal.parent_missing": "No parent goal with ID {id}.",
   "cmd_auto.subgoal.list_empty": "No subgoals found.",
   "cmd_auto.subgoal.item": "#{id} [{status}] {title}",
   "cmd_auto.subgoal.cleared": "{n} subgoals completed.",
-  "cmd_auto.subgoal.help": "Usage: /subgoal add <parent-id> <text> | /subgoal list [parent-id] | /subgoal clear <parent-id>",
+  "cmd_auto.subgoal.clear_confirm":
+    "⚠️ {n} subgoals will be marked completed ({scope}):\n{preview}\n\nIf you're sure: {cmd}",
+  "cmd_auto.subgoal.clear_more": "…and {n} more subgoals",
+  "cmd_auto.subgoal.clear_scope_parent": "goal “{title}”",
+  "cmd_auto.subgoal.clear_scope_all": "ALL goals — careful!",
+  "cmd_auto.subgoal.help": "Usage: /subgoal add <parent-id> <text> | /subgoal list [parent-id] | /subgoal clear <parent-id> [--confirm]",
 
   "cmd_auto.hb.status_on": "Heartbeat is enabled; interval: {interval}.",
   "cmd_auto.hb.status_off": "Heartbeat is disabled.",
@@ -245,7 +267,7 @@ const en: Record<string, string> = {
   "cmd_auto.bundles.title": "Suggested skill bundles:",
   "cmd_auto.bundles.item": "• {name}: {tools}\n  {desc}",
   "cmd_auto.bundles.unknown": "Unknown bundle “{name}”. Bundles: {names}",
-  "cmd_auto.bundles.used": "Bundle “{name}” saved as your active toolkit (advisory; the tool filter does not honor it yet).",
+  "cmd_auto.bundles.used": "Bundle “{name}” saved as your active toolkit. (Advisory for now; the engine doesn't honor it yet.)",
   "cmd_auto.bundles.no_prefs": "Preference storage is unavailable.",
   "cmd_auto.bundles.help": "Usage: /bundles list | /bundles use <name>",
 };

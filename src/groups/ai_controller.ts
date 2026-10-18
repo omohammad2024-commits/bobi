@@ -11,6 +11,10 @@
  *    set/unset and only the store can decrypt.
  *  - Free-text input (labels, base URLs, keys, model ids) is validated here and
  *    reaches SQL only as a parameter.
+ *
+ * Panel button clicks edit the panel message in place (editMessageText) instead
+ * of stacking a new message per click. Free-text replies still arrive as new
+ * messages and are answered with new messages.
  */
 import { Context, InlineKeyboard } from "grammy";
 import type { AdminBoundary } from "../auth/admin_boundary";
@@ -25,8 +29,10 @@ import { ADAPTER_TEMPLATES, providerPreset } from "../ai/adapter";
 import { setupFromPreset, parseSetupReply, setupPrompt } from "../ai/setup";
 import { isAdapterType } from "../ai/adapter";
 import type { Storage } from "../storage/storage";
+import { resolveLang } from "../i18n";
 import { decode, encode, type PanelAction } from "./callbacks";
 import { PANEL_DENIED, PANEL_STALE, backKeyboard } from "./panel";
+import { formatNum, tr, type PanelLang } from "./panel_strings";
 import {
   adapterKeyboard,
   addFormText,
@@ -34,8 +40,15 @@ import {
   aiMenuText,
   attemptsKeyboard,
   attemptsText,
+  confirmClearKeyKeyboard,
+  confirmClearKeyText,
+  confirmDeleteModelKeyboard,
+  confirmDeleteModelText,
+  confirmDeleteProviderKeyboard,
+  confirmDeleteProviderText,
   failoverKeyboard,
   failoverText,
+  formCancelKeyboard,
   localTargetConfirmText,
   localTargetKeyboard,
   modelPickerKeyboard,
@@ -48,12 +61,15 @@ import {
   providersText,
   selectMenuText,
   statusText,
+  statusKeyboard,
   timeoutKeyboard,
   timeoutText,
 } from "./ai_panel";
 import type { SearchSettingsService } from "../search/service";
 import {
   backToSearchKeyboard,
+  searchClearKeyConfirmKeyboard,
+  searchClearKeyConfirmText,
   searchKeyClearedText,
   searchKeyFormText,
   searchKeySavedText,
@@ -68,7 +84,13 @@ const PERM_MANAGE: Permission = "settings.manage";
 
 /** A pending free-text submission, keyed by the owner's Telegram id. */
 interface PendingInput {
-  kind: "add_provider" | "edit_provider" | "search_key" | "setup_preset" | "add_pool_key";
+  kind:
+    | "add_provider"
+    | "edit_provider"
+    | "search_key"
+    | "setup_preset"
+    | "add_pool_key"
+    | "add_model";
   providerId?: number;
   /** When set, the add flow preselects this adapter. */
   adapter?: string;
@@ -87,6 +109,11 @@ export interface AiAdminOptions {
   adapters: AdapterRegistry;
   /** Web-search settings; absent means the search section is not offered. */
   search?: SearchSettingsService;
+  /**
+   * Owner language preference reader. Defaults to the storage-backed
+   * `user_prefs` reader, so panels follow the owner's /lang choice.
+   */
+  prefs?: (userId: string, key: string) => string | undefined;
 }
 
 export class AiAdminController {
@@ -99,6 +126,7 @@ export class AiAdminController {
   private readonly secrets: ProviderSecretStore;
   private readonly adapters: AdapterRegistry;
   private readonly search: SearchSettingsService | undefined;
+  private readonly prefs: (userId: string, key: string) => string | undefined;
 
   /** Per-owner state for the free-text add/replace flows. Never in a callback. */
   private readonly pending = new Map<number, PendingInput>();
@@ -113,6 +141,7 @@ export class AiAdminController {
     this.secrets = opts.secrets;
     this.adapters = opts.adapters;
     this.search = opts.search;
+    this.prefs = opts.prefs ?? ((u, k) => this.storage.getUserPref(u, k));
   }
 
   /** Actor from a trusted context; undefined when identity is absent. */
@@ -122,15 +151,24 @@ export class AiAdminController {
     return this.auth.actorFromTelegramUser(from);
   }
 
-  /** The search settings view, or a placeholder when search is not wired. */
-  private searchView(): { text: string; keyboard: unknown } {
-    if (!this.search) {
-      return { text: "بخش جستجو در دسترس نیست.", keyboard: backKeyboard() };
-    }
-    const v = this.search.view();
-    return { text: searchMenuText(v), keyboard: searchMenuKeyboard(v.provider, v.hasKey) };
+  /** The owner's panel language: Persian unless they chose English. */
+  private langFor(ctx: Context): PanelLang {
+    const id = ctx.from?.id;
+    if (id === undefined) return "fa";
+    return resolveLang(String(id), this.prefs);
   }
 
+  /** The search settings view, or a placeholder when search is not wired. */
+  private searchView(lang: PanelLang): { text: string; keyboard: unknown } {
+    if (!this.search) {
+      return { text: tr(lang, "panel.search.unavailable"), keyboard: backKeyboard(lang) };
+    }
+    const v = this.search.view();
+    return {
+      text: searchMenuText(v, lang),
+      keyboard: searchMenuKeyboard(v.provider, v.hasKey, lang),
+    };
+  }
 
   /** True when data belonged to the AI panel and was handled. */
   async handleCallback(ctx: Context, data: string): Promise<boolean> {
@@ -145,9 +183,10 @@ export class AiAdminController {
   /** `/ai` — open the AI section for the owner only. */
   async open(ctx: Context): Promise<void> {
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
     const r = await this.admin.runAdmin(
       { actor, operation: "ai.menu", permission: PERM_VIEW },
-      () => ({ text: aiMenuText(), keyboard: aiMenuKeyboard() }),
+      () => ({ text: aiMenuText(lang), keyboard: aiMenuKeyboard(lang) }),
     );
     if (!r.ok) return void (await this.deny(ctx));
     await this.render(ctx, r.data.text, r.data.keyboard);
@@ -155,18 +194,33 @@ export class AiAdminController {
 
   private async dispatch(ctx: Context, action: AiPanelAction): Promise<void> {
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
 
     switch (action.kind) {
       case "ai_menu":
         await this.open(ctx);
         return;
 
+      // ---- free-text form cancel ----
+      case "ai_form_cancel": {
+        const ownerId = ctx.from?.id;
+        const flow = ownerId !== undefined ? this.pending.get(ownerId) : undefined;
+        if (ownerId !== undefined) this.pending.delete(ownerId);
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.form.cancel", permission: PERM_VIEW },
+          () => this.cancelView(flow, lang),
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
       // ---- web-search settings ----
       case "search_menu": {
         if (!this.search) return void (await this.deny(ctx));
         const r = await this.admin.runAdmin(
           { actor, operation: "search.menu", permission: PERM_VIEW },
-          () => this.searchView(),
+          () => this.searchView(lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -181,10 +235,10 @@ export class AiAdminController {
           () => search.select(action.provider),
         );
         if (!r.ok) return void (await this.deny(ctx));
-        const v = this.searchView();
+        const v = this.searchView(lang);
         await this.render(
           ctx,
-          r.data.ok ? v.text : "انتخاب سرویس ناموفق بود.",
+          r.data.ok ? v.text : tr(lang, "panel.search.pick_fail"),
           v.keyboard,
         );
         return;
@@ -196,28 +250,49 @@ export class AiAdminController {
           { actor, operation: "search.set_key_form", permission: PERM_MANAGE },
           () => {
             if (!this.search!.selectedNeedsKey()) {
-              return { text: searchNoKeyNeededText(this.search!.label()), ok: false as const };
+              return {
+                text: searchNoKeyNeededText(this.search!.label(), lang),
+                ok: false as const,
+              };
             }
             this.setPending(ctx, { kind: "search_key" });
-            return { text: searchKeyFormText(), ok: true as const };
+            return { text: searchKeyFormText(lang), ok: true as const };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
-        await this.render(ctx, r.data.text, backToSearchKeyboard());
+        await this.render(
+          ctx,
+          r.data.text,
+          r.data.ok ? formCancelKeyboard(lang) : backToSearchKeyboard(lang),
+        );
         return;
       }
 
       case "search_clear_key": {
         if (!this.search) return void (await this.deny(ctx));
         const r = await this.admin.runAdmin(
+          { actor, operation: "search.clear_key.confirm", permission: PERM_MANAGE },
+          () => ({
+            text: searchClearKeyConfirmText(this.search!.label(), lang),
+            keyboard: searchClearKeyConfirmKeyboard(lang),
+          }),
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "search_clear_key_confirm": {
+        if (!this.search) return void (await this.deny(ctx));
+        const r = await this.admin.runAdmin(
           { actor, operation: "search.clear_key", permission: PERM_MANAGE },
           () => ({ cleared: this.search!.clearKey(), label: this.search!.label() }),
         );
         if (!r.ok) return void (await this.deny(ctx));
-        const v = this.searchView();
+        const v = this.searchView(lang);
         await this.render(
           ctx,
-          `${searchKeyClearedText(r.data.label)}\n\n${v.text}`,
+          `${searchKeyClearedText(r.data.label, lang)}\n\n${v.text}`,
           v.keyboard,
         );
         return;
@@ -227,10 +302,25 @@ export class AiAdminController {
       case "ai_status": {
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.status", permission: PERM_VIEW },
-          () => ({ text: this.buildStatusText(), keyboard: backKeyboard() }),
+          () => ({ text: this.buildStatusText(lang), keyboard: statusKeyboard(lang) }),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "ai_probe_all": {
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.probe_all", permission: PERM_MANAGE },
+          () => "authorized",
+        );
+        if (!r.ok) {
+          await this.deny(ctx);
+          return;
+        }
+        await this.render(ctx, tr(lang, "panel.aistatus.probing"), backKeyboard(lang));
+        const results = await this.runAuthorizedProbeAll(ctx, lang);
+        await this.render(ctx, results, statusKeyboard(lang));
         return;
       }
 
@@ -238,7 +328,7 @@ export class AiAdminController {
       case "fo_menu": {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.menu", permission: PERM_VIEW },
-          () => this.failoverView(),
+          () => this.failoverView(lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -257,18 +347,23 @@ export class AiAdminController {
               if (this.storage.listFailoverCandidates().length === 0) {
                 return {
                   ok: false as const,
-                  message: "اول یک جایگزین اضافه کنید، سپس جایگزین مطالبه‌ای را فعال کنید.",
+                  message: tr(lang, "panel.fo.need_candidate"),
                 };
               }
             }
             this.storage.setFailoverSettings({ enabled: next });
-            return { ok: true as const, message: next ? "جایگزین مطالبه‌ای فعال شد." : "جایگزین مطالبه‌ای غیرفعال شد." };
+            return {
+              ok: true as const,
+              message: next
+                ? tr(lang, "panel.fo.enabled")
+                : tr(lang, "panel.fo.disabled"),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         const view = this.admin.runAdminSync(
           { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
-          () => this.failoverView(),
+          () => this.failoverView(lang),
         );
         if (!view.ok) return void (await this.deny(ctx));
         await this.render(ctx, `${r.data.message}\n\n${view.data.text}`, view.data.keyboard);
@@ -280,7 +375,10 @@ export class AiAdminController {
           { actor, operation: "fo.attempts.view", permission: PERM_VIEW },
           () => {
             const s = this.storage.getFailoverSettings();
-            return { text: attemptsText(s.maxAttempts), keyboard: attemptsKeyboard(s.maxAttempts) };
+            return {
+              text: attemptsText(s.maxAttempts, lang),
+              keyboard: attemptsKeyboard(s.maxAttempts, lang),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -296,11 +394,17 @@ export class AiAdminController {
             // The codec already bounds 1..4; storage clamps again.
             this.storage.setFailoverSettings({ maxAttempts: value });
             const s = this.storage.getFailoverSettings();
-            return { text: `حداکثر تلاش ${s.maxAttempts} شد.`, keyboard: backKeyboard() };
+            return tr(lang, "panel.fo.attempts_set", { n: formatNum(s.maxAttempts, lang) });
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
-        await this.render(ctx, r.data.text, r.data.keyboard);
+        // Back to the screen the picker was opened from: the failover menu.
+        const view = this.admin.runAdminSync(
+          { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
+          () => this.failoverView(lang),
+        );
+        if (!view.ok) return void (await this.deny(ctx));
+        await this.render(ctx, `${r.data}\n\n${view.data.text}`, view.data.keyboard);
         return;
       }
 
@@ -309,7 +413,10 @@ export class AiAdminController {
           { actor, operation: "fo.timeout.view", permission: PERM_VIEW },
           () => {
             const s = this.storage.getFailoverSettings();
-            return { text: timeoutText(s.timeoutMs), keyboard: timeoutKeyboard(s.timeoutMs) };
+            return {
+              text: timeoutText(s.timeoutMs, lang),
+              keyboard: timeoutKeyboard(s.timeoutMs, lang),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -324,11 +431,17 @@ export class AiAdminController {
           () => {
             this.storage.setFailoverSettings({ timeoutMs: value });
             const s = this.storage.getFailoverSettings();
-            return { text: `زمان هر تلاش ${s.timeoutMs} میلی‌ثانیه شد.`, keyboard: backKeyboard() };
+            return tr(lang, "panel.fo.timeout_set", { n: formatNum(s.timeoutMs, lang) });
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
-        await this.render(ctx, r.data.text, r.data.keyboard);
+        // Back to the screen the picker was opened from: the failover menu.
+        const view = this.admin.runAdminSync(
+          { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
+          () => this.failoverView(lang),
+        );
+        if (!view.ok) return void (await this.deny(ctx));
+        await this.render(ctx, `${r.data}\n\n${view.data.text}`, view.data.keyboard);
         return;
       }
 
@@ -340,9 +453,12 @@ export class AiAdminController {
             // candidate that silently never runs.
             const pickable = this.providers.listViews().filter((p) => p.enabled);
             if (pickable.length === 0) {
-              return { text: "پروایدر فعالی برای افزودن وجود ندارد.", keyboard: backKeyboard() };
+              return { text: tr(lang, "panel.fo.no_provider"), keyboard: backKeyboard(lang) };
             }
-            return { text: "پروایدر جایگزین را انتخاب کنید:", keyboard: this.foProviderKeyboard(pickable) };
+            return {
+              text: tr(lang, "panel.fo.pick_provider"),
+              keyboard: this.foProviderKeyboard(pickable, lang),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -359,9 +475,12 @@ export class AiAdminController {
             if (!view || !view.enabled) return undefined;
             const models = this.models.enabledModels(providerId);
             if (models.length === 0) {
-              return { text: "این پروایدر مدل فعالی ندارد.", keyboard: backKeyboard() };
+              return { text: tr(lang, "panel.fo.no_model"), keyboard: backKeyboard(lang) };
             }
-            return { text: "مدل جایگزین را انتخاب کنید:", keyboard: this.foModelKeyboard(providerId, models) };
+            return {
+              text: tr(lang, "panel.fo.pick_model"),
+              keyboard: this.foModelKeyboard(providerId, models, lang),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -378,14 +497,14 @@ export class AiAdminController {
           () => {
             const view = this.providers.view(providerId);
             const model = this.models.get(modelId);
-            if (!view || !view.enabled) return { refused: "پروایدر در دسترس نیست." };
+            if (!view || !view.enabled) return { refused: tr(lang, "panel.fo.add_refused_provider") };
             if (!model || !model.enabled || model.providerId !== providerId) {
-              return { refused: "مدل در دسترس نیست." };
+              return { refused: tr(lang, "panel.fo.add_refused_model") };
             }
             const current = this.storage.listFailoverCandidates();
             // A duplicate candidate would double the effective attempt count.
             if (current.some((c) => c.providerId === providerId && c.modelId === modelId)) {
-              return { refused: "این جایگزین از قبل در فهرست هست." };
+              return { refused: tr(lang, "panel.fo.add_duplicate") };
             }
             this.storage.setFailoverCandidates([
               ...current,
@@ -396,15 +515,15 @@ export class AiAdminController {
         );
         if (!r.ok) return void (await this.deny(ctx));
         if ("refused" in r.data) {
-          await this.render(ctx, r.data.refused, backKeyboard());
+          await this.render(ctx, r.data.refused, backKeyboard(lang));
           return;
         }
         const view = this.admin.runAdminSync(
           { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
-          () => this.failoverView(),
+          () => this.failoverView(lang),
         );
         if (!view.ok) return void (await this.deny(ctx));
-        await this.render(ctx, `جایگزین اضافه شد.\n\n${view.data.text}`, view.data.keyboard);
+        await this.render(ctx, `${tr(lang, "panel.fo.added")}\n\n${view.data.text}`, view.data.keyboard);
         return;
       }
 
@@ -415,22 +534,24 @@ export class AiAdminController {
           () => {
             const current = this.storage.listFailoverCandidates();
             // A stale index from an older render must not remove the wrong row.
-            if (index < 0 || index >= current.length) return { refused: "این جایگزین دیگر در فهرست نیست." };
+            if (index < 0 || index >= current.length) {
+              return { refused: tr(lang, "panel.fo.remove_stale") };
+            }
             this.storage.setFailoverCandidates(current.filter((_, i) => i !== index));
             return { ok: true as const };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if ("refused" in r.data) {
-          await this.render(ctx, r.data.refused, backKeyboard());
+          await this.render(ctx, r.data.refused, backKeyboard(lang));
           return;
         }
         const view = this.admin.runAdminSync(
           { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
-          () => this.failoverView(),
+          () => this.failoverView(lang),
         );
         if (!view.ok) return void (await this.deny(ctx));
-        await this.render(ctx, `جایگزین حذف شد.\n\n${view.data.text}`, view.data.keyboard);
+        await this.render(ctx, `${tr(lang, "panel.fo.removed")}\n\n${view.data.text}`, view.data.keyboard);
         return;
       }
 
@@ -442,8 +563,8 @@ export class AiAdminController {
             const view = this.providers.view(providerId);
             if (!view) return undefined;
             return {
-              text: localTargetConfirmText(view.label, view.allowLocal),
-              keyboard: localTargetKeyboard(providerId, view.allowLocal),
+              text: localTargetConfirmText(view.label, view.allowLocal, lang),
+              keyboard: localTargetKeyboard(providerId, view.allowLocal, lang),
             };
           },
         );
@@ -470,18 +591,15 @@ export class AiAdminController {
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
         if ("refused" in r.data) {
-          await this.render(ctx, r.data.refused, backKeyboard());
+          await this.render(ctx, r.data.refused, backKeyboard(lang));
           return;
         }
-        // Re-read: the confirmation must state what is now persisted.
-        const view = this.providers.view(providerId);
-        await this.render(
-          ctx,
-          view?.allowLocal === true
-            ? "دسترسی محلی برای این پروایدر باز شد."
-            : "دسترسی محلی برای این پروایدر بسته شد.",
-          backKeyboard(),
-        );
+        // Back to the provider screen the exception was opened from; the
+        // confirmation states what is now persisted.
+        const lead = r.data.allowed
+          ? tr(lang, "panel.local.opened")
+          : tr(lang, "panel.local.closed");
+        await this.showProvider(ctx, providerId, lead, lang);
         return;
       }
 
@@ -501,8 +619,12 @@ export class AiAdminController {
             const target = up ? index - 1 : index + 1;
             // Refuse a move that would go outside the list, rather than
             // silently reordering something unintended.
-            if (index < 0 || index >= current.length) return { refused: "این جایگزین دیگر در فهرست نیست." };
-            if (target < 0 || target >= current.length) return { refused: "جابه‌جایی نامعتبر است." };
+            if (index < 0 || index >= current.length) {
+              return { refused: tr(lang, "panel.fo.remove_stale") };
+            }
+            if (target < 0 || target >= current.length) {
+              return { refused: tr(lang, "panel.fo.move_bad") };
+            }
             const next = [...current];
             const a = next[index]!;
             const b = next[target]!;
@@ -514,22 +636,25 @@ export class AiAdminController {
         );
         if (!r.ok) return void (await this.deny(ctx));
         if ("refused" in r.data) {
-          await this.render(ctx, r.data.refused, backKeyboard());
+          await this.render(ctx, r.data.refused, backKeyboard(lang));
           return;
         }
         const view = this.admin.runAdminSync(
           { actor, operation: "fo.menu.refresh", permission: PERM_VIEW },
-          () => this.failoverView(),
+          () => this.failoverView(lang),
         );
         if (!view.ok) return void (await this.deny(ctx));
-        await this.render(ctx, `ترتیب تغییر کرد.\n\n${view.data.text}`, view.data.keyboard);
+        await this.render(ctx, `${tr(lang, "panel.fo.moved")}\n\n${view.data.text}`, view.data.keyboard);
         return;
       }
 
       case "ai_providers": {
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.providers", permission: PERM_VIEW },
-          () => ({ text: providersText(this.providers.listViews()), keyboard: providersKeyboard() }),
+          () => ({
+            text: providersText(this.providers.listViews(), lang),
+            keyboard: providersKeyboard(lang),
+          }),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -543,7 +668,7 @@ export class AiAdminController {
           () => {
             const view = this.providers.view(id);
             if (!view) return undefined;
-            return { text: providerText(view), keyboard: providerKeyboard(view) };
+            return { text: providerText(view, lang), keyboard: providerKeyboard(view, lang) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -555,7 +680,7 @@ export class AiAdminController {
       case "ai_add_form": {
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.add.form", permission: PERM_MANAGE },
-          () => ({ keyboard: adapterKeyboard(), text: "نوع اتصال پروایدر را انتخاب کنید:" }),
+          () => ({ keyboard: adapterKeyboard(lang), text: tr(lang, "panel.add.pick_type") }),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -570,7 +695,7 @@ export class AiAdminController {
             // Remember the owner is mid-flow so the next free-text reply is
             // interpreted as a provider, not as a chat message.
             this.setPending(ctx, { kind: "add_provider", adapter });
-            return { text: addFormText(adapter), keyboard: backKeyboard() };
+            return { text: addFormText(adapter, lang), keyboard: formCancelKeyboard(lang) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -588,7 +713,7 @@ export class AiAdminController {
             // comes from the preset. The pending state carries the preset id so
             // the reply can be applied without a second form.
             this.setPending(ctx, { kind: "setup_preset", presetId: preset.id });
-            return { text: setupPrompt(preset), keyboard: backKeyboard() };
+            return { text: setupPrompt(preset, lang), keyboard: formCancelKeyboard(lang) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -604,7 +729,7 @@ export class AiAdminController {
             const view = this.providers.view(id);
             if (!view) return undefined;
             this.setPending(ctx, { kind: "edit_provider", providerId: id });
-            return { text: editFormText(view), keyboard: backKeyboard() };
+            return { text: editFormText(view, lang), keyboard: formCancelKeyboard(lang) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -625,9 +750,10 @@ export class AiAdminController {
           await this.deny(ctx);
           return;
         }
-        await this.render(ctx, "در حال آزمایش اتصال…", backKeyboard());
-        const probe = await this.runAuthorizedProbe(ctx, id);
-        await this.render(ctx, probe.text, backKeyboard());
+        await this.render(ctx, tr(lang, "panel.provider.testing"), backKeyboard(lang));
+        const probe = await this.runAuthorizedProbe(ctx, id, lang);
+        // Back to the provider screen the test was launched from.
+        await this.showProvider(ctx, id, probe.text, lang);
         return;
       }
 
@@ -641,9 +767,9 @@ export class AiAdminController {
           await this.deny(ctx);
           return;
         }
-        await this.render(ctx, "در حال دریافت فهرست مدل‌ها…", backKeyboard());
-        const found = await this.runAuthorizedDiscovery(ctx, id);
-        await this.render(ctx, found.text, backKeyboard());
+        await this.render(ctx, tr(lang, "panel.provider.discovering"), backKeyboard(lang));
+        const found = await this.runAuthorizedDiscovery(ctx, id, lang);
+        await this.showProvider(ctx, id, found.text, lang);
         return;
       }
 
@@ -660,17 +786,39 @@ export class AiAdminController {
             if (!res.ok) return { refused: true, text: res.message };
             return {
               refused: false,
-              text: view.enabled ? "پروایدر غیرفعال شد." : "پروایدر فعال شد.",
+              text: view.enabled
+                ? tr(lang, "panel.provider.toggled_off")
+                : tr(lang, "panel.provider.toggled_on"),
             };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.render(ctx, r.data.text, backKeyboard());
+        // Back to the provider screen the toggle was tapped on.
+        await this.showProvider(ctx, id, r.data.text, lang);
         return;
       }
 
       case "ai_clear_key": {
+        const id = action.providerId;
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.clear_key.confirm", permission: PERM_MANAGE, targetId: String(id) },
+          () => {
+            const view = this.providers.view(id);
+            if (!view) return undefined;
+            return {
+              text: confirmClearKeyText(view.label, lang),
+              keyboard: confirmClearKeyKeyboard(id, lang),
+            };
+          },
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        if (!r.data) return void (await this.stale(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "ai_clear_key_confirm": {
         const id = action.providerId;
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.clear_key", permission: PERM_MANAGE, targetId: String(id) },
@@ -678,12 +826,12 @@ export class AiAdminController {
             const view = this.providers.view(id);
             if (!view) return undefined;
             this.providers.clearCredential(id);
-            return { text: "کلید پاک شد.", keyboard: backKeyboard() };
+            return { ok: true as const };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.render(ctx, r.data.text, r.data.keyboard);
+        await this.showProvider(ctx, id, tr(lang, "panel.provider.key_cleared"), lang);
         return;
       }
 
@@ -699,13 +847,13 @@ export class AiAdminController {
             this.setPending(ctx, { kind: "add_pool_key", providerId: id });
             return {
               text: [
-                "کلید پشتیبان را در پیام بعدی بفرست.",
+                tr(lang, "panel.pool.prompt1"),
                 "",
-                "این کلید فقط وقتی استفاده می‌شود که کلید اصلی با خطای احراز هویت یا قطعی مواجه شود؛ هیچ‌وقت نمایش داده نمی‌شود.",
+                tr(lang, "panel.pool.prompt2"),
                 "",
-                "برای لغو، /admin را بفرستید.",
+                tr(lang, "panel.add.cancel_hint"),
               ].join("\n"),
-              keyboard: backKeyboard(),
+              keyboard: formCancelKeyboard(lang),
             };
           },
         );
@@ -718,15 +866,52 @@ export class AiAdminController {
       case "ai_delete": {
         const id = action.providerId;
         const r = await this.admin.runAdmin(
-          { actor, operation: "ai.delete", permission: PERM_MANAGE, targetId: String(id) },
+          { actor, operation: "ai.delete.confirm", permission: PERM_MANAGE, targetId: String(id) },
           () => {
-            const res = this.providers.remove(id);
-            return { ok: res.ok, message: res.ok ? "پروایدر حذف شد." : res.message };
+            const view = this.providers.view(id);
+            if (!view) return undefined;
+            // First tap only asks; the second tap (ai_delete_confirm) destroys.
+            return {
+              text: confirmDeleteProviderText(view, lang),
+              keyboard: confirmDeleteProviderKeyboard(id, lang),
+            };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
-        // A refusal (the provider is active) names the reason and nothing else.
-        await this.render(ctx, r.data.message, providersKeyboard());
+        if (!r.data) return void (await this.stale(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "ai_delete_confirm": {
+        const id = action.providerId;
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.delete", permission: PERM_MANAGE, targetId: String(id) },
+          () => {
+            const res = this.providers.remove(id);
+            return { ok: res.ok, message: res.ok ? undefined : res.message };
+          },
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        if (!r.data.ok) {
+          // A refusal (the provider is active) names the reason and nothing
+          // else, on the provider screen it still exists on.
+          await this.showProvider(ctx, id, r.data.message ?? "", lang);
+          return;
+        }
+        const list = await this.admin.runAdmin(
+          { actor, operation: "ai.providers.refresh", permission: PERM_VIEW },
+          () => ({
+            text: providersText(this.providers.listViews(), lang),
+            keyboard: providersKeyboard(lang),
+          }),
+        );
+        if (!list.ok) return void (await this.deny(ctx));
+        await this.render(
+          ctx,
+          `${tr(lang, "panel.provider.deleted")}\n\n${list.data.text}`,
+          list.data.keyboard,
+        );
         return;
       }
 
@@ -739,8 +924,8 @@ export class AiAdminController {
             if (!view) return undefined;
             const models = this.models.list(id);
             return {
-              text: modelsText(models, view.label),
-              keyboard: withAddButton(modelsKeyboard(models), id),
+              text: modelsText(models, view.label, lang),
+              keyboard: modelsKeyboard(models, id, lang),
             };
           },
         );
@@ -754,19 +939,29 @@ export class AiAdminController {
         const id = action.providerId;
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.model_add.form", permission: PERM_MANAGE, targetId: String(id) },
-          () => ({
-            text: [
-              "افزودن مدل",
-              "",
-              "این پیام را پاسخ بدهید (reply) و مقادیر را خط‌به‌خط بفرستید:",
-              "",
-              "شناسهٔ مدل: <شناسه واقعی مدل>",
-              "نام نمایشی: <هر نامی که دوست دارید>",
-            ].join("\n"),
-            keyboard: backKeyboard(),
-          }),
+          () => {
+            const view = this.providers.view(id);
+            if (!view) return undefined;
+            // The reply is consumed by handleText, like the other free-text
+            // flows; the لغو button clears the pending state.
+            this.setPending(ctx, { kind: "add_model", providerId: id });
+            return {
+              text: [
+                tr(lang, "panel.add.title"),
+                "",
+                tr(lang, "panel.add.instructions"),
+                "",
+                tr(lang, "panel.models.add_id_line"),
+                tr(lang, "panel.add.label_line"),
+                "",
+                tr(lang, "panel.add.cancel_hint"),
+              ].join("\n"),
+              keyboard: formCancelKeyboard(lang),
+            };
+          },
         );
         if (!r.ok) return void (await this.deny(ctx));
+        if (!r.data) return void (await this.stale(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
         return;
       }
@@ -783,17 +978,41 @@ export class AiAdminController {
             if (!res.ok) return { providerId: model.providerId, text: res.message };
             return {
               providerId: model.providerId,
-              text: model.enabled ? "مدل غیرفعال شد." : "مدل فعال شد.",
+              text: model.enabled
+                ? tr(lang, "panel.models.toggled_off")
+                : tr(lang, "panel.models.toggled_on"),
             };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.showModels(ctx, r.data.providerId, r.data.text);
+        await this.showModels(ctx, r.data.providerId, r.data.text, lang);
         return;
       }
 
       case "ai_model_delete": {
+        const id = action.modelId;
+        const r = await this.admin.runAdmin(
+          { actor, operation: "ai.model_delete.confirm", permission: PERM_MANAGE, targetId: String(id) },
+          () => {
+            const model = this.models.get(id);
+            if (!model) return undefined;
+            // First tap only asks; the second tap (ai_model_delete_confirm)
+            // destroys.
+            return {
+              providerId: model.providerId,
+              text: confirmDeleteModelText(model.label, lang),
+              keyboard: confirmDeleteModelKeyboard(id, model.providerId, lang),
+            };
+          },
+        );
+        if (!r.ok) return void (await this.deny(ctx));
+        if (!r.data) return void (await this.stale(ctx));
+        await this.render(ctx, r.data.text, r.data.keyboard);
+        return;
+      }
+
+      case "ai_model_delete_confirm": {
         const id = action.modelId;
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.model_delete", permission: PERM_MANAGE, targetId: String(id) },
@@ -802,12 +1021,12 @@ export class AiAdminController {
             if (!model) return undefined;
             const res = this.models.remove(id);
             if (!res.ok) return { providerId: model.providerId, text: res.message };
-            return { providerId: model.providerId, text: "مدل حذف شد." };
+            return { providerId: model.providerId, text: tr(lang, "panel.models.deleted") };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.showModels(ctx, r.data.providerId, r.data.text);
+        await this.showModels(ctx, r.data.providerId, r.data.text, lang);
         return;
       }
 
@@ -823,19 +1042,19 @@ export class AiAdminController {
             // Selecting the default also activates this provider+model, so a
             // single click both sets the default and makes it live.
             this.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
-            return { providerId: model.providerId, text: "مدل فعال و پیش‌فرض شد." };
+            return { providerId: model.providerId, text: tr(lang, "panel.models.made_default") };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.showModels(ctx, r.data.providerId, r.data.text);
+        await this.showModels(ctx, r.data.providerId, r.data.text, lang);
         return;
       }
 
       case "ai_select_menu": {
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.select.menu", permission: PERM_VIEW },
-          () => this.selectView(),
+          () => this.selectView(lang),
         );
         if (!r.ok) return void (await this.deny(ctx));
         await this.render(ctx, r.data.text, r.data.keyboard);
@@ -851,8 +1070,8 @@ export class AiAdminController {
             if (!view) return undefined;
             const models = this.models.enabledModels(id);
             return {
-              text: `مدل فعال پروایدر «${view.label}» را انتخاب کنید:`,
-              keyboard: modelPickerKeyboard(models),
+              text: tr(lang, "panel.select.pick_model", { label: view.label }),
+              keyboard: modelPickerKeyboard(models, lang),
             };
           },
         );
@@ -872,12 +1091,14 @@ export class AiAdminController {
             const provider = this.storage.getProvider(model.providerId);
             if (!provider || !provider.enabled) return undefined;
             this.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
-            return { text: `مدل فعال اکنون «${model.label}» است.` };
+            return { text: tr(lang, "panel.select.done", { label: model.label }) };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
         if (!r.data) return void (await this.stale(ctx));
-        await this.render(ctx, r.data.text, backKeyboard());
+        // Back to the selection screen the model was picked from.
+        const view = this.selectView(lang);
+        await this.render(ctx, `${r.data.text}\n\n${view.text}`, view.keyboard);
         return;
       }
     }
@@ -889,7 +1110,11 @@ export class AiAdminController {
    * The probe is the second authorized run for the same operation, so the
    * outcome is audited even though the progress message already went out.
    */
-  private async runAuthorizedProbe(ctx: Context, providerId: number): Promise<{ text: string }> {
+  private async runAuthorizedProbe(
+    ctx: Context,
+    providerId: number,
+    lang: PanelLang,
+  ): Promise<{ text: string }> {
     const actor = this.actorFor(ctx);
     const r = await this.admin.runAdmin(
       {
@@ -901,17 +1126,59 @@ export class AiAdminController {
       async () => {
         const probe = await this.health.probe(providerId);
         const msg = probe.ok
-          ? "تست اتصال موفق بود."
-          : `تست اتصال ناموفق بود.${probe.message !== undefined ? ` (${probe.message})` : ""}`;
+          ? tr(lang, "panel.provider.test_ok")
+          : `${tr(lang, "panel.provider.test_fail")}${probe.message !== undefined ? ` (${probe.message})` : ""}`;
         return { text: msg };
       },
     );
-    if (!r.ok) return { text: "تست اتصال ناموفق بود." };
+    if (!r.ok) return { text: tr(lang, "panel.provider.test_fail") };
+    return r.data;
+  }
+
+  /**
+   * Probe every provider in sequence, inside one authorized run.
+   *
+   * The old «تست همهٔ پروایدرها» button only re-rendered the status view — the
+   * label promised a probe, so now it performs one. Each probe records its
+   * outcome (the same store the status view reads), so the result below is
+   * also visible on the status screen afterwards.
+   */
+  private async runAuthorizedProbeAll(ctx: Context, lang: PanelLang): Promise<string> {
+    const actor = this.actorFor(ctx);
+    const r = await this.admin.runAdmin(
+      {
+        actor,
+        operation: "ai.probe_all.run",
+        permission: PERM_MANAGE,
+      },
+      async () => {
+        const providers = this.providers.listViews();
+        if (providers.length === 0) return tr(lang, "panel.aistatus.probe_empty");
+        const lines = [tr(lang, "panel.aistatus.probe_done"), ""];
+        for (const p of providers) {
+          const probe = await this.health.probe(p.id);
+          const verdict = probe.ok
+            ? tr(lang, "panel.aistatus.test_ok")
+            : tr(lang, "panel.aistatus.test_fail");
+          // The message is chosen by the health module, never copied from a
+          // provider response, so it cannot leak key material.
+          const detail =
+            !probe.ok && probe.message !== undefined ? ` (${probe.message})` : "";
+          lines.push(`• ${p.label}: ${verdict}${detail}`);
+        }
+        return lines.join("\n");
+      },
+    );
+    if (!r.ok) return tr(lang, "panel.provider.test_fail");
     return r.data;
   }
 
   /** Discover a provider's models, inside an authorized run. */
-  private async runAuthorizedDiscovery(ctx: Context, providerId: number): Promise<{ text: string }> {
+  private async runAuthorizedDiscovery(
+    ctx: Context,
+    providerId: number,
+    lang: PanelLang,
+  ): Promise<{ text: string }> {
     const actor = this.actorFor(ctx);
     const r = await this.admin.runAdmin(
       {
@@ -921,48 +1188,120 @@ export class AiAdminController {
         targetId: String(providerId),
       },
       async () => {
-        const discovered = await this.discover(providerId);
+        const discovered = await this.discover(providerId, lang);
         if (!discovered.ok) {
           return {
-            text: `دریافت مدل‌ها ناموفق بود.${discovered.message !== undefined ? ` (${discovered.message})` : ""}`,
+            text: `${tr(lang, "panel.provider.discover_fail")}${discovered.message !== undefined ? ` (${discovered.message})` : ""}`,
           };
         }
         // Discovered models are NEVER auto-enabled or made default: the owner
         // must pick them from the model list.
         return {
-          text: `${discovered.models.length} مدل یافت شد. از فهرست مدل‌ها می‌توانید آن‌ها را اضافه کنید.`,
+          text: tr(lang, "panel.provider.discover_ok", {
+            n: formatNum(discovered.models.length, lang),
+          }),
         };
       },
     );
-    if (!r.ok) return { text: "دریافت مدل‌ها ناموفق بود." };
+    if (!r.ok) return { text: tr(lang, "panel.provider.discover_fail") };
     return r.data;
   }
 
   /** The active provider + its models, for the quick-switch screen. */
-  private selectView(): { text: string; keyboard: InlineKeyboard } {
+  private selectView(lang: PanelLang): { text: string; keyboard: InlineKeyboard } {
     const settings = this.storage.getRuntimeSettings();
     const provider =
       settings.activeProviderId !== null ? this.providers.view(settings.activeProviderId) : undefined;
     const models = provider ? this.models.enabledModels(provider.id) : [];
     return {
-      text: selectMenuText(models, provider?.label ?? "تعیین‌نشده"),
-      keyboard: providerPickerKeyboard(this.providers.listViews()),
+      text: selectMenuText(models, provider?.label ?? tr(lang, "panel.select.unset"), lang),
+      keyboard: providerPickerKeyboard(this.providers.listViews(), lang),
     };
   }
 
   /** Re-render a provider's model list after a model action. */
-  private async showModels(ctx: Context, providerId: number, lead: string): Promise<void> {
+  private async showModels(
+    ctx: Context,
+    providerId: number,
+    lead: string,
+    lang: PanelLang,
+  ): Promise<void> {
     const view = this.providers.view(providerId);
     if (!view) {
-      await this.render(ctx, lead, backKeyboard());
+      await this.render(ctx, lead, backKeyboard(lang));
       return;
     }
     const models = this.models.list(providerId);
     await this.render(
       ctx,
-      `${lead}\n\n${modelsText(models, view.label)}`,
-      withAddButton(modelsKeyboard(models), providerId),
+      `${lead}\n\n${modelsText(models, view.label, lang)}`,
+      modelsKeyboard(models, providerId, lang),
     );
+  }
+
+  /** Re-render a provider's screen after an action, with a result lead. */
+  private async showProvider(
+    ctx: Context,
+    providerId: number,
+    lead: string,
+    lang: PanelLang,
+  ): Promise<void> {
+    const view = this.providers.view(providerId);
+    if (!view) {
+      await this.render(ctx, lead, providersKeyboard(lang));
+      return;
+    }
+    await this.render(
+      ctx,
+      `${lead}\n\n${providerText(view, lang)}`,
+      providerKeyboard(view, lang),
+    );
+  }
+
+  /**
+   * The screen a form-cancel returns to, based on the flow being cancelled.
+   * Cancelling never writes: it only clears the pending state.
+   */
+  private cancelView(
+    flow: PendingInput | undefined,
+    lang: PanelLang,
+  ): { text: string; keyboard: unknown } {
+    switch (flow?.kind) {
+      case "add_provider":
+      case "setup_preset":
+        return { text: tr(lang, "panel.add.pick_type"), keyboard: adapterKeyboard(lang) };
+      case "edit_provider":
+      case "add_pool_key": {
+        const view =
+          flow.providerId !== undefined ? this.providers.view(flow.providerId) : undefined;
+        if (!view) {
+          return {
+            text: providersText(this.providers.listViews(), lang),
+            keyboard: providersKeyboard(lang),
+          };
+        }
+        return { text: providerText(view, lang), keyboard: providerKeyboard(view, lang) };
+      }
+      case "add_model": {
+        const view =
+          flow.providerId !== undefined ? this.providers.view(flow.providerId) : undefined;
+        if (!view) {
+          return {
+            text: providersText(this.providers.listViews(), lang),
+            keyboard: providersKeyboard(lang),
+          };
+        }
+        const models = this.models.list(flow.providerId!);
+        return {
+          text: modelsText(models, view.label, lang),
+          keyboard: modelsKeyboard(models, flow.providerId!, lang),
+        };
+      }
+      case "search_key":
+        return this.searchView(lang);
+      default:
+        return { text: aiMenuText(lang), keyboard: aiMenuKeyboard(lang) };
+    }
   }
 
   /**
@@ -971,21 +1310,22 @@ export class AiAdminController {
    */
   private async discover(
     providerId: number,
+    lang: PanelLang,
   ): Promise<{ ok: true; models: readonly RemoteModel[] } | { ok: false; message?: string }> {
     const provider = this.storage.getProvider(providerId);
-    if (!provider) return { ok: false, message: "پروایدر یافت نشد." };
+    if (!provider) return { ok: false, message: tr(lang, "panel.discover.no_provider") };
     if (!this.adapters.describes(provider.adapter).listModels) {
-      return { ok: false, message: "این نوع اتصال فهرست مدل‌ها را پشتیبانی نمی‌کند." };
+      return { ok: false, message: tr(lang, "panel.discover.no_list") };
     }
 
     let apiKey: string | undefined;
     try {
       apiKey = this.providers.credentialFor(providerId);
     } catch {
-      return { ok: false, message: "اعتبارنامه قابل رمزگشایی نبود." };
+      return { ok: false, message: tr(lang, "panel.discover.no_cred") };
     }
     if (apiKey === undefined || apiKey.length === 0) {
-      return { ok: false, message: "اعتبارنامه تنظیم نشده است." };
+      return { ok: false, message: tr(lang, "panel.discover.cred_unset") };
     }
 
     const controller = new AbortController();
@@ -997,7 +1337,7 @@ export class AiAdminController {
         model: "discover",
       });
       if (!adapter.listModels) {
-        return { ok: false, message: "دریافت فهرست مدل پشتیبانی نمی‌شود." };
+        return { ok: false, message: tr(lang, "panel.discover.unsupported") };
       }
       const models = await adapter.listModels({
         target: { baseUrl: provider.baseUrl, apiKey },
@@ -1007,7 +1347,7 @@ export class AiAdminController {
       return { ok: true, models };
     } catch {
       // A failure here never records a partial list or changes any state.
-      return { ok: false, message: "دریافت فهرست مدل ناموفق بود." };
+      return { ok: false, message: tr(lang, "panel.discover.failed") };
     } finally {
       clearTimeout(timer);
     }
@@ -1026,7 +1366,7 @@ export class AiAdminController {
    * A candidate whose provider or model is disabled is still listed but marked,
    * so the owner can see why it would never be used.
    */
-  private failoverView(): { text: string; keyboard: unknown } {
+  private failoverView(lang: PanelLang): { text: string; keyboard: unknown } {
     const s = this.storage.getFailoverSettings();
     const settings = this.storage.getRuntimeSettings();
     const primary =
@@ -1038,39 +1378,45 @@ export class AiAdminController {
       const m = this.models.get(c.modelId);
       return {
         index: i,
-        providerLabel: p?.label ?? `حذف‌شده (${c.providerId})`,
-        modelLabel: m?.label ?? `حذف‌شده (${c.modelId})`,
+        providerLabel: p?.label ?? tr(lang, "panel.deleted_ref", { id: c.providerId }),
+        modelLabel: m?.label ?? tr(lang, "panel.deleted_ref", { id: c.modelId }),
         enabled: p?.enabled === true && m?.enabled === true,
       };
     });
 
     return {
-      text: failoverText({
-        enabled: s.enabled,
-        maxAttempts: s.maxAttempts,
-        timeoutMs: s.timeoutMs,
-        primaryLabel: primary?.label,
-        primaryModelLabel: primaryModel?.label,
-        rows,
-      }),
-      keyboard: failoverKeyboard({
-        enabled: s.enabled,
-        maxAttempts: s.maxAttempts,
-        timeoutMs: s.timeoutMs,
-        primaryLabel: primary?.label,
-        primaryModelLabel: primaryModel?.label,
-        rows,
-      }),
+      text: failoverText(
+        {
+          enabled: s.enabled,
+          maxAttempts: s.maxAttempts,
+          timeoutMs: s.timeoutMs,
+          primaryLabel: primary?.label,
+          primaryModelLabel: primaryModel?.label,
+          rows,
+        },
+        lang,
+      ),
+      keyboard: failoverKeyboard(
+        {
+          enabled: s.enabled,
+          maxAttempts: s.maxAttempts,
+          timeoutMs: s.timeoutMs,
+          primaryLabel: primary?.label,
+          primaryModelLabel: primaryModel?.label,
+          rows,
+        },
+        lang,
+      ),
     };
   }
 
   /** Keyboard offering only enabled providers as failover candidates. */
-  private foProviderKeyboard(providers: readonly ProviderView[]): InlineKeyboard {
+  private foProviderKeyboard(providers: readonly ProviderView[], lang: PanelLang): InlineKeyboard {
     const kb = new InlineKeyboard();
     for (const p of providers) {
       kb.text(p.label, encode({ kind: "fo_add_pick_model", providerId: p.id })).row();
     }
-    kb.text("بازگشت", encode({ kind: "fo_menu" }));
+    kb.text(tr(lang, "panel.back"), encode({ kind: "fo_menu" }));
     return kb;
   }
 
@@ -1078,12 +1424,13 @@ export class AiAdminController {
   private foModelKeyboard(
     providerId: number,
     models: readonly { id: number; label: string }[],
+    lang: PanelLang,
   ): InlineKeyboard {
     const kb = new InlineKeyboard();
     for (const m of models) {
       kb.text(m.label, encode({ kind: "fo_add_confirm", providerId, modelId: m.id })).row();
     }
-    kb.text("بازگشت", encode({ kind: "fo_add_form" }));
+    kb.text(tr(lang, "panel.back"), encode({ kind: "fo_add_form" }));
     return kb;
   }
 
@@ -1094,7 +1441,7 @@ export class AiAdminController {
    * says "last test", never "working", because a probe is a liveness ping and
    * not evidence that a request would succeed.
    */
-  private buildStatusText(): string {
+  private buildStatusText(lang: PanelLang): string {
     const s = this.storage.getFailoverSettings();
     const settings = this.storage.getRuntimeSettings();
     const providers = this.providers.listViews();
@@ -1110,30 +1457,37 @@ export class AiAdminController {
       return p?.enabled === true && m?.enabled === true;
     }).length;
 
-    return statusText({
-      primaryProvider: primary?.label,
-      primaryModel: primaryModel?.label,
-      failoverEnabled: s.enabled,
-      candidateCount: candidates.length,
-      activeCandidateCount: activeCandidates,
-      providers: providers.map((p) => ({
-        label: p.label,
-        enabled: p.enabled,
-        hasCredential: p.hasCredential,
-        allowLocal: p.allowLocal,
-        ...(p.lastTestOk !== undefined ? { lastTestOk: p.lastTestOk } : {}),
-        ...(p.lastTestAt !== undefined ? { lastTestAt: p.lastTestAt } : {}),
-      })),
-      // The runtime reads the database per request, so any mismatch means the
-      // primary selection no longer resolves (e.g. it was disabled).
-      runtimeMatchesPersisted: primary !== undefined,
-      note: undefined,
-    });
+    return statusText(
+      {
+        primaryProvider: primary?.label,
+        primaryModel: primaryModel?.label,
+        failoverEnabled: s.enabled,
+        candidateCount: candidates.length,
+        activeCandidateCount: activeCandidates,
+        providers: providers.map((p) => ({
+          label: p.label,
+          enabled: p.enabled,
+          hasCredential: p.hasCredential,
+          allowLocal: p.allowLocal,
+          ...(p.lastTestOk !== undefined ? { lastTestOk: p.lastTestOk } : {}),
+          ...(p.lastTestAt !== undefined ? { lastTestAt: p.lastTestAt } : {}),
+        })),
+        // The runtime reads the database per request, so any mismatch means the
+        // primary selection no longer resolves (e.g. it was disabled).
+        runtimeMatchesPersisted: primary !== undefined,
+        note: undefined,
+      },
+      lang,
+    );
   }
 
   /**
    * Interpret a free-text reply as a provider/model submission.
    * Returns true when the message was consumed by a pending flow.
+   *
+   * Junk input re-prompts the form instead of cancelling the flow: the pending
+   * state is only cleared on success, on explicit لغو, or on an explicit
+   * refusal from the service.
    */
   async handleText(ctx: Context, text: string): Promise<boolean> {
     const id = ctx.from?.id;
@@ -1142,6 +1496,7 @@ export class AiAdminController {
     if (!flow) return false;
 
     const actor = this.actorFor(ctx);
+    const lang = this.langFor(ctx);
     const lines = text
       .split("\n")
       .map((l) => l.trim())
@@ -1149,26 +1504,29 @@ export class AiAdminController {
 
     if (flow.kind === "setup_preset") {
       const preset = flow.presetId !== undefined ? providerPreset(flow.presetId) : undefined;
-      // Consume the pending state BEFORE the write, so a failed attempt does
-      // not leave the owner stuck.
-      this.pending.delete(id);
       if (!preset) {
-        await ctx.reply("این سرویس شناخته نشده است.");
+        this.pending.delete(id);
+        await ctx.reply(tr(lang, "panel.pool.unknown_service"));
         return true;
       }
 
       const needsExtra = preset.requiredPlaceholder !== undefined;
       const parsed = parseSetupReply(text, needsExtra);
       if (!parsed) {
+        // Keep the pending state: the owner gets another try, not a dead flow.
         await this.render(
           ctx,
-          needsExtra
-            ? `کلید و ${preset.requiredPlaceholder} را با کاما بفرست: کلید, مقدار`
-            : "کلید را بفرست.",
-          backKeyboard(),
+          `${tr(lang, "panel.setup.junk")}\n\n${
+            needsExtra
+              ? tr(lang, "panel.setup.key_extra", { ph: preset.requiredPlaceholder ?? "" })
+              : tr(lang, "panel.setup.key_only")
+          }`,
+          formCancelKeyboard(lang),
         );
         return true;
       }
+      // Consume the pending state only now that the input parsed.
+      this.pending.delete(id);
 
       // The URL is completed here rather than asked for: the preset knows its
       // own shape, and the only unknown is the one value the owner just gave.
@@ -1202,12 +1560,15 @@ export class AiAdminController {
       const body = [result.message, ...result.notes.map((n) => `• ${n}`)].join("\n");
       const providers = await this.admin.runAdmin(
         { actor, operation: "ai.setup.refresh", permission: PERM_VIEW },
-        () => ({ text: providersText(this.providers.listViews()), keyboard: providersKeyboard() }),
+        () => ({
+          text: providersText(this.providers.listViews(), lang),
+          keyboard: providersKeyboard(lang),
+        }),
       );
       await this.render(
         ctx,
         providers.ok ? `${body}\n\n${providers.data.text}` : body,
-        providers.ok ? providers.data.keyboard : backKeyboard(),
+        providers.ok ? providers.data.keyboard : backKeyboard(lang),
       );
       return true;
     }
@@ -1215,14 +1576,22 @@ export class AiAdminController {
     if (flow.kind === "search_key") {
       if (!this.search) {
         this.pending.delete(id);
-        await ctx.reply("بخش جستجو در دسترس نیست.");
+        await ctx.reply(tr(lang, "panel.search.unavailable"));
         return true;
       }
-      // Consume the pending state BEFORE the write, so a failed attempt does
-      // not leave the owner stuck in the form.
-      this.pending.delete(id);
 
       const key = (lines[0] ?? "").trim();
+      if (key.length === 0) {
+        // Keep the pending state and ask again instead of dropping the flow.
+        await this.render(
+          ctx,
+          `${tr(lang, "panel.search.key_junk")}\n\n${searchKeyFormText(lang)}`,
+          formCancelKeyboard(lang),
+        );
+        return true;
+      }
+      this.pending.delete(id);
+
       const r = await this.admin.runAdmin(
         { actor, operation: "search.set_key", permission: PERM_MANAGE },
         () => this.search!.setKey(key),
@@ -1232,20 +1601,28 @@ export class AiAdminController {
         return true;
       }
       if (!r.data.ok) {
-        await this.render(ctx, r.data.message, backToSearchKeyboard());
+        await this.render(ctx, r.data.message, backToSearchKeyboard(lang));
         return true;
       }
       // Never echo the key; confirm only that it was stored.
-      const v = this.searchView();
-      await this.render(ctx, `${searchKeySavedText(this.search.label())}\n\n${v.text}`, v.keyboard);
+      const v = this.searchView(lang);
+      await this.render(
+        ctx,
+        `${searchKeySavedText(this.search.label(), lang)}\n\n${v.text}`,
+        v.keyboard,
+      );
       return true;
     }
 
     if (flow.kind === "add_provider") {
       const parsed = parseSubmission(lines);
       if (!parsed) {
-        this.pending.delete(id);
-        await ctx.reply("ورودی ناقص بود؛ عملیات لغو شد.");
+        // Junk input re-prompts; the flow stays alive until لغو or success.
+        await this.render(
+          ctx,
+          `${tr(lang, "panel.add.junk")}\n\n${addFormText(flow.adapter ?? "openai_compatible", lang)}`,
+          formCancelKeyboard(lang),
+        );
         return true;
       }
       this.pending.delete(id);
@@ -1263,8 +1640,8 @@ export class AiAdminController {
           baseUrl.includes(`{${preset.requiredPlaceholder}}`)) {
         await this.render(
           ctx,
-          `آدرس هنوز شامل {${preset.requiredPlaceholder}} است؛ آن را با مقدار واقعی عوض کن.`,
-          backKeyboard(),
+          tr(lang, "panel.add.bad_url", { ph: `{${preset.requiredPlaceholder}}` }),
+          backKeyboard(lang),
         );
         return true;
       }
@@ -1288,30 +1665,28 @@ export class AiAdminController {
         return true;
       }
       if (!r.data.ok) {
-        await this.render(ctx, r.data.message, backKeyboard());
+        await this.render(ctx, r.data.message, backKeyboard(lang));
         return true;
       }
       // Never echo the key back; confirm the fields that are not secrets.
       await this.render(
         ctx,
         [
-          "پروایدر اضافه شد.",
+          tr(lang, "panel.add.created"),
           "",
-          `نام: ${parsed.label}`,
-          `آدرس: ${parsed.baseUrl}`,
-          "کلید: تنظیم شد",
+          tr(lang, "panel.add.created_name", { v: parsed.label }),
+          tr(lang, "panel.add.created_url", { v: parsed.baseUrl }),
+          tr(lang, "panel.add.created_key"),
         ].join("\n"),
-        providersKeyboard(),
+        providersKeyboard(lang),
       );
       return true;
     }
 
     if (flow.kind === "add_pool_key") {
       const providerId = flow.providerId;
-      // Consume the pending state BEFORE the write, so a failed attempt does
-      // not leave the owner stuck in the form.
-      this.pending.delete(id);
       if (providerId === undefined) {
+        this.pending.delete(id);
         await this.stale(ctx);
         return true;
       }
@@ -1320,9 +1695,14 @@ export class AiAdminController {
       // setup flow, so a pasted key is never truncated or split.
       const apiKey = (lines[0] ?? "").trim();
       if (apiKey.length === 0) {
-        await this.render(ctx, "کلیدی دریافت نشد؛ عملیات لغو شد.", backKeyboard());
+        await this.render(
+          ctx,
+          `${tr(lang, "panel.pool.empty")}\n\n${tr(lang, "panel.pool.prompt1")}\n\n${tr(lang, "panel.pool.prompt2")}`,
+          formCancelKeyboard(lang),
+        );
         return true;
       }
+      this.pending.delete(id);
 
       const r = await this.admin.runAdmin(
         {
@@ -1346,12 +1726,12 @@ export class AiAdminController {
         return true;
       }
       if (!r.data.ok) {
-        await this.render(ctx, r.data.message, backKeyboard());
+        await this.render(ctx, r.data.message, backKeyboard(lang));
         return true;
       }
       // Never echo the key; confirm the label it was stored under, then show
       // the provider screen again with the updated backup-key count.
-      const body = `کلید پشتیبان «${r.data.label}» ذخیره شد.`;
+      const body = tr(lang, "panel.pool.saved", { label: r.data.label });
       const view = await this.admin.runAdmin(
         {
           actor,
@@ -1362,30 +1742,88 @@ export class AiAdminController {
         () => {
           const v = this.providers.view(providerId);
           if (!v) return undefined;
-          return { text: providerText(v), keyboard: providerKeyboard(v) };
+          return { text: providerText(v, lang), keyboard: providerKeyboard(v, lang) };
         },
       );
       await this.render(
         ctx,
         view.ok && view.data ? `${body}\n\n${view.data.text}` : body,
-        view.ok && view.data ? view.data.keyboard : backKeyboard(),
+        view.ok && view.data ? view.data.keyboard : backKeyboard(lang),
+      );
+      return true;
+    }
+
+    if (flow.kind === "add_model") {
+      const providerId = flow.providerId;
+      if (providerId === undefined) {
+        this.pending.delete(id);
+        await this.stale(ctx);
+        return true;
+      }
+
+      const parsed = parseModelSubmission(lines);
+      if (!parsed) {
+        await this.render(
+          ctx,
+          `${tr(lang, "panel.models.add_junk")}\n\n${tr(lang, "panel.models.add_id_line")}\n${tr(lang, "panel.add.label_line")}`,
+          formCancelKeyboard(lang),
+        );
+        return true;
+      }
+      this.pending.delete(id);
+
+      const r = await this.admin.runAdmin(
+        { actor, operation: "ai.model_add", permission: PERM_MANAGE, targetId: String(providerId) },
+        () => {
+          const res = this.models.add({
+            providerId,
+            modelId: parsed.modelId,
+            label: parsed.label,
+          });
+          if (!res.ok) return { ok: false as const, message: res.message };
+          return { ok: true as const };
+        },
+      );
+      if (!r.ok) {
+        await this.deny(ctx);
+        return true;
+      }
+      if (!r.data.ok) {
+        await this.render(ctx, r.data.message, backKeyboard(lang));
+        return true;
+      }
+      await this.showModels(
+        ctx,
+        providerId,
+        tr(lang, "panel.models.added", { label: parsed.label }),
+        lang,
       );
       return true;
     }
 
     if (flow.kind === "edit_provider") {
       const providerId = flow.providerId;
-      this.pending.delete(id);
       if (providerId === undefined) {
+        this.pending.delete(id);
         await this.stale(ctx);
         return true;
       }
 
       const parsed = parseEditSubmission(lines);
-      if (!parsed) {
-        await this.render(ctx, "ورودی ناقص بود؛ عملیات لغو شد.", backKeyboard());
+      if (Object.keys(parsed).length === 0) {
+        // Junk input re-prompts; an empty patch would otherwise "succeed"
+        // while changing nothing.
+        const view = this.providers.view(providerId);
+        await this.render(
+          ctx,
+          view
+            ? `${tr(lang, "panel.edit.junk")}\n\n${editFormText(view, lang)}`
+            : tr(lang, "panel.edit.junk"),
+          formCancelKeyboard(lang),
+        );
         return true;
       }
+      this.pending.delete(id);
 
       const r = await this.admin.runAdmin(
         {
@@ -1406,7 +1844,7 @@ export class AiAdminController {
       }
       if (!r.data.ok) {
         // The service refused, e.g. repointing the active provider's endpoint.
-        await this.render(ctx, r.data.message, backKeyboard());
+        await this.render(ctx, r.data.message, backKeyboard(lang));
         return true;
       }
 
@@ -1419,20 +1857,24 @@ export class AiAdminController {
       await this.render(
         ctx,
         [
-          "پروایدر به‌روز شد.",
+          tr(lang, "panel.edit.updated"),
           "",
-          `نام: ${view.label}`,
-          `نوع اتصال: ${view.adapterLabel}`,
-          `آدرس: ${view.baseUrl}`,
-          `کلید: ${view.hasCredential ? "تنظیم‌شده" : "تنظیم‌نشده"}`,
+          tr(lang, "panel.add.created_name", { v: view.label }),
+          tr(lang, "panel.edit.done_adapter", { v: view.adapterLabel }),
+          tr(lang, "panel.add.created_url", { v: view.baseUrl }),
+          tr(lang, "panel.provider.key", {
+            v: view.hasCredential
+              ? tr(lang, "panel.providers.key_set")
+              : tr(lang, "panel.providers.key_unset"),
+          }),
         ].join("\n"),
-        providersKeyboard(),
+        providersKeyboard(lang),
       );
       return true;
     }
 
     this.pending.delete(id);
-    await ctx.reply("این عملیات پشتیبانی نمی‌شود.");
+    await ctx.reply(tr(lang, "panel.ai.op_unsupported"));
     return true;
   }
 
@@ -1448,16 +1890,17 @@ export class AiAdminController {
     await safeSend(ctx, PANEL_STALE);
   }
 
+  /**
+   * Render a panel view.
+   *
+   * Button clicks edit the panel message in place; anything else (a /ai
+   * command, a free-text form reply) arrives as a new message and is answered
+   * with a new message.
+   */
   private async render(ctx: Context, text: string, keyboard: unknown): Promise<void> {
     await safeAnswer(ctx);
-    await safeSend(ctx, text, keyboard);
+    await safeEditOrSend(ctx, text, keyboard);
   }
-}
-
-/** Add the "افزودن مدل" button to a model list keyboard. */
-function withAddButton(kb: InlineKeyboard, providerId: number): InlineKeyboard {
-  kb.text("افزودن مدل", encode({ kind: "ai_model_add_form", providerId })).row();
-  return kb;
 }
 
 /**
@@ -1492,6 +1935,29 @@ function parseSubmission(
   if (label === undefined || apiKey === undefined) return undefined;
   if (label.length === 0 || apiKey.length === 0) return undefined;
   return { label, baseUrl, apiKey };
+}
+
+/**
+ * The add-model form's expected lines: model id, then display label.
+ * Accepts either "key: value" lines or bare values in a fixed order.
+ */
+function parseModelSubmission(
+  lines: readonly string[],
+): { modelId: string; label: string } | undefined {
+  const byKey = new Map<string, string>();
+  for (const line of lines) {
+    const sep = line.indexOf(":");
+    if (sep > 0) {
+      byKey.set(line.slice(0, sep).trim().toLowerCase(), line.slice(sep + 1).trim());
+    }
+  }
+
+  const modelId = byKey.get("شناسهٔ مدل") ?? byKey.get("model id") ?? lines[0];
+  const label = byKey.get("نام نمایشی") ?? byKey.get("label") ?? lines[1];
+
+  if (modelId === undefined || label === undefined) return undefined;
+  if (modelId.length === 0 || label.length === 0) return undefined;
+  return { modelId, label };
 }
 
 /**
@@ -1535,19 +2001,23 @@ function parseEditSubmission(lines: readonly string[]): {
 }
 
 /** The edit form: shows the current values, and only asks for changes. */
-function editFormText(view: ProviderView): string {
+function editFormText(view: ProviderView, lang: PanelLang): string {
   return [
-    "ویرایش پروایدر",
+    tr(lang, "panel.edit.title"),
     "",
-    "این پیام را پاسخ بدهید (reply) و فقط مقادیر تغییرکرده را بفرستید:",
+    tr(lang, "panel.edit.instructions"),
     "",
-    `نام نمایشی: ${view.label}`,
-    `نوع اتصال: ${view.adapterLabel}`,
-    `آدرس سرویس: ${view.baseUrl}`,
-    `کلید API: ${view.hasCredential ? "تنظیم‌شده" : "تنظیم‌نشده"}`,
+    tr(lang, "panel.edit.label_line", { v: view.label }),
+    tr(lang, "panel.edit.adapter_line", { v: view.adapterLabel }),
+    tr(lang, "panel.edit.url_line", { v: view.baseUrl }),
+    tr(lang, "panel.edit.key_line", {
+      v: view.hasCredential
+        ? tr(lang, "panel.providers.key_set")
+        : tr(lang, "panel.providers.key_unset"),
+    }),
     "",
-    "برای پاک‌کردن کلید از دکمهٔ مربوط در صفحهٔ پروایدر استفاده کنید.",
-    "برای لغو، /admin را بفرستید.",
+    tr(lang, "panel.edit.key_hint"),
+    tr(lang, "panel.add.cancel_hint"),
   ].join("\n");
 }
 
@@ -1569,6 +2039,34 @@ async function safeSend(ctx: Context, text: string, keyboard?: unknown): Promise
   } catch {
     console.error("[sol] ai panel: telegram send failed");
   }
+}
+
+/**
+ * Edit the panel message in place when this render answers a button click;
+ * otherwise send a new message.
+ *
+ * A failed edit (stale, deleted, or unchanged message) is swallowed without
+ * falling back to a reply: stacking a new message would undo the whole point.
+ */
+async function safeEditOrSend(ctx: Context, text: string, keyboard?: unknown): Promise<void> {
+  const qc = ctx as unknown as {
+    callbackQuery?: unknown;
+    editMessageText?: (text: string, other?: { reply_markup?: unknown }) => Promise<unknown>;
+  };
+  if (qc.callbackQuery !== undefined && typeof qc.editMessageText === "function") {
+    try {
+      await qc.editMessageText.call(
+        ctx,
+        text,
+        keyboard !== undefined ? { reply_markup: keyboard } : undefined,
+      );
+      return;
+    } catch {
+      // Stale, deleted, or byte-identical message: leave it alone.
+    }
+    return;
+  }
+  await safeSend(ctx, text, keyboard);
 }
 
 /**
@@ -1594,16 +2092,20 @@ const AI_ACTION_KINDS: ReadonlySet<string> = new Set([
   "ai_test",
   "ai_discover",
   "ai_clear_key",
+  "ai_clear_key_confirm",
   "ai_pool_key",
   "ai_delete",
+  "ai_delete_confirm",
   "ai_models",
   "ai_model_add_form",
   "ai_model_toggle",
   "ai_model_delete",
+  "ai_model_delete_confirm",
   "ai_model_default",
   "ai_select_menu",
   "ai_select_provider",
   "ai_select_model",
+  "ai_form_cancel",
   // ---- failover administration ----
   "fo_menu",
   "fo_toggle",
@@ -1622,9 +2124,11 @@ const AI_ACTION_KINDS: ReadonlySet<string> = new Set([
   "fo_local_confirm",
   // ---- AI operational status ----
   "ai_status",
+  "ai_probe_all",
   // ---- web-search settings ----
   "search_menu",
   "search_pick",
   "search_set_key_form",
   "search_clear_key",
+  "search_clear_key_confirm",
 ]);

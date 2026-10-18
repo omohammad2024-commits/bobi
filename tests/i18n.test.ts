@@ -1,8 +1,9 @@
 /**
  * Tests for src/i18n (Phase D5) and the menu/bot string migration.
  *
- * The fa pack must stay byte-identical to the Persian text the bot used
- * before i18n; the en pack must cover every key. No network, no Telegram.
+ * The fa pack holds the ground-truth Persian copy; the en pack must cover
+ * every key. The FA_EXPECTED map below pins the exact fa text so any copy
+ * drift (accidental or deliberate) fails loudly. No network, no Telegram.
  */
 import { describe, expect, test } from "bun:test";
 import { t, resolveLang, LANG_PREF_KEY, fa, en } from "../src/i18n";
@@ -14,6 +15,7 @@ import {
   replyForCallback,
   toolListText,
 } from "../src/bot/menu";
+import { tr as trMenu } from "../src/bot/menu_strings";
 import {
   VOICE_FAILED_NOTE,
   VOICE_TRUNCATED_NOTE,
@@ -27,19 +29,26 @@ import {
   handleStopCommand,
   handleVoiceCommand,
   handlePersonalityCommand,
+  userFacingMessage,
+  describeSkipped,
+  describeNothingUsable,
   type VoiceCommandEnv,
 } from "../src/bot/bot";
+import { EngineError } from "../src/conversation/engine";
+import { ToolError } from "../src/tools/errors";
 import { buildSystemPrompt } from "../src/agent/prompt";
 
 // ---------------------------------------------------------------------------
-// fa pack: byte-identical to the pre-i18n Persian strings.
+// fa pack: ground-truth Persian copy (pinned so drift fails loudly).
 // ---------------------------------------------------------------------------
 
 /**
- * Every migrated key with its exact pre-i18n Persian text.
+ * Every central-pack key with its exact Persian text.
  *
  * These literals were copied from src/bot/menu.ts and src/bot/bot.ts before
- * migration; the test fails if the fa pack ever drifts from them.
+ * the D5 migration (byte-identical to the pre-i18n text); the UI voice-polish
+ * pass deliberately changed a few (marked above) and added the §11c keys —
+ * the test fails if the fa pack ever drifts from this map.
  */
 const FA_EXPECTED: Readonly<Record<string, string>> = {
   "menu.label.chat": "گفت‌وگو",
@@ -58,7 +67,7 @@ const FA_EXPECTED: Readonly<Record<string, string>> = {
   "menu.tools.title": "ابزارهای فعال بابی:",
   "menu.tools.empty": "ابزارها: هیچ ابزار فعالی وجود ندارد.",
   "menu.tools.note":
-    "فهرست بالا یعنی ابزارها در دسترس‌اند؛ اجرای هر کدام به مجوز شما بستگی دارد.",
+    "فهرست بالا یعنی ابزارها در دسترس‌اند؛ اجرای هر کدوم به اجازهٔ تو بستگی داره.",
   "menu.tools.item": "{index}. {label}",
   "start.greeting": "سلام! من BOBI هستم. یک گزینه را انتخاب کن:",
   "help.title": "دستورهای موجود:",
@@ -155,10 +164,40 @@ const FA_EXPECTED: Readonly<Record<string, string>> = {
   "help.cmd.learn": "آموزش مهارت",
   "gate.group_not_ready":
     "این ربات در این گروه هنوز فعال نیست. مالک ربات باید ابتدا دسترسی را تأیید کند.",
+  // Gate denials (moved into the packs so gateUser can answer in the
+  // sender's language; the fa text was tightened by the UI voice-polish
+  // pass, so it no longer matches the old user_panel.ts constants).
+  "gate.user_not_approved":
+    "درخواستت برای مالک ربات فرستاده شد؛ بعد از تأیید می‌تونی گفت‌وگو کنی.",
+  "gate.user_revoked": "دسترسی‌ت به این ربات لغو شده.",
+  // Progress lines (bilingual since the UI upgrade; fa is ground truth).
+  "progress.thinking": "در حال فکر کردن…",
+  "progress.tool_running": "در حال {label}…",
+  "progress.tool_done": "{label} انجام شد.",
+  // /reset is two-step since the UI upgrade (with a message-count preview).
+  "reset.confirm":
+    "⚠️ با این کار {n} پیام این گفت‌وگو کلاً پاک می‌شه — برگشتی نیست.\nاگه مطمئنی: /reset --confirm",
+  // Rate-limit and turn-failure copy, i18n'd out of bot.ts (§11c of the UI
+  // audit) in the voice-polish pass; fa is ground truth.
+  "ratelimit.wait": "یه کم تند رفتی؛ حدود {seconds} ثانیهٔ دیگه دوباره تلاش کن.",
+  "reply.truncated": "به سقف مراحل این پاسخ رسیدم؛ برای جزئیات بیشتر دقیق‌تر بپرس.",
+  "media.skipped_title": "این پیوست‌ها استفاده نشدند:",
+  "media.skipped_too_large": "• {kind}: حجمش بیش از حد مجاز بود.",
+  "media.skipped_unsupported": "• {kind}: این نوع فایل پشتیبانی نمی‌شود.",
+  "media.skipped_other": "• {kind}: دریافت نشد.",
+  "media.empty": "پیام خالی است.",
+  "error.empty_response": "پاسخی نگرفتم؛ دوباره تلاش کن.",
+  "error.auth": "سرویس در دسترس نیست (احراز هویت).",
+  "error.quota": "سقف استفاده پر شده؛ کمی بعد تلاش کن.",
+  "error.network": "خطای شبکه؛ دوباره تلاش کن.",
+  "error.timeout": "پاسخ خیلی طول کشید؛ لغو شد.",
+  "error.overloaded": "سیستم شلوغه؛ لحظه‌ای بعد تلاش کن.",
+  "error.unknown": "خطای موقت؛ دوباره تلاش کن.",
+  "error.unexpected": "خطای غیرمنتظره.",
 };
 
 describe("fa pack", () => {
-  test("every migrated key is byte-identical to the pre-i18n Persian text", () => {
+  test("fa pack matches the pinned ground-truth copy", () => {
     for (const [key, expected] of Object.entries(FA_EXPECTED)) {
       expect(t(key, "fa")).toBe(expected);
     }
@@ -168,13 +207,20 @@ describe("fa pack", () => {
     expect(Object.keys(fa).sort()).toEqual(Object.keys(FA_EXPECTED).sort());
   });
 
-  test("menu ground-truth exports still match the pack", () => {
-    expect(t("menu.label.chat", "fa")).toBe(MAIN_MENU_LABELS.chat);
-    expect(t("menu.label.tools", "fa")).toBe(MAIN_MENU_LABELS.tools);
-    expect(t("menu.label.about", "fa")).toBe(MAIN_MENU_LABELS.about);
-    expect(t("menu.reply.chat", "fa")).toBe(MENU_REPLIES[CALLBACKS.chat]);
-    expect(t("menu.reply.tools", "fa")).toBe(MENU_REPLIES[CALLBACKS.tools]);
-    expect(t("menu.reply.about", "fa")).toBe(MENU_REPLIES[CALLBACKS.about]);
+  test("menu ground-truth exports match the local menu table", () => {
+    // Labels moved out of the central pack into src/bot/menu_strings.ts;
+    // MAIN_MENU_LABELS is the fa ground truth for the default menu.
+    const labels = Object.values(MAIN_MENU_LABELS);
+    expect(new Set(labels).size).toBe(labels.length);
+    for (const [key, label] of Object.entries(MAIN_MENU_LABELS)) {
+      expect(label, key).toBe(trMenu("fa", `menu.label.${key}`));
+    }
+    for (const cb of Object.values(CALLBACKS)) {
+      expect(MENU_REPLIES[cb].length, cb).toBeGreaterThan(0);
+    }
+    expect(MENU_REPLIES[CALLBACKS.chat]).toBe(trMenu("fa", "menu.screen.chat"));
+    expect(MENU_REPLIES[CALLBACKS.about]).toBe(trMenu("fa", "menu.screen.about"));
+    expect(MENU_REPLIES[CALLBACKS.home]).toBe(trMenu("fa", "menu.start.text"));
   });
 
   test("bot ground-truth exports still match the pack", () => {
@@ -343,21 +389,21 @@ function replyCtx() {
 }
 
 describe("menu in English", () => {
-  test("main menu buttons use the en pack", () => {
+  test("main menu buttons use the en table", () => {
     const kb = buildMainMenu("en");
-    expect(kb.inline_keyboard[0]!.map((b) => b.text)).toEqual([
-      "Chat",
-      "Tools",
-      "About BOBI",
+    expect(kb.inline_keyboard.map((row) => row.map((b) => b.text))).toEqual([
+      ["💬 Chat", "🛠 Tools"],
+      ["⌨️ Commands", "⚙️ Settings"],
+      ["ℹ️ About BOBI", "❓ Help"],
     ]);
   });
 
   test("default stays Persian", () => {
     const kb = buildMainMenu();
-    expect(kb.inline_keyboard[0]!.map((b) => b.text)).toEqual([
-      MAIN_MENU_LABELS.chat,
-      MAIN_MENU_LABELS.tools,
-      MAIN_MENU_LABELS.about,
+    expect(kb.inline_keyboard.map((row) => row.map((b) => b.text))).toEqual([
+      [MAIN_MENU_LABELS.chat, MAIN_MENU_LABELS.tools],
+      [MAIN_MENU_LABELS.commands, MAIN_MENU_LABELS.settings],
+      [MAIN_MENU_LABELS.about, MAIN_MENU_LABELS.help],
     ]);
   });
 
@@ -395,11 +441,22 @@ describe("command handlers in English", () => {
   test("/reset confirmation translates", async () => {
     const { replies, ctx } = replyCtx();
     await handleResetCommand(
-      ctx,
+      { ...ctx, message: { text: "/reset --confirm" } },
       { engine: { cancel: () => {}, clearHistory: () => {} } },
       "en",
     );
     expect(replies).toEqual(["This conversation's history was cleared. 🧹"]);
+  });
+
+  test("/reset bare asks for confirmation in the sender's language", async () => {
+    const { replies, ctx } = replyCtx();
+    await handleResetCommand(
+      ctx,
+      { engine: { cancel: () => {}, clearHistory: () => {} } },
+      "en",
+    );
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain("/reset --confirm");
   });
 
   test("/compress failure reply translates", async () => {
@@ -471,5 +528,90 @@ describe("formatCommandHelp", () => {
   test("en renders translated descriptions", () => {
     const text = formatCommandHelp(visibleCommandHelp(true), "en");
     expect(text).toContain("/ai — Manage the AI provider");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// bot.ts §11c: the remaining hardcoded strings now go through t().
+// ---------------------------------------------------------------------------
+
+describe("bot.ts error paths (§11c i18n)", () => {
+  const engineErr = (kind: ConstructorParameters<typeof EngineError>[0]) =>
+    new EngineError(kind, "boom");
+
+  test("every engine error kind maps to a pack string in both languages", () => {
+    const expected: Record<string, [string, string]> = {
+      empty_input: ["پیام خالی است.", "The message is empty."],
+      empty_response: ["پاسخی نگرفتم؛ دوباره تلاش کن.", "I got no reply; try again."],
+      auth: ["سرویس در دسترس نیست (احراز هویت).", "The service is unavailable (authentication)."],
+      quota: ["سقف استفاده پر شده؛ کمی بعد تلاش کن.", "The usage quota is full; try again in a bit."],
+      network: ["خطای شبکه؛ دوباره تلاش کن.", "Network error; try again."],
+      timeout: ["پاسخ خیلی طول کشید؛ لغو شد.", "The reply took too long; it was cancelled."],
+      aborted: ["پاسخ خیلی طول کشید؛ لغو شد.", "The reply took too long; it was cancelled."],
+      overloaded: ["سیستم شلوغه؛ لحظه‌ای بعد تلاش کن.", "The system is busy; try again in a moment."],
+    };
+    for (const [kind, [faText, enText]] of Object.entries(expected)) {
+      const err = engineErr(kind as ConstructorParameters<typeof EngineError>[0]);
+      expect(userFacingMessage(err, "fa"), kind).toBe(faText);
+      expect(userFacingMessage(err, "en"), kind).toBe(enText);
+    }
+  });
+
+  test("superseded stays silent; unknown engine errors and non-engine errors degrade gracefully", () => {
+    expect(userFacingMessage(engineErr("superseded"), "fa")).toBe("");
+    expect(userFacingMessage(engineErr("superseded"), "en")).toBe("");
+    // An engine error kind added later falls back to the generic message.
+    expect(userFacingMessage(new Error("weird"), "fa")).toBe("خطای غیرمنتظره.");
+    expect(userFacingMessage(new Error("weird"), "en")).toBe("Unexpected error.");
+  });
+
+  test("tool errors still use the tool layer's message (unchanged behaviour)", () => {
+    const err = new ToolError("timeout", "timed out");
+    const msg = userFacingMessage(err, "fa");
+    expect(typeof msg).toBe("string");
+    expect(msg.length).toBeGreaterThan(0);
+  });
+
+  test("rate-limit and truncation notes resolve through t() in both languages", () => {
+    expect(t("ratelimit.wait", "fa", { seconds: 42 })).toBe(
+      "یه کم تند رفتی؛ حدود 42 ثانیهٔ دیگه دوباره تلاش کن.",
+    );
+    expect(t("ratelimit.wait", "en", { seconds: 42 })).toBe(
+      "You're going a bit fast; try again in about 42 seconds.",
+    );
+    expect(t("reply.truncated", "fa")).toBe(
+      "به سقف مراحل این پاسخ رسیدم؛ برای جزئیات بیشتر دقیق‌تر بپرس.",
+    );
+    expect(t("reply.truncated", "en")).toBe(
+      "I hit this reply's step budget; ask more specifically for more detail.",
+    );
+  });
+
+  test("describeSkipped names each reason in both languages", () => {
+    const skipped = [
+      { kind: "photo", reason: "too_large" },
+      { kind: "document", reason: "unsupported" },
+      { kind: "voice", reason: "download_failed" },
+    ];
+    expect(describeSkipped(skipped, "fa")).toBe(
+      "این پیوست‌ها استفاده نشدند:\n" +
+        "• photo: حجمش بیش از حد مجاز بود.\n" +
+        "• document: این نوع فایل پشتیبانی نمی‌شود.\n" +
+        "• voice: دریافت نشد.",
+    );
+    expect(describeSkipped(skipped, "en")).toBe(
+      "These attachments couldn't be used:\n" +
+        "• photo: over the size limit.\n" +
+        "• document: this file type isn't supported.\n" +
+        "• voice: couldn't be fetched.",
+    );
+    expect(describeSkipped([], "fa")).toBe("");
+  });
+
+  test("describeNothingUsable falls back to the empty-message note", () => {
+    expect(describeNothingUsable([], "fa")).toBe("پیام خالی است.");
+    expect(describeNothingUsable([], "en")).toBe("The message is empty.");
+    const note = describeNothingUsable([{ kind: "photo", reason: "too_large" }], "fa");
+    expect(note).toContain("این پیوست‌ها استفاده نشدند:");
   });
 });
