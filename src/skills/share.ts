@@ -264,7 +264,7 @@ function deriveCapabilities(skill: Skill): string[] {
 export function buildSkillPackage(
   dir: string,
   name: string,
-  opts: { signer?: PackageSigner } = {},
+  opts: { signer?: PackageSigner; exportedAt?: string } = {},
 ): { ok: true; pkg: BuiltSkillPackage } | { ok: false; error: SkillExportError } {
   const clean = name.trim().toLowerCase();
   const abs = resolve(dir);
@@ -285,7 +285,7 @@ export function buildSkillPackage(
 
   const skill = found.skill;
   const metadata: SkillPackageMetadata = {
-    exportedAt: new Date().toISOString(),
+    exportedAt: opts.exportedAt ?? new Date().toISOString(),
     sourceInstance: instanceLabel(),
     capabilities: deriveCapabilities(skill),
   };

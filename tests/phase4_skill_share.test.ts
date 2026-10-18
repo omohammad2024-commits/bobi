@@ -115,8 +115,11 @@ describe("buildSkillPackage", () => {
   test("the checksum is deterministic across exports", () => {
     const dir = tmpDir();
     writeSkill(dir, "memory-coach", SKILL_V1);
-    const a = buildSkillPackage(dir, "memory-coach");
-    const b = buildSkillPackage(dir, "memory-coach");
+    // exportedAt is wall-clock time; freeze it so the test is deterministic
+    // regardless of millisecond boundaries.
+    const frozen = "2026-10-19T00:00:00.000Z";
+    const a = buildSkillPackage(dir, "memory-coach", { exportedAt: frozen });
+    const b = buildSkillPackage(dir, "memory-coach", { exportedAt: frozen });
     expect(a.ok && b.ok).toBe(true);
     if (!a.ok || !b.ok) return;
     expect(a.pkg.checksum).toBe(b.pkg.checksum);
