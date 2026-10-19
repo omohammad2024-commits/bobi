@@ -44,6 +44,11 @@ import {
 import { t, type Lang } from "../i18n";
 import { runWithStreamSink, streamingEnabled, StreamRenderer } from "../agent/stream";
 import type { StreamEventSink } from "../agent/stream";
+import {
+  blockquoteToEntities,
+  replyExpandable,
+  stripBlockquoteMarkers,
+} from "./expandable_quote";
 import type { ConversationEngine } from "../conversation/engine";
 import { EngineError } from "../conversation/engine";
 import type { AgentStep } from "../agent/transcript";
@@ -507,7 +512,16 @@ function createTurnStreamer(
       let edited = false;
       if (messageId !== undefined && ctx.chat !== undefined) {
         try {
-          await ctx.api.editMessageText(ctx.chat.id, messageId, chunks[0]!);
+          // Entities are computed on the FINAL text only: the streamed
+          // previews stay plain text so a half-written quote can never be
+          // rejected for malformed entities.
+          const first = blockquoteToEntities(chunks[0]!);
+          await ctx.api.editMessageText(
+            ctx.chat.id,
+            messageId,
+            first.text,
+            first.entities.length > 0 ? { entities: first.entities } : undefined,
+          );
           edited = true;
         } catch {
           // The edit was refused (deleted message, rate limit): fall
@@ -515,7 +529,7 @@ function createTurnStreamer(
           edited = false;
         }
       }
-      for (const c of edited ? chunks.slice(1) : chunks) await ctx.reply(c);
+      for (const c of edited ? chunks.slice(1) : chunks) await replyExpandable(ctx, c);
       return true;
     },
   };
@@ -773,7 +787,7 @@ export async function deliverReply(
     if (!ttsConfigured && inputWasVoice && prefs !== undefined) {
       await noteVoiceUnavailable(ctx, prefs, userId, lang);
     }
-    for (const chunk of chunks) await ctx.reply(chunk);
+    for (const chunk of chunks) await replyExpandable(ctx, chunk);
     return;
   }
 
@@ -781,7 +795,8 @@ export async function deliverReply(
   try {
     for (const piece of voice) {
       const { audio } = await withChatAction(ctx, "upload_voice", () =>
-        synth(tts!, piece, AbortSignal.timeout(TTS_TIMEOUT_MS)),
+        // Strip quote markers: the voice must never read "> " aloud.
+        synth(tts!, stripBlockquoteMarkers(piece), AbortSignal.timeout(TTS_TIMEOUT_MS)),
       );
       await ctx.replyWithVoice(new InputFile(audio, "bobi.ogg"));
     }
@@ -789,12 +804,12 @@ export async function deliverReply(
     // Technical detail stays in the log; the user gets the static note.
     console.error("[bobi] TTS failed, falling back to text:", errToLog(err));
     await ctx.reply(t("voice.tts_failed", lang));
-    for (const chunk of chunks) await ctx.reply(chunk);
+    for (const chunk of chunks) await replyExpandable(ctx, chunk);
     return;
   }
   if (text.length > 0) {
     await ctx.reply(t("voice.truncated", lang));
-    for (const chunk of text) await ctx.reply(chunk);
+    for (const chunk of text) await replyExpandable(ctx, chunk);
   }
 }
 

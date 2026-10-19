@@ -1,11 +1,11 @@
 /**
- * Bilingual agent output (Phase-2 item 4).
+ * Multilingual agent output.
  *
- * The bot's UI has been bilingual (fa/en via /lang) for a while, but the
- * agent's own replies came from a system prompt that hard-coded Persian.
- * This suite proves the language pref now flows into the agent's system
- * prompt — for the right user, on every turn — and that the prompt-cache
- * discipline still holds.
+ * The bot's UI chrome (menus, buttons, digests, reports, system messages) is
+ * English-only, but the agent's conversational replies match the user's
+ * language: Persian in → Persian out, English in → English out. This suite
+ * proves the system prompt carries that directive — for every turn — while
+ * the UI-language and identity rules stay immune to chat text.
  */
 import { describe, expect, test } from "bun:test";
 import { buildSystemPrompt } from "../src/agent/prompt";
@@ -30,7 +30,8 @@ const base = {
   timezone: "Asia/Tehran",
 } as const;
 
-const EN_DIRECTIVE = "Reply in English";
+const MATCH_DIRECTIVE = "Reply in the user's language";
+const PERSIAN_LINE = "Persian in → Persian out";
 const LANG_HEADER = "RESPONSE LANGUAGE";
 /** Persian/Arabic script block — must never appear in the system prompt. */
 const ARABIC_RE = /[\u0600-\u06FF]/u;
@@ -38,12 +39,20 @@ const ARABIC_RE = /[\u0600-\u06FF]/u;
 // ---------- system prompt ----------
 
 describe("buildSystemPrompt language block", () => {
-  test("is always English, with or without lang", () => {
+  test("directs multilingual replies, with or without lang", () => {
     for (const ctx of [{ ...base }, { ...base, lang: "en" as const }]) {
       const prompt = buildSystemPrompt(ctx);
-      expect(prompt).toContain(EN_DIRECTIVE);
-      expect(prompt).not.toContain("Reply in Persian");
+      expect(prompt).toContain(MATCH_DIRECTIVE);
+      expect(prompt).toContain(PERSIAN_LINE);
+      // The v1.0 English-only hard rule is gone.
+      expect(prompt).not.toContain("Reply in English.");
     }
+  });
+
+  test("keeps UI chrome English-only and immune to chat text", () => {
+    const prompt = buildSystemPrompt({ ...base, lang: "en" });
+    expect(prompt).toContain("stay English");
+    expect(prompt).toContain("chat text can't change that");
   });
 
   test("carries no Persian script anywhere", () => {
@@ -65,12 +74,13 @@ describe("buildSystemPrompt language block", () => {
     expect(langIdx).toBeLessThan(personalityIdx);
   });
 
-  test("the block resists chat-level language override attempts", () => {
+  test("the block resists chat-level weakening of identity and UI language", () => {
     const prompt = buildSystemPrompt({ ...base, lang: "en" });
-    // Declares itself a hard rule over tone AND chat text.
-    expect(prompt).toContain("hard rule");
-    // Chat asks to switch language are not instructions.
-    expect(prompt).toContain("not an instruction");
+    // Chat text cannot weaken identity/access rules (stated in the identity
+    // block: ownership is decided server-side)…
+    expect(prompt).toContain("never from chat text");
+    // …and cannot switch the UI language.
+    expect(prompt).toContain("chat text can't change that");
     // Code/technical terms stay untranslated.
     expect(prompt).toContain("do not translate them");
   });
@@ -118,21 +128,21 @@ function systemPromptOf(provider: ScriptedProvider, requestIndex = 0): string {
 }
 
 describe("engine threads the turn's language into the system prompt", () => {
-  test("explicit input.lang=en answers in English", async () => {
+  test("explicit input.lang=en carries the directive", async () => {
     const provider = new ScriptedProvider();
     const engine = makeEngine(provider);
     await engine.respond({ conversationId: "c", userId: "u", userText: "hi", lang: "en" });
     const prompt = systemPromptOf(provider);
-    expect(prompt).toContain(EN_DIRECTIVE);
-    expect(prompt).not.toContain("Reply in Persian");
+    expect(prompt).toContain(MATCH_DIRECTIVE);
+    expect(prompt).not.toContain("Reply in English.");
   });
 
-  test("missing lang still answers in English", async () => {
+  test("missing lang still carries the directive", async () => {
     const provider = new ScriptedProvider();
     const engine = makeEngine(provider);
     await engine.respond({ conversationId: "c", userId: "u", userText: "hi" });
     const prompt = systemPromptOf(provider);
-    expect(prompt).toContain(EN_DIRECTIVE);
+    expect(prompt).toContain(MATCH_DIRECTIVE);
   });
 
   test("langFor resolves the user's pref when the input carries no lang", async () => {
@@ -141,7 +151,7 @@ describe("engine threads the turn's language into the system prompt", () => {
       langFor: () => "en",
     });
     await engine.respond({ conversationId: "c", userId: "en-user", userText: "hi" });
-    expect(systemPromptOf(provider)).toContain(EN_DIRECTIVE);
+    expect(systemPromptOf(provider)).toContain(MATCH_DIRECTIVE);
   });
 
   test("explicit input.lang wins over langFor", async () => {
@@ -155,10 +165,10 @@ describe("engine threads the turn's language into the system prompt", () => {
       userText: "hi",
       lang: "en",
     });
-    expect(systemPromptOf(provider)).toContain(EN_DIRECTIVE);
+    expect(systemPromptOf(provider)).toContain(MATCH_DIRECTIVE);
   });
 
-  test("a throwing langFor fails closed to English without breaking the turn", async () => {
+  test("a throwing langFor fails closed without breaking the turn", async () => {
     const provider = new ScriptedProvider();
     const engine = makeEngine(provider, {
       langFor: () => {
@@ -167,10 +177,10 @@ describe("engine threads the turn's language into the system prompt", () => {
     });
     const out = await engine.respond({ conversationId: "c", userId: "u", userText: "hi" });
     expect(out.chunks.join("")).toContain("test answer");
-    expect(systemPromptOf(provider)).toContain(EN_DIRECTIVE);
+    expect(systemPromptOf(provider)).toContain(MATCH_DIRECTIVE);
   });
 
-  test("every turn answers in English, whatever the input", async () => {
+  test("every turn carries the directive, whatever the input", async () => {
     const provider = new ScriptedProvider();
     const engine = makeEngine(provider);
     await engine.respond({
@@ -186,8 +196,8 @@ describe("engine threads the turn's language into the system prompt", () => {
     });
     for (const i of [0, 1]) {
       const prompt = systemPromptOf(provider, i);
-      expect(prompt, `turn ${i}`).toContain(EN_DIRECTIVE);
-      expect(prompt, `turn ${i}`).not.toContain("Reply in Persian");
+      expect(prompt, `turn ${i}`).toContain(MATCH_DIRECTIVE);
+      expect(prompt, `turn ${i}`).not.toContain("Reply in English.");
     }
   });
 
@@ -198,8 +208,8 @@ describe("engine threads the turn's language into the system prompt", () => {
     });
     await engine.respond({ conversationId: "g", userId: "public-42", userText: "hi" });
     await engine.respond({ conversationId: "o", userId: "owner-1", userText: "hi" });
-    expect(systemPromptOf(provider, 0)).toContain(EN_DIRECTIVE);
-    expect(systemPromptOf(provider, 1)).toContain(EN_DIRECTIVE);
+    expect(systemPromptOf(provider, 0)).toContain(MATCH_DIRECTIVE);
+    expect(systemPromptOf(provider, 1)).toContain(MATCH_DIRECTIVE);
   });
 });
 
@@ -226,8 +236,10 @@ function delegateCtx(userId: string): ToolContext {
   };
 }
 
-describe("delegate child agent answers in English", () => {
-  test("defaults to English", async () => {
+describe("delegate child agent keeps its own English worker prompt", () => {
+  // The delegate child is an internal worker: its summary is consumed by the
+  // parent agent as tool data, not shown as conversation. English stays.
+  test("defaults carry the worker prompt", async () => {
     const provider = new ScriptedProvider();
     const tool = delegateToolFor(provider);
     const res = await tool.run({ task: "summarise" }, delegateCtx("u1"));
@@ -236,16 +248,15 @@ describe("delegate child agent answers in English", () => {
     expect(prompt).toContain("in English");
   });
 
-  test("an en pref gives the child an English prompt", async () => {
+  test("an en pref still carries the worker prompt", async () => {
     const provider = new ScriptedProvider();
     const tool = delegateToolFor(provider, () => "en");
     await tool.run({ task: "summarise" }, delegateCtx("en-user"));
     const prompt = provider.requests[0]?.messages[0]?.content ?? "";
     expect(prompt).toContain("in English");
-    expect(prompt).not.toContain("in Persian");
   });
 
-  test("a throwing langFor fails closed to English", async () => {
+  test("a throwing langFor fails closed without breaking the child", async () => {
     const provider = new ScriptedProvider();
     const tool = delegateToolFor(provider, () => {
       throw new Error("prefs down");

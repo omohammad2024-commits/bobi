@@ -178,13 +178,14 @@ describe("buildSystemPrompt contextFiles", () => {
     ).not.toContain("Project context:");
   });
 
-  test("the response-language block is English-only", () => {
+  test("the response-language block is multilingual for conversation", () => {
     for (const withLang of [false, true]) {
       const prompt = withLang
         ? buildSystemPrompt({ ...basePrompt(), lang: "en" })
         : buildSystemPrompt({ ...basePrompt() });
-      expect(prompt).toContain("Reply in English.");
-      expect(prompt).not.toContain("Reply in Persian");
+      expect(prompt).toContain("Reply in the user's language");
+      expect(prompt).toContain("Persian in → Persian out");
+      expect(prompt).not.toContain("Reply in English.");
     }
   });
 });
