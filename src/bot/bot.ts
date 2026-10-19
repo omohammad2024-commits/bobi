@@ -723,10 +723,12 @@ export interface DeliverCtx {
    * the reply contains markdown blockquotes, replyExpandable passes the
    * expandable_blockquote entities through it. A reply() that ignores the
    * second argument silently drops the quotes, so callers must forward it.
+   * `extra.reply_parameters` makes the reply quote a specific message —
+   * used in groups so the bot visibly replies to the user who called it.
    */
   reply(
     text: string,
-    extra?: { entities?: MessageEntity[] },
+    extra?: { entities?: MessageEntity[]; reply_parameters?: { message_id: number } },
   ): Promise<unknown>;
   replyWithVoice(voice: InputFile): Promise<unknown>;
   chat?: { id: number | string } | undefined;
@@ -743,6 +745,11 @@ export interface DeliverOpts {
   inputWasVoice?: boolean;
   /** Telegram chat type: "private" | "group" | "supergroup" | "channel". */
   chatType?: string;
+  /**
+   * The Telegram message ID to reply to. When set (in groups), the bot's
+   * response visibly quotes the user's message via reply_parameters.
+   */
+  replyToMessageId?: number;
 }
 
 /**
@@ -797,7 +804,7 @@ export async function deliverReply(
     if (!ttsConfigured && inputWasVoice && prefs !== undefined) {
       await noteVoiceUnavailable(ctx, prefs, userId, lang);
     }
-    for (const chunk of chunks) await replyExpandable(ctx, chunk);
+    for (const chunk of chunks) await replyExpandable(ctx, chunk, opts.replyToMessageId);
     return;
   }
 
@@ -1637,6 +1644,11 @@ async function runTurnInner(
       await deliverReply(ctx, deps, userId, out.chunks, synthesizeSpeech, {
         inputWasVoice,
         chatType: ctx.chat?.type ?? "private",
+        // In groups, visibly reply to the user's message so it's clear
+        // who the bot is answering.
+        ...(ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
+          ? { replyToMessageId: ctx.message?.message_id }
+          : {}),
       });
     }
     // Media a tool produced for the user (a generated image, say) follows the

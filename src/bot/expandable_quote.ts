@@ -99,7 +99,7 @@ export function blockquoteToEntities(input: string): ExpandableQuoteResult {
 export interface ReplyLike {
   reply(
     text: string,
-    extra?: { entities?: MessageEntity[] },
+    extra?: { entities?: MessageEntity[]; reply_parameters?: { message_id: number } },
   ): Promise<unknown>;
 }
 
@@ -113,12 +113,16 @@ export interface ReplyLike {
 export async function replyExpandable(
   ctx: ReplyLike,
   text: string,
+  replyToMessageId?: number,
 ): Promise<void> {
   const { text: clean, entities } = blockquoteToEntities(text);
-  if (entities.length === 0) {
+  const extra: { entities?: MessageEntity[]; reply_parameters?: { message_id: number } } = {};
+  if (entities.length > 0) extra.entities = entities;
+  if (replyToMessageId !== undefined) extra.reply_parameters = { message_id: replyToMessageId };
+  if (entities.length === 0 && replyToMessageId === undefined) {
     await ctx.reply(text);
   } else {
-    await ctx.reply(clean, { entities });
+    await ctx.reply(clean, extra);
   }
 }
 
