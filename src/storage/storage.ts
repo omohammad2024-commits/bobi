@@ -3295,6 +3295,6 @@ function clampAttempts(raw: number | undefined): number {
 
 /** Per-candidate timeout is bounded both ways, so it can never be zero. */
 function clampTimeout(raw: number | undefined): number {
-  if (raw === undefined) return 15_000;
-  return clampInt(raw, 1_000, 60_000, 15_000);
+  if (raw === undefined) return 300_000;
+  return clampInt(raw, 1_000, 600_000, 300_000);
 }
