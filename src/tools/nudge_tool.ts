@@ -22,7 +22,7 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
-import { MAX_NUDGE_TEXT_LENGTH, type NudgeTracker } from "../nudges/tracker";
+import { MAX_NUDGE_TEXT_LENGTH, MAX_OPEN_NUDGES_PER_USER, type NudgeTracker } from "../nudges/tracker";
 import { DEFAULT_NUDGE_TIMEZONE, parseDueInstant } from "../nudges/time_fa";
 
 export const NOTE_FOLLOWUP_PERMISSION = "tools:note_followup";
@@ -59,7 +59,7 @@ export function createNoteFollowupTool(deps: NudgeToolDeps): Tool<NoteFollowupIn
   return {
     name: "note_followup",
     description:
-      "یک پیگیری ثبت کن تا بات بعداً خودش یادآوری‌اش کند؛ تا وقتی کاربر صراحتاً نبنددش، یادآوری تکرار می‌شود. زمان را می‌توان به فارسی طبیعی («فردا ساعت ۹») یا ISO با منطقهٔ زمانی داد.",
+      "Record a follow-up for the bot to remind about later; reminders repeat until the user explicitly closes it. The time can be given in natural language or ISO with a timezone.",
     enabled: true,
     permission: { requires: [NOTE_FOLLOWUP_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -71,14 +71,14 @@ export function createNoteFollowupTool(deps: NudgeToolDeps): Tool<NoteFollowupIn
         text: {
           type: "string",
           required: true,
-          description: "چه چیزی باید پیگیری شود.",
+          description: "What should be followed up.",
           minLength: 1,
           maxLength: MAX_NUDGE_TEXT_LENGTH,
         },
         when: {
           type: "string",
           required: true,
-          description: "زمان پیگیری: فارسی طبیعی مثل «فردا ساعت ۹» یا ISO مثل 2026-10-20T09:30:00+03:30.",
+          description: "Follow-up time: natural language or ISO like 2026-10-20T09:30:00+03:30.",
           minLength: 1,
           maxLength: 80,
         },
@@ -92,15 +92,26 @@ export function createNoteFollowupTool(deps: NudgeToolDeps): Tool<NoteFollowupIn
       if (dueAtMs === null) {
         throw new ToolError(
           "invalid_input",
-          "زمان قابل فهم نبود؛ مثلاً «فردا ساعت ۹» یا یک زمان ISO با منطقهٔ زمانی بده.",
+          "The time could not be understood; give a natural phrase or an ISO time with a timezone.",
+        );
+      }
+      const text = input.text.trim();
+      if (text.length === 0) {
+        throw new ToolError("invalid_input", "Follow-up text is empty.");
+      }
+      if (deps.tracker.countOpen(userId) >= MAX_OPEN_NUDGES_PER_USER) {
+        throw new ToolError(
+          "invalid_input",
+          "Too many open follow-ups; close or snooze some first.",
         );
       }
       let id: number;
       try {
-        id = deps.tracker.note(userId, input.text, dueAtMs, "tool");
-      } catch (err) {
-        // Cap/validation failures from the store become model-readable errors.
-        throw new ToolError("invalid_input", err instanceof Error ? err.message : "ثبت پیگیری ناموفق بود.");
+        id = deps.tracker.note(userId, text, dueAtMs, "tool");
+      } catch {
+        // The tracker's own messages are internal; the caller gets a fixed,
+        // English, actionable error instead.
+        throw new ToolError("internal", "Could not record the follow-up.");
       }
       return {
         id,
@@ -127,7 +138,7 @@ export interface ListNudgesOutput {
 export function createListNudgesTool(deps: NudgeToolDeps): Tool<Record<string, never>, ListNudgesOutput> {
   return {
     name: "list_nudges",
-    description: "پیگیری‌های باز (بسته‌نشده) کاربر را فهرست کن.",
+    description: "List the user's open (not closed) follow-ups.",
     enabled: true,
     permission: { requires: [LIST_NUDGES_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -169,7 +180,7 @@ export interface AckNudgeOutput {
 export function createAckNudgeTool(deps: NudgeToolDeps): Tool<AckNudgeInput, AckNudgeOutput> {
   return {
     name: "ack_nudge",
-    description: "یک پیگیری را با شناسه‌اش ببند (انجام شد).",
+    description: "Close a follow-up by its id (done).",
     enabled: true,
     permission: { requires: [ACK_NUDGE_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -181,7 +192,7 @@ export function createAckNudgeTool(deps: NudgeToolDeps): Tool<AckNudgeInput, Ack
         id: {
           type: "integer",
           required: true,
-          description: "شناسهٔ پیگیری، از فهرست پیگیری‌ها.",
+          description: "Follow-up id, from the follow-up list.",
           minimum: 1,
         },
       },
@@ -215,7 +226,7 @@ export function createSnoozeNudgeTool(deps: NudgeToolDeps): Tool<SnoozeNudgeInpu
   const timeZone = deps.defaultTimezone ?? DEFAULT_NUDGE_TIMEZONE;
   return {
     name: "snooze_nudge",
-    description: "یک پیگیری را به زمان دیگری موکول کن.",
+    description: "Postpone a follow-up to another time.",
     enabled: true,
     permission: { requires: [SNOOZE_NUDGE_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -227,13 +238,13 @@ export function createSnoozeNudgeTool(deps: NudgeToolDeps): Tool<SnoozeNudgeInpu
         id: {
           type: "integer",
           required: true,
-          description: "شناسهٔ پیگیری، از فهرست پیگیری‌ها.",
+          description: "Follow-up id, from the follow-up list.",
           minimum: 1,
         },
         until: {
           type: "string",
           required: true,
-          description: "زمان جدید: فارسی طبیعی مثل «فردا ساعت ۹» یا ISO با منطقهٔ زمانی.",
+          description: "New time: natural language or ISO with a timezone.",
           minLength: 1,
           maxLength: 80,
         },
@@ -247,7 +258,7 @@ export function createSnoozeNudgeTool(deps: NudgeToolDeps): Tool<SnoozeNudgeInpu
       if (untilMs === null) {
         throw new ToolError(
           "invalid_input",
-          "زمان قابل فهم نبود؛ مثلاً «فردا ساعت ۹» یا یک زمان ISO با منطقهٔ زمانی بده.",
+          "The time could not be understood; give a natural phrase or an ISO time with a timezone.",
         );
       }
       const snoozed = deps.tracker.snooze(input.id, userId, untilMs);
@@ -279,7 +290,7 @@ export function createNudgeTools(deps: NudgeToolDeps): readonly Tool<unknown, un
 function ownerOf(ctx: ToolContext): string {
   const id = ctx.actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست؛ پیگیری در دسترس نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown; follow-ups are unavailable.");
   }
   return id;
 }

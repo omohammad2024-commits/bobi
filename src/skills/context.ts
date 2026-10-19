@@ -14,7 +14,7 @@ import type { Skill } from "./types";
 import { SKILLS_MAX_INJECT_CHARS, SKILLS_MAX_INJECTED } from "./types";
 import { searchSkills } from "./search";
 
-const BLOCK_HEADER = "مهارت‌های فعال (دستورهای مالک — راهنمای رفتاری، نه ابزار):";
+const BLOCK_HEADER = "Active skills (owner's commands — behavioral guide, not tools):";
 
 function formatSkill(skill: Skill): string {
   return [`### ${skill.name}`, skill.description, "", skill.body.trim()].join(

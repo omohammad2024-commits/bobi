@@ -139,7 +139,7 @@ describe("wire matrix: audio/ogg — native on gemini, named note elsewhere", ()
   test("anthropic: audio is named in the text, not sent", () => {
     const wire = anthropicMessage(msg("بشنو"));
     const json = JSON.stringify(wire);
-    expect(json).toContain("[پیوست صوتی: audio/ogg ارسال نشد]");
+    expect(json).toContain("[Audio attachment: audio/ogg not sent]");
     // The bytes must not ride along in a form the service would reject.
     expect(json).not.toContain(audioPart.base64);
   });
@@ -147,7 +147,7 @@ describe("wire matrix: audio/ogg — native on gemini, named note elsewhere", ()
   test("openai_compatible: audio is named in the text, not sent", () => {
     const wire = toWireMessages([msg("بشنو")])[0]!;
     const json = JSON.stringify(wire);
-    expect(json).toContain("[پیوست audio: audio/ogg ارسال نشد]");
+    expect(json).toContain("[audio attachment: audio/ogg not sent]");
     expect(json).not.toContain(audioPart.base64);
   });
 
@@ -184,7 +184,7 @@ describe("wire matrix: document/pdf — native on anthropic+gemini, named note o
   test("openai_compatible: pdf is named in the text, not sent", () => {
     const wire = toWireMessages([msg("خلاصه کن")])[0]!;
     const json = JSON.stringify(wire);
-    expect(json).toContain("[پیوست document: application/pdf ارسال نشد]");
+    expect(json).toContain("[document attachment: application/pdf not sent]");
     expect(json).not.toContain(pdfPart.base64);
   });
 
@@ -204,25 +204,25 @@ describe("wire matrix: document/plain-text", () => {
     const wire = toWireMessages([msg("بخون")])[0]!;
     const content = wire["content"] as Array<Record<string, unknown>>;
     const block = content.find(
-      (c) => c["type"] === "text" && String(c["text"]).includes("[سند متنی notes.txt]:"),
+      (c) => c["type"] === "text" && String(c["text"]).includes("[Text document notes.txt]:"),
     );
     expect(block).toBeDefined();
     expect(block!["text"] as string).toContain(SAMPLE_TEXT);
     const json = JSON.stringify(wire);
-    expect(json).not.toContain("پشتیبانی نمی‌شود");
+    expect(json).not.toContain("not supported");
     expect(json).not.toContain(TEXT_B64);
   });
 
   test("anthropic: named as unsupported (current contract)", () => {
     const wire = anthropicMessage(msg("بخون"));
     expect(typeof wire.content).toBe("string");
-    expect(wire.content as string).toContain("[پیوست text/plain پشتیبانی نمی‌شود]");
+    expect(wire.content as string).toContain("[text/plain attachment not supported]");
   });
 
   test("gemini: named as unsupported (current contract)", () => {
     const wire = geminiMessage(msg("بخون"));
     const parts = wire.parts as Array<Record<string, unknown>>;
-    expect(parts[0]!["text"] as string).toContain("[پیوست text/plain پشتیبانی نمی‌شود]");
+    expect(parts[0]!["text"] as string).toContain("[text/plain attachment not supported]");
   });
 
   test("nothing silently dropped, on any adapter", () => {
@@ -248,14 +248,14 @@ describe("openai_compatible text-document inline rules", () => {
   test("text/markdown and text/csv inline too", () => {
     for (const mediaType of ["text/markdown", "text/csv"]) {
       const json = JSON.stringify(wireOf(textDoc(mediaType, "# hi", "f.md")));
-      expect(json).toContain("[سند متنی f.md]:");
+      expect(json).toContain("[Text document f.md]:");
       expect(json).toContain("# hi");
     }
   });
 
   test("a missing filename falls back to the media type in the label", () => {
     const json = JSON.stringify(wireOf(textDoc("text/plain", "hello")));
-    expect(json).toContain("[سند متنی text/plain]:");
+    expect(json).toContain("[Text document text/plain]:");
   });
 
   test("a long document is truncated at ~50KB with a named note", () => {
@@ -263,13 +263,13 @@ describe("openai_compatible text-document inline rules", () => {
     const body = "A".repeat(60 * 1024) + "TAIL-MARKER-XYZ" + "B".repeat(30 * 1024);
     const content = wireOf(textDoc("text/plain", body, "big.txt"));
     const json = JSON.stringify(content);
-    expect(json).toContain("[سند متنی big.txt]:");
+    expect(json).toContain("[Text document big.txt]:");
     // The head survives...
     expect(json).toContain("A".repeat(100));
     // ...the tail past the cap does not...
     expect(json).not.toContain("TAIL-MARKER-XYZ");
     // ...and the cut is named.
-    expect(json).toContain("[ادامه‌ی متن به دلیل حجم زیاد حذف شد]");
+    expect(json).toContain("[rest of text omitted due to size]");
   });
 
   test("a text document past the attachment ceiling is named too large, not decoded", () => {
@@ -281,7 +281,7 @@ describe("openai_compatible text-document inline rules", () => {
     };
     const wire = toWireMessages([{ role: "user", content: "x", parts: [huge] }])[0]!;
     const json = JSON.stringify(wire);
-    expect(json).toContain("[پیوست text/plain ارسال نشد: حجم بیش از حد مجاز]");
+    expect(json).toContain("[text/plain attachment not sent: exceeds size limit]");
     expect(json).not.toContain("[سند متنی");
   });
 
@@ -293,7 +293,7 @@ describe("openai_compatible text-document inline rules", () => {
     expect(content.some((c) => c["type"] === "image_url")).toBe(true);
     expect(
       content.some(
-        (c) => c["type"] === "text" && String(c["text"]).includes("[سند متنی notes.txt]:"),
+        (c) => c["type"] === "text" && String(c["text"]).includes("[Text document notes.txt]:"),
       ),
     ).toBe(true);
     expect(JSON.stringify(content)).toContain("هر دو");
@@ -308,7 +308,7 @@ describe("openai_compatible text-document inline rules", () => {
         name: "doc.pdf",
       }),
     );
-    expect(json).toContain("[پیوست document: application/pdf ارسال نشد]");
+    expect(json).toContain("[document attachment: application/pdf not sent]");
     expect(json).not.toContain("[سند متنی");
   });
 });

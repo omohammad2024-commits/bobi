@@ -11,7 +11,7 @@
  * predicate — defence in depth for callers that build actors directly.
  */
 import { ToolError } from "./errors";
-import type { Storage, GoalRecord, GoalStatus } from "../storage/storage";
+import type { Storage, GoalStatus } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
 
 export const ADD_GOAL_PERMISSION = "tools:add_goal";
@@ -48,7 +48,7 @@ export function createAddGoalTool(deps: GoalToolDeps): Tool<AddGoalInput, AddGoa
   return {
     name: "add_goal",
     description:
-      "یک هدف جدید برای مالک ثبت کن. هدف‌ها را ضربانِ خودکار (heartbeat) پیگیری می‌کند. فقط مالک.",
+      "Add a new goal for the owner. Goals are tracked by the automatic heartbeat. Owner only.",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [ADD_GOAL_PERMISSION] },
@@ -58,13 +58,13 @@ export function createAddGoalTool(deps: GoalToolDeps): Tool<AddGoalInput, AddGoa
         title: {
           type: "string",
           required: true,
-          description: "عنوان کوتاه هدف، حداکثر ۱۲۰ کاراکتر.",
+          description: "Short goal title, max 120 characters.",
           minLength: 1,
           maxLength: MAX_TITLE_LENGTH,
         },
         description: {
           type: "string",
-          description: "توضیح تکمیلی هدف، حداکثر ۲۰۰۰ کاراکتر.",
+          description: "Extra goal details, max 2000 characters.",
           maxLength: MAX_DESCRIPTION_LENGTH,
         },
       },
@@ -75,13 +75,13 @@ export function createAddGoalTool(deps: GoalToolDeps): Tool<AddGoalInput, AddGoa
 
       const title = input.title.trim();
       if (title.length === 0) {
-        throw new ToolError("invalid_input", "عنوان هدف خالی است.");
+        throw new ToolError("invalid_input", "Goal title is empty.");
       }
 
       if (deps.storage.countGoals(userId) >= MAX_GOALS_PER_OWNER) {
         throw new ToolError(
           "invalid_input",
-          "تعداد هدف‌ها پر است؛ ابتدا چند هدف را کامل کن.",
+          "Too many goals; complete some first.",
         );
       }
 
@@ -119,7 +119,7 @@ export interface ListGoalsOutput {
 export function createListGoalsTool(deps: GoalToolDeps): Tool<ListGoalsInput, ListGoalsOutput> {
   return {
     name: "list_goals",
-    description: "هدف‌های مالک را فهرست کن؛ اختیاری فقط فعال یا فقط کامل‌شده. فقط مالک.",
+    description: "List the owner's goals; optionally only active or only done. Owner only.",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [LIST_GOALS_PERMISSION] },
@@ -128,7 +128,7 @@ export function createListGoalsTool(deps: GoalToolDeps): Tool<ListGoalsInput, Li
       fields: {
         status: {
           type: "enum",
-          description: "فیلتر وضعیت: active یا done. بدون آن، همه هدف‌ها.",
+          description: "Status filter: active or done. Without it, all goals.",
           choices: [...GOAL_STATUSES],
         },
       },
@@ -171,7 +171,7 @@ export function createCompleteGoalTool(
 ): Tool<CompleteGoalInput, CompleteGoalOutput> {
   return {
     name: "complete_goal",
-    description: "یک هدف را با شناسه‌اش کامل‌شده علامت بزن. فقط مالک.",
+    description: "Mark a goal done by its id. Owner only.",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [COMPLETE_GOAL_PERMISSION] },
@@ -181,7 +181,7 @@ export function createCompleteGoalTool(
         id: {
           type: "integer",
           required: true,
-          description: "شناسهٔ هدف، از فهرست هدف‌ها.",
+          description: "Goal id, from the goal list.",
           minimum: 1,
         },
       },
@@ -193,7 +193,7 @@ export function createCompleteGoalTool(
       // may be completed — completing twice reports false, not a fresh stamp.
       const completed = deps.storage.completeGoal(userId, input.id);
       if (!completed) {
-        throw new ToolError("not_found", "هدف فعالی با این شناسه یافت نشد.");
+        throw new ToolError("not_found", "No active goal found with this id.");
       }
       return {
         id: input.id,
@@ -219,7 +219,7 @@ function parseStatus(raw: string | undefined): GoalStatus | undefined {
   if (raw === undefined) return undefined;
   const value = raw.trim().toLowerCase();
   if (!GOAL_STATUSES.includes(value as GoalStatus)) {
-    throw new ToolError("invalid_input", "وضعیت نامعتبر است؛ active یا done.");
+    throw new ToolError("invalid_input", "Invalid status; active or done.");
   }
   return value as GoalStatus;
 }
@@ -236,16 +236,11 @@ function parseStatus(raw: string | undefined): GoalStatus | undefined {
 function ownerOf(ctx: ToolContext, deps: GoalToolDeps): string {
   const id = ctx.actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown.");
   }
   if (!deps.isOwner(id)) {
-    throw new ToolError("not_allowed", "مدیریت هدف‌ها فقط برای مالک است.");
+    throw new ToolError("not_allowed", "Goal management is owner only.");
   }
   return id;
 }
 
-/** Format a stored goal for a model-facing summary. */
-export function describeGoal(r: GoalRecord): string {
-  const desc = r.description.length > 0 ? ` — ${r.description}` : "";
-  return `#${r.id}: ${r.title}${desc}`;
-}

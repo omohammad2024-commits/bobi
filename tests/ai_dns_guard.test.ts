@@ -322,7 +322,7 @@ describe("pinned transport", () => {
       addresses: ["8.8.8.8"],
     });
     controller.abort();
-    await expect(p).rejects.toThrow(/لغو شد/);
+    await expect(p).rejects.toThrow(/cancelled/i);
   });
 
   test("a deadline rejects as timeout", async () => {
@@ -529,7 +529,7 @@ describe("health checks and failover use the same policy", () => {
     expect(probe.ok).toBe(false);
     // The target policy refused it before any connection was attempted, so the
     // outcome is a response/target fault, never a transport success.
-    expect(probe.message).toBe("پاسخ سرویس نامعتبر بود.");
+    expect(probe.message).toBe("Service response was invalid.");
     // The blocked address itself is not echoed back.
     expect(probe.message).not.toContain("169.254.169.254");
     storage.close();

@@ -82,7 +82,7 @@ export interface FetchUrlOutput {
 export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
   name: "fetch_url",
   description:
-    "محتوای یک صفحهٔ وب را می‌خواند و به متن تبدیل می‌کند. برای خواندن جزئیات یک لینک.",
+    "Read a web page and convert it to text. Use it to read the details behind a link.",
   enabled: true,
   permission: { requires: [FETCH_URL_PERMISSION] },
   toolset: "web",
@@ -91,17 +91,17 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
       url: {
         type: "string",
         required: true,
-        description: "نشانی کامل صفحه، با http یا https.",
+        description: "Full page URL, with http or https.",
         minLength: 8,
         maxLength: 2_048,
       },
       raw: {
         type: "boolean",
-        description: "اگر true باشد متن خام برگردانده می‌شود، بدون استخراج محتوا.",
+        description: "When true, return raw text without content extraction.",
       },
       maxChars: {
         type: "integer",
-        description: "حداکثر تعداد کاراکتر متن خروجی.",
+        description: "Maximum characters of output text.",
         minimum: 200,
         maximum: 20_000,
       },
@@ -116,7 +116,7 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
     if (!isReadable(contentType)) {
       throw new ToolError(
         "invalid_input",
-        `نوع محتوای این نشانی خواندنی نیست (${contentType || "نامشخص"}).`,
+        `This URL's content type is not readable (${contentType || "unknown"}).`,
       );
     }
 
@@ -134,16 +134,19 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
     if (text.trim().length === 0) {
       // An empty extraction is reported rather than returned as "": a model
       // given an empty string tends to invent what the page "said".
-      throw new ToolError("invalid_result", "از این صفحه متنی استخراج نشد.");
+      throw new ToolError("invalid_result", "No text could be extracted from this page.");
     }
 
     return {
       url,
       finalUrl: result.finalUrl,
       status: result.status,
-      contentType: contentType || "نامشخص",
+      contentType: contentType || "unknown",
       text,
-      truncated: text.length >= limit,
+      // Both truncation helpers mark a real cut with a trailing "…", so the
+      // flag reflects an actual cut rather than text that merely reached the
+      // cap exactly.
+      truncated: text.endsWith("…"),
     };
   },
 };
@@ -152,10 +155,10 @@ export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
 function normaliseUrl(raw: string): string {
   const trimmed = raw.trim();
   if (trimmed.length === 0) {
-    throw new ToolError("invalid_input", "نشانی وارد نشده است.");
+    throw new ToolError("invalid_input", "No URL was provided.");
   }
   if (trimmed.length > 2_048) {
-    throw new ToolError("invalid_input", "نشانی خیلی طولانی است.");
+    throw new ToolError("invalid_input", "The URL is too long.");
   }
   return trimmed;
 }
@@ -189,10 +192,10 @@ async function fetchWithRedirects(startUrl: string, signal: AbortSignal): Promis
     if (res.status >= 300 && res.status < 400) {
       const location = res.headers["location"];
       if (typeof location !== "string" || location.length === 0) {
-        throw new ToolError("invalid_result", "سرویس به نشانی نامعتبری ارجاع داد.");
+        throw new ToolError("invalid_result", "The service redirected to an invalid address.");
       }
       if (hop === MAX_REDIRECTS) {
-        throw new ToolError("invalid_result", "تعداد ریدایرکت‌ها بیش از حد مجاز بود.");
+        throw new ToolError("invalid_result", "Too many redirects.");
       }
       // Resolve relative to the current URL, as a browser would.
       current = new URL(location, current).toString();
@@ -200,7 +203,7 @@ async function fetchWithRedirects(startUrl: string, signal: AbortSignal): Promis
     }
 
     if (res.status < 200 || res.status >= 300) {
-      throw new ToolError("invalid_result", `سرویس با کد ${res.status} پاسخ داد.`);
+      throw new ToolError("invalid_result", `The service responded with status ${res.status}.`);
     }
 
     return {
@@ -212,7 +215,7 @@ async function fetchWithRedirects(startUrl: string, signal: AbortSignal): Promis
   }
 
   // Unreachable: the loop either returns or throws on the final hop.
-  throw new ToolError("invalid_result", "دریافت صفحه ناموفق بود.");
+  throw new ToolError("invalid_result", "Fetching the page failed.");
 }
 
 /**
@@ -226,7 +229,7 @@ async function resolveAndAllow(
   _signal: AbortSignal,
 ): Promise<{ url: string; addresses: readonly string[]; allowLocal: boolean }> {
   if (!/^https?:\/\//i.test(url)) {
-    throw new ToolError("invalid_input", "نشانی باید با http یا https شروع شود.");
+    throw new ToolError("invalid_input", "The URL must start with http or https.");
   }
 
   try {
@@ -236,9 +239,9 @@ async function resolveAndAllow(
     // A guard rejection is a policy decision, not an infrastructure fault, and
     // the message deliberately does not repeat the resolved address.
     if (err instanceof AiError) {
-      throw new ToolError("invalid_input", "این نشانی مجاز نیست یا قابل دسترسی نیست.");
+      throw new ToolError("invalid_input", "This URL is not allowed or not reachable.");
     }
-    throw new ToolError("internal", "بررسی نشانی ناموفق بود.");
+    throw new ToolError("internal", "Checking the URL failed.");
   }
 }
 
@@ -272,9 +275,9 @@ async function send(
     return { status: res.status, headers: res.headers, body: capBody(res.body) };
   } catch (err) {
     if (err instanceof AiError) {
-      throw new ToolError(mapAiError(err), "دریافت صفحه ناموفق بود.");
+      throw new ToolError(mapAiError(err), "Fetching the page failed.");
     }
-    throw new ToolError("internal", "دریافت صفحه ناموفق بود.");
+    throw new ToolError("internal", "Fetching the page failed.");
   }
 }
 
@@ -288,7 +291,7 @@ const DEFAULT_TIMEOUT_MS = 15_000;
  */
 function capBody(body: string): string {
   if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
-    throw new ToolError("invalid_result", "حجم صفحه بیش از حد مجاز است.");
+    throw new ToolError("invalid_result", "The page is too large.");
   }
   return body;
 }

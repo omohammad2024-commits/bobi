@@ -178,7 +178,7 @@ const mediaBytes = new WeakMap<object, { base64: string; mediaType: string; name
 
 export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, VideoGenOutput> {
   if (!videoGenConfigured(deps.baseUrl)) {
-    throw new ToolError("disabled", "سرویس ساخت ویدیو پیکربندی نشده است.");
+    throw new ToolError("disabled", "Video generation is not configured.");
   }
   const pollIntervalMs = deps.pollIntervalMs ?? POLL_INTERVAL_MS;
   const maxPollAttempts = deps.maxPollAttempts ?? MAX_POLL_ATTEMPTS;
@@ -186,7 +186,7 @@ export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, Vide
   return {
     name: "generate_video",
     description:
-      "ساخت یک ویدیوی کوتاه از روی توصیف متنی. وقتی کاربر ویدیویی می‌خواهد که وجود ندارد، از این ابزار استفاده کن؛ نتیجه را کاربر می‌بیند. ساخت ویدیو ممکن است چند دقیقه طول بکشد.",
+      "Generate a short video from a text description. Use it when the user wants a video that does not exist; the user sees the result. Generation may take a few minutes.",
     enabled: true,
     permission: { requires: [GENERATE_VIDEO_PERMISSION] },
     toolset: "media",
@@ -195,18 +195,18 @@ export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, Vide
         prompt: {
           type: "string",
           required: true,
-          description: "توصیف ویدیویی که باید ساخته شود.",
+          description: "Description of the video to generate.",
           minLength: 1,
           maxLength: 1000,
         },
         size: {
           type: "enum",
-          description: `ابعاد ویدیو (پیش‌فرض ${DEFAULT_SIZE}).`,
+          description: `Video size (default ${DEFAULT_SIZE}).`,
           choices: [...SIZES],
         },
         duration_seconds: {
           type: "integer",
-          description: `مدت ویدیو به ثانیه (پیش‌فرض ${DEFAULT_DURATION_SECONDS}).`,
+          description: `Video length in seconds (default ${DEFAULT_DURATION_SECONDS}).`,
           minimum: MIN_DURATION_SECONDS,
           maximum: MAX_DURATION_SECONDS,
         },
@@ -229,12 +229,12 @@ export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, Vide
     async run(input: VideoGenInput, ctx: ToolContext): Promise<VideoGenOutput> {
       const prompt = input.prompt.trim();
       if (prompt.length === 0) {
-        throw new ToolError("invalid_input", "توصیف ویدیو خالی است.");
+        throw new ToolError("invalid_input", "Video prompt is empty.");
       }
       if (prompt.length > 1000) {
         // Defence in depth: the field spec caps this first; a direct caller
         // bypassing validation still cannot smuggle a longer prompt through.
-        throw new ToolError("invalid_input", "توصیف ویدیو بیش از حد طولانی است.");
+        throw new ToolError("invalid_input", "Video prompt is too long.");
       }
       const size: VideoSize = input.size ?? DEFAULT_SIZE;
       const durationSeconds = input.duration_seconds ?? DEFAULT_DURATION_SECONDS;
@@ -247,9 +247,9 @@ export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, Vide
         deps.resolver !== undefined ? { resolver: deps.resolver } : {},
       ).catch((err: unknown) => {
         if (err instanceof AiError) {
-          throw new ToolError("invalid_input", "نشانی سرویس ویدیوسازی مجاز نیست.");
+          throw new ToolError("invalid_input", "The video service URL is not allowed.");
         }
-        throw new ToolError("internal", "بررسی نشانی سرویس ویدیوسازی ناموفق بود.");
+        throw new ToolError("internal", "Checking the video service URL failed.");
       });
 
       const jobId = await submitJob(target.baseUrl, prompt, size, durationSeconds, deps, ctx);
@@ -321,7 +321,7 @@ async function http(
     if (err instanceof AiError) {
       throw new ToolError(mapAiError(err), messageFor(mapAiError(err)));
     }
-    throw new ToolError("internal", "ساخت ویدیو ناموفق بود.");
+    throw new ToolError("internal", "Video generation failed.");
   }
 }
 
@@ -353,7 +353,7 @@ async function submitJob(
     ctx,
   );
   if (res.status >= 300 && res.status < 400) {
-    throw new ToolError("invalid_result", "سرویس ویدیوسازی به آدرس دیگری ارجاع داد.");
+    throw new ToolError("invalid_result", "The video service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
     throw statusToError(res.status);
@@ -361,7 +361,7 @@ async function submitJob(
   const parsed = parseJson(res.body);
   const id = parsed["id"] ?? parsed["job_id"] ?? parsed["request_id"];
   if (typeof id !== "string" || id.length === 0) {
-    throw new ToolError("invalid_result", "سرویس ویدیوسازی شناسهٔ کار برنگرداند.");
+    throw new ToolError("invalid_result", "The video service did not return a job id.");
   }
   return id;
 }
@@ -401,7 +401,7 @@ async function pollForVideo(
       ctx,
     );
     if (res.status >= 300 && res.status < 400) {
-      throw new ToolError("invalid_result", "سرویس ویدیوسازی به آدرس دیگری ارجاع داد.");
+      throw new ToolError("invalid_result", "The video service redirected to another address.");
     }
     if (res.status < 200 || res.status >= 300) {
       throw statusToError(res.status);
@@ -410,14 +410,14 @@ async function pollForVideo(
     const parsed = parseJson(res.body);
     const status = typeof parsed["status"] === "string" ? parsed["status"].toLowerCase() : "";
     if (TERMINAL_FAILURE.has(status)) {
-      throw new ToolError("invalid_result", "ساخت ویدیو در سرویس ناموفق بود.");
+      throw new ToolError("invalid_result", "Video generation failed at the service.");
     }
     if (TERMINAL_SUCCESS.has(status)) {
       return await resolveVideoPayload(parsed, deps, ctx);
     }
     // Anything else (queued/processing/…) → next poll, within the caps.
   }
-  throw new ToolError("timeout", "ساخت ویدیو بیش از حد طول کشید و لغو شد.");
+  throw new ToolError("timeout", "Video generation took too long and was cancelled.");
 }
 
 const TERMINAL_SUCCESS = new Set(["succeeded", "completed", "complete", "done"]);
@@ -438,7 +438,7 @@ async function resolveVideoPayload(
 ): Promise<{ base64: string; mediaType: string; name: string }> {
   const video = parsed["video"] ?? parsed["result"];
   if (typeof video !== "object" || video === null || Array.isArray(video)) {
-    throw new ToolError("invalid_result", "سرویس ویدیوسازی ویدیویی برنگرداند.");
+    throw new ToolError("invalid_result", "The video service returned no video.");
   }
   const rec = video as Record<string, unknown>;
 
@@ -451,13 +451,13 @@ async function resolveVideoPayload(
   if (typeof url === "string" && url.length > 0) {
     return await downloadVideo(url, deps, ctx);
   }
-  throw new ToolError("invalid_result", "سرویس ویدیوسازی ویدیویی برنگرداند.");
+  throw new ToolError("invalid_result", "The video service returned no video.");
 }
 
 /** Budget: refuse a payload whose decoded size exceeds the transport ceiling. */
 function checkBudget(b64: string): string {
   if (base64Bytes(b64) > MAX_VIDEO_BYTES) {
-    throw new ToolError("invalid_result", "حجم ویدیوی برگشتی بیش از حد مجاز است.");
+    throw new ToolError("invalid_result", "The returned video is too large.");
   }
   return b64;
 }
@@ -484,9 +484,9 @@ async function downloadVideo(
       deps.resolver !== undefined ? { resolver: deps.resolver } : {},
     ).catch((err: unknown) => {
       if (err instanceof AiError) {
-        throw new ToolError("invalid_result", "نشانی دانلود ویدیو مجاز نیست.");
+        throw new ToolError("invalid_result", "The video download URL is not allowed.");
       }
-      throw new ToolError("internal", "بررسی نشانی دانلود ویدیو ناموفق بود.");
+      throw new ToolError("internal", "Checking the video download URL failed.");
     });
     addresses = target.addresses;
     allowLocalTargets = target.allowLocalTargets;
@@ -512,7 +512,7 @@ async function downloadVideo(
     allowLocalTargets,
   );
   if (res.status >= 300 && res.status < 400) {
-    throw new ToolError("invalid_result", "سرویس ویدیوسازی به آدرس دیگری ارجاع داد.");
+    throw new ToolError("invalid_result", "The video service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
     throw statusToError(res.status);
@@ -524,7 +524,7 @@ async function downloadVideo(
       ? res.rawBody.toString("base64")
       : Buffer.from(res.body, "utf8").toString("base64");
   if (base64Bytes(b64) === 0) {
-    throw new ToolError("invalid_result", "سرویس ویدیوسازی ویدیویی برنگرداند.");
+    throw new ToolError("invalid_result", "The video service returned no video.");
   }
   const ext = safeExtFromUrl(url);
   return {
@@ -552,10 +552,10 @@ function parseJson(rawBody: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(rawBody);
   } catch {
-    throw new ToolError("invalid_result", "پاسخ سرویس ویدیوسازی قابل خواندن نبود.");
+    throw new ToolError("invalid_result", "The video service response could not be read.");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new ToolError("invalid_result", "پاسخ سرویس ویدیوسازی قابل خواندن نبود.");
+    throw new ToolError("invalid_result", "The video service response could not be read.");
   }
   return parsed as Record<string, unknown>;
 }
@@ -565,7 +565,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   if (ms <= 0) return Promise.resolve();
   return new Promise<void>((resolve, reject) => {
     if (signal.aborted) {
-      reject(new AiError("aborted", "لغو شد."));
+      reject(new AiError("aborted", "Cancelled."));
       return;
     }
     const timer = setTimeout(() => {
@@ -574,7 +574,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
     }, ms);
     const onAbort = () => {
       clearTimeout(timer);
-      reject(new AiError("aborted", "لغو شد."));
+      reject(new AiError("aborted", "Cancelled."));
     };
     signal.addEventListener("abort", onAbort, { once: true });
   });
@@ -583,23 +583,23 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 /** Map an HTTP status onto the tool layer's categories. */
 function statusToError(status: number): ToolError {
   if (status === 401 || status === 403) {
-    return new ToolError("not_allowed", "کلید سرویس ویدیوسازی معتبر نیست.");
+    return new ToolError("not_allowed", "The video service key is not valid.");
   }
   if (status === 408) {
-    return new ToolError("timeout", "ساخت ویدیو طول کشید و لغو شد.");
+    return new ToolError("timeout", "Video generation timed out.");
   }
   if (status === 429) {
     // Back off rather than hammer the service: the agent loop reads
     // "overloaded" as "retry later", not "retry now".
-    return new ToolError("overloaded", "سرویس ویدیوسازی شلوغ است؛ کمی بعد دوباره تلاش کن.");
+    return new ToolError("overloaded", "The video service is busy; try again shortly.");
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ToolError("invalid_input", "درخواست ساخت ویدیو نامعتبر بود.");
+    return new ToolError("invalid_input", "The video generation request was invalid.");
   }
   if (status >= 500) {
-    return new ToolError("internal", "سرویس ویدیوسازی در دسترس نیست.");
+    return new ToolError("internal", "The video service is unavailable.");
   }
-  return new ToolError("internal", "ساخت ویدیو ناموفق بود.");
+  return new ToolError("internal", "Video generation failed.");
 }
 
 /** Map a transport-level AiError onto the tool layer's categories. */
@@ -622,14 +622,14 @@ function mapAiError(err: AiError): ToolError["kind"] {
 function messageFor(kind: ToolError["kind"]): string {
   switch (kind) {
     case "timeout":
-      return "ساخت ویدیو طول کشید و لغو شد.";
+      return "Video generation timed out.";
     case "overloaded":
-      return "سرویس ویدیوسازی شلوغ است؛ کمی بعد دوباره تلاش کن.";
+      return "The video service is busy; try again shortly.";
     case "invalid_result":
-      return "پاسخ سرویس ویدیوسازی قابل خواندن نبود.";
+      return "The video service response could not be read.";
     case "not_allowed":
-      return "کلید سرویس ویدیوسازی معتبر نیست.";
+      return "The video service key is not valid.";
     default:
-      return "ساخت ویدیو ناموفق بود.";
+      return "Video generation failed.";
   }
 }

@@ -60,7 +60,7 @@ export function createUsageReportTool(deps: UsageReportToolDeps): Tool<Record<st
   return {
     name: "usage_report",
     description:
-      "گزارش مصرف توکن‌ها و هزینهٔ تقریبی امروز و ۷ روز اخیر، به تفکیک مدل (فقط مالک).",
+      "Token usage and approximate cost report for today and the last 7 days, by model (owner only).",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [USAGE_REPORT_PERMISSION] },
@@ -70,10 +70,10 @@ export function createUsageReportTool(deps: UsageReportToolDeps): Tool<Record<st
     async run(_input: Record<string, never>, ctx: ToolContext): Promise<UsageReportOutput> {
       const userId = ctx.actor.userId;
       if (typeof userId !== "string" || userId.length === 0 || userId === "unknown") {
-        throw new ToolError("not_allowed", "هویت مشخص نیست.");
+        throw new ToolError("not_allowed", "Identity is unknown.");
       }
       if (!deps.isOwner(userId)) {
-        throw new ToolError("not_allowed", "گزارش مصرف فقط برای مالک است.");
+        throw new ToolError("not_allowed", "The usage report is owner only.");
       }
 
       const now = deps.now !== undefined ? deps.now() : Date.now();

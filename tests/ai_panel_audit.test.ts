@@ -212,7 +212,7 @@ describe("add provider via every preset", () => {
       await h.ai.handleCallback(c.ctx, encode({ kind: "ai_add_preset", preset: preset.id }));
       const prompt = lastText(c);
       expect(prompt).toContain(preset.label);
-      expect(prompt).toContain("کلید");
+      expect(prompt).toContain("API key");
 
       const keyReply =
         preset.requiredPlaceholder !== undefined ? "sk-test-key,acct-123" : "sk-test-key";
@@ -254,7 +254,7 @@ describe("add provider via every preset", () => {
     const c = fakeCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_add_preset", preset: "cloudflare" }));
     await h.ai.handleText(c.ctx, "sk-test-key");
-    expect(lastText(c)).toContain("دوباره");
+    expect(lastText(c)).toContain("send it again");
     // The flow is still alive: a correct reply completes it.
     await h.ai.handleText(c.ctx, "sk-test-key,acct-123");
     expect(h.providers.listViews()).toHaveLength(1);
@@ -297,12 +297,12 @@ describe("add provider via adapter templates", () => {
     );
     const form = lastText(c);
     // The template's own guidance note is shown...
-    expect(form).toContain("نیازمند آدرس و مدل تعیین‌شده توسط مدیر");
+    expect(form).toContain("Requires an address and model set by");
     // ...but no invented suggestion line...
     expect(form).not.toContain("پیشنهاد:");
     // ...and an empty URL is refused with a clear message, creating nothing.
     await h.ai.handleText(c.ctx, "نام نمایشی: 9R\nآدرس سرویس: \nکلید API: sk-9");
-    expect(lastText(c)).toContain("آدرس سرویس لازم است");
+    expect(lastText(c)).toContain("Service address is required.");
     expect(h.providers.listViews()).toHaveLength(0);
     h.storage.close();
   });
@@ -325,7 +325,7 @@ describe("add provider via adapter templates", () => {
     // ...never the key...
     expect(done).not.toContain("sk-abc");
     // ...and points at the next step (models), landing on the provider screen.
-    expect(done).toContain("مدل‌ها");
+    expect(done).toContain("Models");
     const kb = buttons(c.sent[c.sent.length - 1]!.keyboard);
     expect(kb.some((b) => decode(b.data)?.kind === "ai_models")).toBe(true);
     h.storage.close();
@@ -352,7 +352,7 @@ describe("add provider via adapter templates", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_add_adapter", adapter: "gemini" }));
     expect(lastText(c)).toContain("https://generativelanguage.googleapis.com/v1beta");
     await h.ai.handleText(c.ctx, "just some chatter");
-    expect(lastText(c)).toContain("ورودی کامل نیست");
+    expect(lastText(c)).toContain("Input is incomplete");
     // Still mid-flow: a proper submission completes it.
     await h.ai.handleText(c.ctx, "نام نمایشی: G\nآدرس سرویس: \nکلید API: sk-g");
     const views = h.providers.listViews();
@@ -367,7 +367,7 @@ describe("add provider via adapter templates", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_add_adapter", adapter: "anthropic" }));
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_form_cancel" }));
     expect(h.providers.listViews()).toHaveLength(0);
-    expect(lastEdit(c).text).toContain("نوع اتصال");
+    expect(lastEdit(c).text).toContain("connection type");
     h.storage.close();
   });
 });
@@ -382,8 +382,8 @@ describe("probe outcomes", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: 999 }));
     const stale = lastEdit(c).text;
-    expect(stale).toContain("تست اتصال ناموفق بود.");
-    expect(stale).toContain("پروایدر یافت نشد.");
+    expect(stale).toContain("Connection test failed.");
+    expect(stale).toContain("Provider not found.");
 
     const p = h.providers.create({
       label: "P",
@@ -394,22 +394,22 @@ describe("probe outcomes", () => {
     if (!p.ok) throw new Error("create failed");
     const pid = p.data;
     h.providers.setEnabled(pid, false);
-    expect((await h.health.probe(pid)).message).toBe("پروایدر غیرفعال است.");
+    expect((await h.health.probe(pid)).message).toBe("Provider is disabled.");
     h.providers.setEnabled(pid, true);
     h.providers.clearCredential(pid);
-    expect((await h.health.probe(pid)).message).toBe("اعتبارنامه تنظیم نشده است.");
+    expect((await h.health.probe(pid)).message).toBe("Credential is not set.");
     h.storage.close();
   });
 
   test("adapter failures map to clear messages, are recorded, never crash", async () => {
     const cases: Array<[AiError["kind"], string]> = [
-      ["auth", "کلید یا آدرس پذیرفته نشد."],
-      ["quota", "محدودیت نرخ سرویس پر است."],
-      ["timeout", "پاسخی در زمان مقرر نرسید."],
-      ["network", "ارتباط برقرار نشد."],
-      ["invalid_response", "پاسخ سرویس نامعتبر بود."],
-      ["aborted", "آزمایش لغو شد."],
-      ["unknown", "آزمایش ناموفق بود."],
+      ["auth", "Key or address was not accepted."],
+      ["quota", "Service rate limit is full."],
+      ["timeout", "No response arrived in time."],
+      ["network", "Could not connect."],
+      ["invalid_response", "Service response was invalid."],
+      ["aborted", "Probe was cancelled."],
+      ["unknown", "Probe failed."],
     ];
     for (const [kind, msg] of cases) {
       const h = harness({ adapters: new StubAdapters(new AiError(kind, "stub")) });
@@ -442,10 +442,10 @@ describe("probe outcomes", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: p.data }));
     // Progress first, then the result lead on the provider screen.
     expect(c.edits.length).toBeGreaterThanOrEqual(2);
-    expect(c.edits[0]!.text).toContain("در حال آزمایش");
+    expect(c.edits[0]!.text).toContain("Testing connection");
     const last = lastEdit(c).text;
-    expect(last).toContain("تست اتصال ناموفق بود.");
-    expect(last).toContain("ارتباط برقرار نشد.");
+    expect(last).toContain("Connection test failed.");
+    expect(last).toContain("Could not connect.");
     // Still the provider screen (test button present for a retry).
     expect(buttons(lastEdit(c).keyboard).some((b) => decode(b.data)?.kind === "ai_test")).toBe(
       true,
@@ -464,8 +464,8 @@ describe("probe outcomes", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: p.data }));
     const last = lastEdit(c).text;
-    expect(last).toContain("تست اتصال ناموفق بود.");
-    expect(last).toContain("اعتبارنامه تنظیم نشده است.");
+    expect(last).toContain("Connection test failed.");
+    expect(last).toContain("Credential is not set.");
     h.storage.close();
   });
 });
@@ -496,8 +496,8 @@ describe("model discovery", () => {
 
     const last = lastEdit(c);
     // 1 new, 1 already there (fa digits).
-    expect(last.text).toContain("۱ مدل جدید");
-    expect(last.text).toContain("۱ مدل از قبل در فهرست بود");
+    expect(last.text).toContain("1 new models");
+    expect(last.text).toContain("already in the list");
 
     const listed = h.models.list(pid);
     expect(listed.map((m) => m.modelId).sort()).toEqual(["m-a", "m-b"]);
@@ -524,7 +524,7 @@ describe("model discovery", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
-    expect(lastEdit(c).text).toContain("مدل جدیدی پیدا نشد");
+    expect(lastEdit(c).text).toContain("No new models found");
     h.storage.close();
   });
 
@@ -535,7 +535,7 @@ describe("model discovery", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
     expect(h.models.list(pid)).toHaveLength(50);
-    expect(lastEdit(c).text).toContain("۵۰");
+    expect(lastEdit(c).text).toContain("50");
     h.storage.close();
   });
 
@@ -544,7 +544,7 @@ describe("model discovery", () => {
     const pid = providerWithKey(h, "anthropic");
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
-    expect(lastEdit(c).text).toContain("پشتیبانی نمی‌کند");
+    expect(lastEdit(c).text).toContain("does not support");
     h.storage.close();
   });
 
@@ -558,7 +558,7 @@ describe("model discovery", () => {
     if (!p.ok) throw new Error("create failed");
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: p.data }));
-    expect(lastEdit(c).text).toContain("اعتبارنامه تنظیم نشده است");
+    expect(lastEdit(c).text).toContain("No credential is set");
     h.storage.close();
   });
 });
@@ -571,7 +571,7 @@ describe("model add / toggle / delete / default", () => {
     const { providerId } = activeProvider(h);
     const c = fakeCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_add_form", providerId }));
-    expect(lastText(c)).toContain("شناسه");
+    expect(lastText(c)).toContain("Model ID");
     await h.ai.handleText(c.ctx, "gpt-x\nمدل ایکس");
     const listed = h.models.list(providerId);
     expect(listed.map((m) => m.modelId)).toContain("gpt-x");
@@ -586,7 +586,7 @@ describe("model add / toggle / delete / default", () => {
     const c = fakeCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_add_form", providerId }));
     await h.ai.handleText(c.ctx, "only-one-line");
-    expect(lastText(c)).toContain("شناسه");
+    expect(lastText(c)).toContain("Model ID");
     await h.ai.handleText(c.ctx, "gpt-x\nمدل ایکس");
     expect(h.models.list(providerId).map((m) => m.modelId)).toContain("gpt-x");
     h.storage.close();
@@ -599,10 +599,10 @@ describe("model add / toggle / delete / default", () => {
     if (!m2.ok) throw new Error("model failed");
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_toggle", modelId: m2.data }));
-    expect(lastEdit(c).text).toContain("غیرفعال شد");
+    expect(lastEdit(c).text).toContain("Model disabled");
     expect(h.models.get(m2.data)!.enabled).toBe(false);
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_toggle", modelId: m2.data }));
-    expect(lastEdit(c).text).toContain("فعال شد");
+    expect(lastEdit(c).text).toContain("Model enabled.");
     expect(h.models.get(m2.data)!.enabled).toBe(true);
     void modelId;
     h.storage.close();
@@ -616,10 +616,10 @@ describe("model add / toggle / delete / default", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_delete", modelId: m2.data }));
     expect(h.models.get(m2.data)).toBeDefined();
-    expect(lastEdit(c).text).toContain("حذف");
+    expect(lastEdit(c).text).toContain("Delete model");
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_delete_confirm", modelId: m2.data }));
     expect(h.models.get(m2.data)).toBeUndefined();
-    expect(lastEdit(c).text).toContain("حذف شد");
+    expect(lastEdit(c).text).toContain("Model deleted.");
     h.storage.close();
   });
 
@@ -630,7 +630,7 @@ describe("model add / toggle / delete / default", () => {
     if (!m2.ok) throw new Error("model failed");
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_default", modelId: m2.data }));
-    expect(lastEdit(c).text).toContain("پیش‌فرض");
+    expect(lastEdit(c).text).toContain("default");
     expect(h.models.get(m2.data)!.isDefault).toBe(true);
     expect(h.models.get(modelId)!.isDefault).toBe(false);
     const sel = h.storage.getRuntimeSettings();
@@ -654,7 +654,7 @@ describe("model add / toggle / delete / default", () => {
 
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_default", modelId: m.data }));
-    expect(lastEdit(c).text).toContain("غیرفعال است");
+    expect(lastEdit(c).text).toContain("is disabled");
     // The runtime still points at the live pair.
     const sel = h.storage.getRuntimeSettings();
     expect(sel.activeProviderId).toBe(providerId);
@@ -675,7 +675,7 @@ describe("key management", () => {
     const form = lastText(c);
     // The form shows the adapter SLUG (the parser needs it) plus the hint.
     expect(form).toContain("(openai_compatible)");
-    expect(form).toContain("openai_compatible، gemini، anthropic، nine_router");
+    expect(form).toContain("openai_compatible, gemini, anthropic, nine_router");
 
     const before = h.storage.getCredential(providerId);
     await h.ai.handleText(c.ctx, "کلید API: sk-brand-new");
@@ -688,7 +688,7 @@ describe("key management", () => {
     const shown = lastText(c);
     expect(shown).not.toContain("sk-brand-new");
     expect(shown).not.toContain("sk-key-000");
-    expect(shown).toContain("تنظیم‌شده");
+    expect(shown).toContain("Key: set");
     h.storage.close();
   });
 
@@ -698,11 +698,11 @@ describe("key management", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_clear_key", providerId }));
     expect(h.providers.credentialStatus(providerId)).toBe("set");
-    expect(lastEdit(c).text).toContain("پاک شود");
+    expect(lastEdit(c).text).toContain("Clear the key");
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_clear_key_confirm", providerId }));
     expect(h.providers.credentialStatus(providerId)).toBe("unset");
-    expect(lastEdit(c).text).toContain("پاک شد");
-    expect(lastEdit(c).text).toContain("تنظیم‌نشده");
+    expect(lastEdit(c).text).toContain("Key cleared.");
+    expect(lastEdit(c).text).toContain("Key: not set");
     h.storage.close();
   });
 
@@ -721,11 +721,11 @@ describe("key management", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_edit", providerId: p2.data }));
     await h.ai.handleText(c.ctx, "نام نمایشی: اسم تازه");
     expect(h.providers.view(p2.data)!.label).toBe("اسم تازه");
-    expect(lastText(c)).toContain("به‌روز شد");
+    expect(lastText(c)).toContain("Provider updated");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_edit", providerId: p2.data }));
     await h.ai.handleText(c.ctx, "نوع اتصال: bogus");
-    expect(lastText(c)).toContain("نوع اتصال نامعتبر است");
+    expect(lastText(c)).toContain("Invalid connection type.");
     expect(h.providers.view(p2.data)!.adapter).toBe("openai_compatible");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_edit", providerId: p2.data }));
@@ -738,7 +738,7 @@ describe("key management", () => {
     // The ACTIVE provider's endpoint/adapter change is refused, not corrupted.
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_edit", providerId }));
     await h.ai.handleText(c.ctx, "نوع اتصال: gemini");
-    expect(lastText(c)).toContain("فعال است");
+    expect(lastText(c)).toContain("is active");
     expect(h.providers.view(providerId)!.adapter).toBe("openai_compatible");
     h.storage.close();
   });
@@ -760,11 +760,11 @@ describe("provider enable / disable / delete", () => {
 
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_toggle", providerId }));
-    expect(lastEdit(c).text).toContain("فعال است");
+    expect(lastEdit(c).text).toContain("is active");
     expect(h.providers.view(providerId)!.enabled).toBe(true);
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_toggle", providerId: p2.data }));
-    expect(lastEdit(c).text).toContain("غیرفعال شد");
+    expect(lastEdit(c).text).toContain("Provider disabled.");
     expect(h.providers.view(p2.data)!.enabled).toBe(false);
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_toggle", providerId: p2.data }));
     expect(h.providers.view(p2.data)!.enabled).toBe(true);
@@ -785,14 +785,14 @@ describe("provider enable / disable / delete", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete", providerId }));
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete_confirm", providerId }));
-    expect(lastEdit(c).text).toContain("در حال استفاده است");
+    expect(lastEdit(c).text).toContain("is in use");
     expect(h.providers.view(providerId)).toBeDefined();
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete", providerId: p2.data }));
     expect(h.providers.view(p2.data)).toBeDefined();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete_confirm", providerId: p2.data }));
     expect(h.providers.view(p2.data)).toBeUndefined();
-    expect(lastEdit(c).text).toContain("پروایدر حذف شد");
+    expect(lastEdit(c).text).toContain("Provider deleted.");
     h.storage.close();
   });
 });
@@ -809,11 +809,11 @@ describe("quick-switch (provider → model picker)", () => {
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_select_menu" }));
     // The menu shows the actually-active model...
-    expect(lastEdit(c).text).toContain("مدل فعال: مدل یک");
+    expect(lastEdit(c).text).toContain("Active model: مدل یک");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_select_provider", providerId }));
     const pickerKb = buttons(lastEdit(c).keyboard);
-    const modelBtns = pickerKb.filter((b) => b.text !== "بازگشت");
+    const modelBtns = pickerKb.filter((b) => b.text !== "Back");
     expect(modelBtns).toHaveLength(2);
     // ...every model button activates (no default side effect)...
     for (const b of modelBtns) {
@@ -830,7 +830,7 @@ describe("quick-switch (provider → model picker)", () => {
     expect(h.models.get(modelId)!.isDefault).toBe(true);
     expect(h.models.get(m2.data)!.isDefault).toBe(false);
     // The menu now shows the new active model.
-    expect(lastEdit(c).text).toContain("مدل فعال: دو");
+    expect(lastEdit(c).text).toContain("Active model: دو");
     h.storage.close();
   });
 
@@ -849,13 +849,13 @@ describe("quick-switch (provider → model picker)", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_select_menu" }));
     // The model-less provider is still listed, marked as such on its button.
     const menuBtns = buttons(lastEdit(c).keyboard);
-    expect(menuBtns.some((b) => b.text.includes("(بدون مدل)"))).toBe(true);
+    expect(menuBtns.some((b) => b.text.includes("(no models)"))).toBe(true);
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_select_provider", providerId: p2.data }));
     const screen = lastEdit(c);
-    expect(screen.text).toContain("هیچ مدل فعالی ندارد");
-    expect(screen.text).toContain("مدل‌ها");
+    expect(screen.text).toContain("has no enabled models");
+    expect(screen.text).toContain("Models");
     // A way back, not a dead end.
-    const back = buttons(screen.keyboard).find((b) => b.text === "بازگشت");
+    const back = buttons(screen.keyboard).find((b) => b.text === "Back");
     expect(back).toBeDefined();
     expect(decode(back!.data)).toMatchObject({ kind: "ai_select_menu" });
     void providerId;

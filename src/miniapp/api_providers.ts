@@ -121,7 +121,7 @@ export async function handleProviderApi(
     case "models.setActive":
       return setActiveModel(params, deps);
     default:
-      throw new ProviderApiError(404, "درخواست نامعتبر است.");
+      throw new ProviderApiError(404, "Invalid request.");
   }
 }
 
@@ -170,14 +170,19 @@ function autoSelectIfNone(
   } catch {
     return undefined;
   }
-  // A selection already exists and names a real provider+model: don't touch it.
-  // (ensureSelection itself also guards, but this lets us report accurately.)
-  const hadSelection =
-    before.activeProviderId !== null &&
-    before.activeModelId !== null &&
-    deps.storage.getProvider(before.activeProviderId) !== undefined;
   const sel = deps.providerSvc.ensureSelection();
-  if (sel === undefined || hadSelection) return undefined;
+  if (sel === undefined) return undefined;
+  // Report only when the selection actually CHANGED. Comparing against the
+  // pair that was there before is what makes this accurate: ensureSelection
+  // heals a broken-but-present selection (e.g. the active provider's key was
+  // cleared, so it silently switched to another provider), and the old
+  // "a provider row existed" check would have swallowed exactly that case.
+  if (
+    sel.providerId === before.activeProviderId &&
+    sel.modelId === before.activeModelId
+  ) {
+    return undefined;
+  }
   return sel;
 }
 
@@ -248,22 +253,22 @@ function presetsView(): Record<string, unknown> {
 function validateProviderUrl(raw: unknown): string {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (trimmed === "") {
-    throw new ProviderApiError(400, "آدرس سرویس لازم است.");
+    throw new ProviderApiError(400, "Service address is required.");
   }
   if (trimmed.length > MAX_URL_CHARS) {
-    throw new ProviderApiError(400, "آدرس سرویس خیلی طولانی است.");
+    throw new ProviderApiError(400, "Service address is too long.");
   }
   if (/[{}]/.test(trimmed)) {
     throw new ProviderApiError(
       400,
-      "آدرس سرویس شامل مقدار جایگزین‌نشده است؛ آن را با مقدار واقعی عوض کن.",
+      "The service address contains an unfilled placeholder; replace it with the real value.",
     );
   }
   let url: URL;
   try {
     url = new URL(trimmed);
   } catch {
-    throw new ProviderApiError(400, "آدرس سرویس نامعتبر است.");
+    throw new ProviderApiError(400, "Service address is invalid.");
   }
   // Scheme + private-host policy is enforced by validateTarget below (http
   // and https both allowed; private/link-local/metadata hosts rejected).
@@ -276,7 +281,7 @@ function validateProviderUrl(raw: unknown): string {
     if (err instanceof AiError) {
       throw new ProviderApiError(400, err.message);
     }
-    throw new ProviderApiError(400, "آدرس سرویس نامعتبر است.");
+    throw new ProviderApiError(400, "Service address is invalid.");
   }
 }
 
@@ -300,7 +305,7 @@ function addProvider(
   if (kind === "custom" || kind === "nine_router") {
     return addCustom(params, deps, kind);
   }
-  throw new ProviderApiError(400, "نوع افزودن پروایدر نامعتبر است.");
+  throw new ProviderApiError(400, "Invalid provider add type.");
 }
 
 function addFromPreset(
@@ -310,23 +315,27 @@ function addFromPreset(
   const presetId = asNonEmptyString(params["preset"], 64);
   const preset = presetId !== undefined ? providerPreset(presetId) : undefined;
   if (!preset) {
-    throw new ProviderApiError(400, "این سرویس شناخته نشده است.");
+    throw new ProviderApiError(400, "Unknown service.");
   }
   // The owner may rename the provider; fall back to the preset label.
   const label = asNonEmptyString(params["label"], 64) ?? preset.label;
   if (labelTaken(deps, label)) {
-    throw new ProviderApiError(400, "پروایدری با این نام قبلاً ثبت شده است.");
+    throw new ProviderApiError(400, "A provider with this name is already registered.");
   }
+  // The form may send a placeholder-resolved base URL (e.g. Cloudflare);
+  // prefer it over the raw preset template.
+  const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
+  const resolved = override ?? preset.baseUrl;
   if (
     preset.requiredPlaceholder !== undefined &&
-    preset.baseUrl.includes(`{${preset.requiredPlaceholder}}`)
+    resolved.includes(`{${preset.requiredPlaceholder}}`)
   ) {
     throw new ProviderApiError(
       400,
-      `آدرس هنوز شامل {${preset.requiredPlaceholder}} است؛ آن را با مقدار واقعی عوض کن.`,
+      `The address still contains {${preset.requiredPlaceholder}}; replace it with the real value.`,
     );
   }
-  const baseUrl = validateProviderUrl(preset.baseUrl);
+  const baseUrl = validateProviderUrl(resolved);
 
   const key = asNonEmptyString(params["key"], 1024);
   const created = deps.providerSvc.create({
@@ -363,10 +372,10 @@ function addCustom(
 ): Record<string, unknown> {
   const label = asNonEmptyString(params["label"], 64);
   if (label === undefined) {
-    throw new ProviderApiError(400, "نام نمایشی پروایدر لازم است.");
+    throw new ProviderApiError(400, "A display name for the provider is required.");
   }
   if (labelTaken(deps, label)) {
-    throw new ProviderApiError(400, "پروایدری با این نام قبلاً ثبت شده است.");
+    throw new ProviderApiError(400, "A provider with this name is already registered.");
   }
   const baseUrl = validateProviderUrl(params["baseUrl"]);
   const key = asNonEmptyString(params["key"], 1024);
@@ -374,10 +383,10 @@ function addCustom(
   const model = asNonEmptyString(params["model"], 128);
   if (kind === "nine_router") {
     if (key === undefined) {
-      throw new ProviderApiError(400, "کلید 9Router لازم است.");
+      throw new ProviderApiError(400, "A 9Router key is required.");
     }
     if (model === undefined) {
-      throw new ProviderApiError(400, "مدل 9Router لازم است.");
+      throw new ProviderApiError(400, "A 9Router model is required.");
     }
   }
 
@@ -410,16 +419,25 @@ function updateProvider(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   if (!deps.providerSvc.view(id)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
 
   const patch: { label?: string; baseUrl?: string } = {};
   if (params["label"] !== undefined) {
     const label = asNonEmptyString(params["label"], 64);
     if (label === undefined) {
-      throw new ProviderApiError(400, "نام نمایشی پروایدر نامعتبر است.");
+      throw new ProviderApiError(400, "Invalid provider display name.");
+    }
+    // The add path refuses duplicate labels; the rename path must too, or a
+    // rename can create the exact ambiguity the add check exists to prevent.
+    const needle = label.toLowerCase();
+    const clash = deps.storage
+      .listProviders()
+      .some((p) => p.id !== id && p.label.trim().toLowerCase() === needle);
+    if (clash) {
+      throw new ProviderApiError(400, "A provider with this name is already registered.");
     }
     patch.label = label;
   }
@@ -427,7 +445,7 @@ function updateProvider(
     patch.baseUrl = validateProviderUrl(params["baseUrl"]);
   }
   if (Object.keys(patch).length === 0) {
-    throw new ProviderApiError(400, "فیلدی برای تغییر داده نشد.");
+    throw new ProviderApiError(400, "No fields to change were given.");
   }
   const r = deps.providerSvc.update(id, patch);
   if (!r.ok) throw new ProviderApiError(400, r.message);
@@ -439,9 +457,9 @@ function toggleProvider(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   if (typeof params["enabled"] !== "boolean") {
-    throw new ProviderApiError(400, "وضعیت نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid status.");
   }
   const r = deps.providerSvc.setEnabled(id, params["enabled"]);
   if (!r.ok) throw new ProviderApiError(400, r.message);
@@ -453,9 +471,9 @@ function deleteProvider(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   if (!deps.providerSvc.view(id)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   if (params["confirm"] !== true) {
     return { needsConfirm: true };
@@ -470,9 +488,9 @@ async function probeProvider(
   deps: ProviderApiDeps,
 ): Promise<Record<string, unknown>> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   if (!deps.providerSvc.view(id)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   // Reuses the same probe the panel's test button runs; it records the
   // outcome via storage itself and never surfaces key material.
@@ -481,7 +499,7 @@ async function probeProvider(
   try {
     result = await deps.health.probe(id);
   } catch {
-    throw new ProviderApiError(500, "آزمایش ناموفق بود.");
+    throw new ProviderApiError(500, "Probe failed.");
   }
   const out: Record<string, unknown> = {
     ok: result.ok,
@@ -497,11 +515,11 @@ function setProviderKey(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   const key = asNonEmptyString(params["key"], 4096);
-  if (key === undefined) throw new ProviderApiError(400, "کلید معتبر نیست.");
+  if (key === undefined) throw new ProviderApiError(400, "Key is not valid.");
   if (!deps.providerSvc.view(id)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   // Write-only: the service encrypts before storing; the key is never read
   // back or included in any response.
@@ -515,9 +533,9 @@ function clearProviderKey(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   if (!deps.providerSvc.view(id)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   if (params["confirm"] !== true) {
     return { needsConfirm: true };
@@ -538,19 +556,19 @@ function setActiveProvider(
   deps: ProviderApiDeps,
 ): Promise<Record<string, unknown>> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
   const view = deps.providerSvc.view(id);
-  if (!view) throw new ProviderApiError(404, "پروایدر یافت نشد.");
+  if (!view) throw new ProviderApiError(404, "Provider not found.");
   if (!view.enabled) {
-    throw new ProviderApiError(400, "پروایدر غیرفعال است؛ ابتدا آن را فعال کن.");
+    throw new ProviderApiError(400, "Provider is disabled; enable it first.");
   }
   if (!view.hasCredential) {
-    throw new ProviderApiError(400, "اعتبارنامهٔ این پروایدر تنظیم نشده است.");
+    throw new ProviderApiError(400, "This provider has no credential set.");
   }
 
   const models = deps.modelSvc.enabledModels(id);
   if (models.length === 0) {
-    throw new ProviderApiError(400, "این پروایدر مدل فعالی ندارد؛ ابتدا یک مدل اضافه کن.");
+    throw new ProviderApiError(400, "This provider has no enabled models; add a model first.");
   }
   const settings = deps.storage.getRuntimeSettings();
   const current =
@@ -562,7 +580,7 @@ function setActiveProvider(
   try {
     deps.storage.setRuntimeSelection({ providerId: id, modelId: chosen.id });
   } catch {
-    throw new ProviderApiError(500, "فعال‌سازی ناموفق بود.");
+    throw new ProviderApiError(500, "Activation failed.");
   }
   const out: Record<string, unknown> = {
     ok: true,
@@ -583,7 +601,7 @@ function setActiveProvider(
         ...(result.message !== undefined ? { message: result.message } : {}),
       };
     } catch {
-      out["probe"] = { ok: false, message: "آزمایش اتصال ناموفق بود." };
+      out["probe"] = { ok: false, message: "Connection probe failed." };
     }
     return out;
   })();
@@ -597,10 +615,10 @@ function listModels(
 ): Record<string, unknown>[] {
   const providerId = asId(params["providerId"]);
   if (providerId === undefined) {
-    throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid provider ID.");
   }
   if (!deps.storage.getProvider(providerId)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   return deps.modelSvc.list(providerId).map((m) => ({
     id: m.id,
@@ -623,35 +641,39 @@ async function discoverModels(
 ): Promise<Record<string, unknown>> {
   const providerId = asId(params["providerId"]);
   if (providerId === undefined) {
-    throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid provider ID.");
   }
   const provider = deps.storage.getProvider(providerId);
   if (!provider) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   if (!adapters.describes(provider.adapter).listModels) {
-    throw new ProviderApiError(400, "این نوع پروایدر امکان مشاهدهٔ لیست مدل‌ها را ندارد.");
+    throw new ProviderApiError(400, "This provider type cannot list models.");
   }
 
   let apiKey: string | undefined;
   try {
     apiKey = deps.providerSvc.credentialFor(providerId);
   } catch {
-    throw new ProviderApiError(400, "اعتبارنامه قابل خواندن نبود.");
+    throw new ProviderApiError(400, "Credential could not be read.");
   }
   if (apiKey === undefined || apiKey === "") {
-    throw new ProviderApiError(400, "اعتبارنامهٔ این پروایدر تنظیم نشده است.");
+    throw new ProviderApiError(400, "This provider has no credential set.");
   }
 
   // The adapter applies the DNS-level SSRF guard (pinned addresses, no
-  // redirects) before any connection is made.
+  // redirects) before any connection is made. The owner's local-target
+  // exception, when granted, applies to discovery exactly as it does to the
+  // runtime and the panel's own discover — otherwise a local provider could
+  // never list its models from the mini app.
   const adapter = adapters.create(provider.adapter, {
     baseUrl: provider.baseUrl,
     apiKey,
     model: "discover",
+    ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
   });
   if (!adapter.listModels) {
-    throw new ProviderApiError(400, "این پروایدر کشف مدل را پشتیبانی نمی‌کند.");
+    throw new ProviderApiError(400, "This provider does not support model discovery.");
   }
 
   const controller = new AbortController();
@@ -664,7 +686,7 @@ async function discoverModels(
       signal: controller.signal,
     });
   } catch {
-    throw new ProviderApiError(502, "کشف مدل‌ها ناموفق بود؛ اتصال یا آدرس را بررسی کن.");
+    throw new ProviderApiError(502, "Model discovery failed; check the connection or address.");
   } finally {
     clearTimeout(timer);
   }
@@ -696,7 +718,7 @@ async function discoverDraftModels(
     const presetId = asNonEmptyString(params["preset"], 64);
     const preset = presetId !== undefined ? providerPreset(presetId) : undefined;
     if (!preset) {
-      throw new ProviderApiError(400, "این سرویس شناخته نشده است.");
+      throw new ProviderApiError(400, "Unknown service.");
     }
     // The form may send a placeholder-resolved base URL (e.g. Cloudflare).
     const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
@@ -704,16 +726,16 @@ async function discoverDraftModels(
   } else if (kind === "custom") {
     baseUrl = validateProviderUrl(params["baseUrl"]);
   } else {
-    throw new ProviderApiError(400, "نوع پروایدر برای کشف مدل نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid provider type for model discovery.");
   }
 
   const apiKey = asNonEmptyString(params["key"], 1024);
   if (apiKey === undefined) {
-    throw new ProviderApiError(400, "برای دریافت مدل‌ها کلید API لازم است.");
+    throw new ProviderApiError(400, "An API key is required to fetch models.");
   }
 
   if (!adapters.describes("openai_compatible").listModels) {
-    throw new ProviderApiError(400, "این نوع پروایدر کشف مدل را پشتیبانی نمی‌کند.");
+    throw new ProviderApiError(400, "This provider type does not support model discovery.");
   }
   const adapter = adapters.create("openai_compatible", {
     baseUrl,
@@ -721,7 +743,7 @@ async function discoverDraftModels(
     model: "discover",
   });
   if (!adapter.listModels) {
-    throw new ProviderApiError(400, "این پروایدر کشف مدل را پشتیبانی نمی‌کند.");
+    throw new ProviderApiError(400, "This provider does not support model discovery.");
   }
 
   const controller = new AbortController();
@@ -736,7 +758,7 @@ async function discoverDraftModels(
   } catch {
     throw new ProviderApiError(
       502,
-      "کشف مدل‌ها ناموفق بود؛ کلید یا آدرس را بررسی کن.",
+      "Model discovery failed; check the key or address.",
     );
   } finally {
     clearTimeout(timer);
@@ -752,14 +774,14 @@ function importModels(
 ): Record<string, unknown> {
   const providerId = asId(params["providerId"]);
   if (providerId === undefined) {
-    throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid provider ID.");
   }
   if (!deps.storage.getProvider(providerId)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   const raw = params["modelIds"];
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_MODEL_IDS) {
-    throw new ProviderApiError(400, "لیست مدل‌ها نامعتبر است.");
+    throw new ProviderApiError(400, "Model list is invalid.");
   }
   const known = new Set(deps.storage.listModels(providerId).map((m) => m.modelId));
   let imported = 0;
@@ -790,14 +812,14 @@ function addModel(
 ): Record<string, unknown> {
   const providerId = asId(params["providerId"]);
   if (providerId === undefined) {
-    throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid provider ID.");
   }
   if (!deps.storage.getProvider(providerId)) {
-    throw new ProviderApiError(404, "پروایدر یافت نشد.");
+    throw new ProviderApiError(404, "Provider not found.");
   }
   const modelId = asNonEmptyString(params["modelId"], 128);
   if (modelId === undefined) {
-    throw new ProviderApiError(400, "شناسهٔ مدل لازم است.");
+    throw new ProviderApiError(400, "Model ID is required.");
   }
   const label = asNonEmptyString(params["label"], 64) ?? modelId;
   const r = deps.modelSvc.add({ providerId, modelId, label });
@@ -813,9 +835,9 @@ function toggleModel(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ مدل نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid model ID.");
   if (typeof params["enabled"] !== "boolean") {
-    throw new ProviderApiError(400, "وضعیت نامعتبر است.");
+    throw new ProviderApiError(400, "Invalid status.");
   }
   const r = deps.modelSvc.setEnabled(id, params["enabled"]);
   if (!r.ok) throw new ProviderApiError(400, r.message);
@@ -827,9 +849,9 @@ function deleteModel(
   deps: ProviderApiDeps,
 ): Record<string, unknown> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ مدل نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid model ID.");
   if (!deps.modelSvc.get(id)) {
-    throw new ProviderApiError(404, "مدل یافت نشد.");
+    throw new ProviderApiError(404, "Model not found.");
   }
   if (params["confirm"] !== true) {
     return { needsConfirm: true };
@@ -848,19 +870,19 @@ function setActiveModel(
   deps: ProviderApiDeps,
 ): Promise<Record<string, unknown>> {
   const id = asId(params["id"]);
-  if (id === undefined) throw new ProviderApiError(400, "شناسهٔ مدل نامعتبر است.");
+  if (id === undefined) throw new ProviderApiError(400, "Invalid model ID.");
   const model = deps.modelSvc.get(id);
   if (!model || !model.enabled) {
-    throw new ProviderApiError(400, "مدل یافت نشد یا غیرفعال است.");
+    throw new ProviderApiError(400, "Model not found or disabled.");
   }
   const provider = deps.storage.getProvider(model.providerId);
   if (!provider || !provider.enabled) {
-    throw new ProviderApiError(400, "پروایدر این مدل غیرفعال است.");
+    throw new ProviderApiError(400, "This model’s provider is disabled.");
   }
   try {
     deps.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
   } catch {
-    throw new ProviderApiError(500, "فعال‌سازی ناموفق بود.");
+    throw new ProviderApiError(500, "Activation failed.");
   }
   const out: Record<string, unknown> = {
     ok: true,
@@ -879,7 +901,7 @@ function setActiveModel(
         ...(result.message !== undefined ? { message: result.message } : {}),
       };
     } catch {
-      out["probe"] = { ok: false, message: "آزمایش اتصال ناموفق بود." };
+      out["probe"] = { ok: false, message: "Connection probe failed." };
     }
     return out;
   })();

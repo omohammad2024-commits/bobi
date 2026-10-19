@@ -31,7 +31,7 @@
  *     parent must not treat the child's words as orders.
  *
  *  5. FAILURES NEVER LEAK INTERNALS. A child throw becomes
- *     { ok: false, error } with a fixed Persian message; provider payloads,
+ *     { ok: false, error } with a fixed English message; provider payloads,
  *     stack traces, and model names stay out.
  */
 import { AgentCancelled, AgentLoop } from "../agent/loop";
@@ -77,31 +77,24 @@ export interface DelegateToolDeps {
   /**
    * Bilingual agent output: resolve the delegating user's reply language.
    *
-   * Called with `ctx.actor.userId`. Absent (or throwing) means Persian —
-   * the pre-existing behaviour. Same trust shape as the engine's `langFor`:
-   * server-side pref only, never model text.
+   * Called with `ctx.actor.userId`. Absent (or throwing) means English — the
+   * default. Same trust shape as the engine's `langFor`: server-side pref
+   * only, never model text.
    */
   langFor?: (userId: string) => Lang | undefined;
 }
 
 const CHILD_SYSTEM_PROMPT =
-  "You are a focused subagent. Complete ONLY this task, answer concisely in Persian. " +
+  "You are a focused subagent. Complete ONLY this task, answer concisely in English. " +
   "Use the tools available to you. Do not ask clarifying questions.";
 
 /**
  * The child agent's reply language follows the DELEGATING user's `/lang`
- * pref (bilingual agent output): a user whose UI is English gets the child's
- * summary in English. Anything but "en" resolves to Persian — the pre-existing
- * behaviour. The value comes from the server-side pref, never from the task
- * text, so the parent model cannot steer the child's language by phrasing.
+ * pref (bilingual agent output). The value comes from the server-side pref,
+ * never from the task text, so the parent model cannot steer the child's
+ * language by phrasing.
  */
-function childSystemPrompt(lang: Lang): string {
-  if (lang === "en") {
-    return (
-      "You are a focused subagent. Complete ONLY this task, answer concisely in English. " +
-      "Use the tools available to you. Do not ask clarifying questions."
-    );
-  }
+function childSystemPrompt(_lang: Lang): string {
   return CHILD_SYSTEM_PROMPT;
 }
 
@@ -129,8 +122,8 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
   return {
     name: DELEGATE_TOOL_NAME,
     description:
-      "واگذاری یک زیروظیفهٔ مستقل به یک ایجنت فرزند با ابزارهای محدود و سقف زمانی. " +
-      "برای کارهای فرعی که نباید زمینهٔ گفتگوی اصلی را شلوغ کند استفاده کن؛ خلاصهٔ فارسی برمی‌گرداند.",
+      "Hand an independent subtask to a child agent with limited tools and a time budget. " +
+      "Use it for side work that should not clutter the main conversation; returns a short summary.",
     enabled: true,
     permission: { requires: [DELEGATE_PERMISSION] },
     // Withheld from public actors by the authorization bridge.
@@ -141,19 +134,19 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
         task: {
           type: "string",
           required: true,
-          description: "شرح کامل و مستقل زیروظیفه.",
+          description: "Full, self-contained description of the subtask.",
           minLength: 1,
           maxLength: 2000,
         },
         maxIterations: {
           type: "integer",
-          description: "سقف دورهای مدل در ایجنت فرزند (۱ تا ۳، پیش‌فرض ۳).",
+          description: "Model turn cap in the child agent (1 to 3, default 3).",
           minimum: 1,
           maximum: 3,
         },
         maxToolCalls: {
           type: "integer",
-          description: "سقف فراخوانی ابزار در ایجنت فرزند (۱ تا ۵، پیش‌فرض ۵).",
+          description: "Tool call cap in the child agent (1 to 5, default 5).",
           minimum: 1,
           maximum: 5,
         },
@@ -163,7 +156,7 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
     async run(input: DelegateInput, ctx: ToolContext): Promise<DelegateOutput> {
       const task = input.task.trim();
       if (task.length === 0) {
-        throw new ToolError("invalid_input", "شرح زیروظیفه خالی است.");
+        throw new ToolError("invalid_input", "The subtask description is empty.");
       }
       const maxIterations = input.maxIterations ?? 3;
       const maxToolCalls = input.maxToolCalls ?? 5;
@@ -208,17 +201,17 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
 
 /**
  * Resolve the child's reply language for the delegating user. Fail-closed to
- * Persian on a missing, throwing, or misbehaving resolver — the child answer
+ * English on a missing, throwing, or misbehaving resolver — the child answer
  * must never be missing or in an unselected language.
  */
 function resolveDelegateLang(deps: DelegateToolDeps, userId: string): Lang {
   try {
     const resolved = deps.langFor?.(userId);
-    if (resolved === "en" || resolved === "fa") return resolved;
+    if (resolved === "en") return resolved;
   } catch {
-    // fall through to the Persian default
+    // fall through to the English default
   }
-  return "fa";
+  return "en";
 }
 
 /** Cap the child's answer; the cut is marked with a named note. */
@@ -227,23 +220,23 @@ function truncateSummary(text: string): string {
   return text.slice(0, DELEGATE_SUMMARY_MAX_CHARS - TRUNCATION_NOTE.length) + TRUNCATION_NOTE;
 }
 
-/** Fixed, user-safe Persian message for any child failure. */
+/** Fixed, user-safe English message for any child failure. */
 function childErrorMessage(err: unknown): string {
   if (err instanceof ToolError) return err.message; // already user-safe
-  if (err instanceof AgentCancelled) return "اجرای زیروظیفه لغو شد.";
+  if (err instanceof AgentCancelled) return "The subtask run was cancelled.";
   if (err instanceof AiError) {
     switch (err.kind) {
       case "timeout":
-        return "زیروظیفه به سقف زمانی رسید و کامل نشد.";
+        return "The subtask hit its time limit and did not finish.";
       case "aborted":
-        return "اجرای زیروظیفه لغو شد.";
+        return "The subtask run was cancelled.";
       case "quota":
-        return "سهمیهٔ سرویس هوش مصنوعی تمام شد؛ بعداً تلاش کن.";
+        return "The AI service quota is exhausted; try again later.";
       case "auth":
-        return "پیکربندی سرویس هوش مصنوعی معتبر نیست.";
+        return "The AI service configuration is invalid.";
       default:
-        return "اجرای زیروظیفه ناموفق بود.";
+        return "Running the subtask failed.";
     }
   }
-  return "اجرای زیروظیفه ناموفق بود.";
+  return "Running the subtask failed.";
 }

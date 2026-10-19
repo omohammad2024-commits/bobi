@@ -12,7 +12,7 @@
  */
 import { ToolError } from "./errors";
 import type { Storage } from "../storage/storage";
-import type { ReminderRecord, ReminderRepeat } from "../storage/storage";
+import type { ReminderRepeat } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
 
 export const REMIND_AT_PERMISSION = "tools:remind_at";
@@ -52,7 +52,7 @@ export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, 
   return {
     name: "remind_at",
     description:
-      "یک یادآور در زمان مشخص تنظیم کن. زمان باید ISO-8601 با منطقهٔ زمانی باشد و در آینده باشد.",
+      "Set a reminder at a specific time. The time must be ISO-8601 with a timezone and in the future.",
     enabled: true,
     permission: { requires: [REMIND_AT_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -64,20 +64,20 @@ export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, 
         text: {
           type: "string",
           required: true,
-          description: "متنی که باید یادآوری شود.",
+          description: "The text to be reminded of.",
           minLength: 1,
           maxLength: MAX_TEXT_LENGTH,
         },
         dueAt: {
           type: "string",
           required: true,
-          description: "زمان دقیق، مثل 2026-10-20T09:30:00+03:30.",
+          description: "Exact time, e.g. 2026-10-20T09:30:00+03:30.",
           minLength: 10,
           maxLength: 40,
         },
         repeat: {
           type: "enum",
-          description: "تکرار: none، daily یا weekly.",
+          description: "Repeat: none, daily or weekly.",
           choices: [...REPEATS],
         },
       },
@@ -89,12 +89,12 @@ export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, 
       // server code — the model never names a chat id.
       const chatId = ctx.conversationId;
       if (chatId === undefined || chatId.length === 0) {
-        throw new ToolError("not_allowed", "مقصد یادآور مشخص نیست.");
+        throw new ToolError("not_allowed", "Reminder destination is unknown.");
       }
 
       const text = input.text.trim();
       if (text.length === 0) {
-        throw new ToolError("invalid_input", "متن یادآور خالی است.");
+        throw new ToolError("invalid_input", "Reminder text is empty.");
       }
 
       const repeat = parseRepeat(input.repeat);
@@ -103,7 +103,7 @@ export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, 
       if (deps.storage.countPendingReminders(userId) >= MAX_PENDING_PER_USER) {
         throw new ToolError(
           "invalid_input",
-          "تعداد یادآورهای فعال پر است؛ ابتدا چند مورد را لغو کن.",
+          "Too many active reminders; cancel some first.",
         );
       }
 
@@ -137,20 +137,20 @@ function parseDueAt(raw: string, now: number): number {
   if (!/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) {
     throw new ToolError(
       "invalid_input",
-      "زمان باید شامل منطقهٔ زمانی باشد، مثل 2026-10-20T09:30:00+03:30.",
+      "The time must include a timezone, e.g. 2026-10-20T09:30:00+03:30.",
     );
   }
 
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) {
-    throw new ToolError("invalid_input", "زمان قابل خواندن نبود.");
+    throw new ToolError("invalid_input", "The time could not be read.");
   }
 
   if (parsed - now < MIN_LEAD_MS) {
-    throw new ToolError("invalid_input", "زمان باید در آینده باشد.");
+    throw new ToolError("invalid_input", "The time must be in the future.");
   }
   if (parsed - now > MAX_HORIZON_MS) {
-    throw new ToolError("invalid_input", "زمان بیش از یک سال جلوتر قابل تنظیم نیست.");
+    throw new ToolError("invalid_input", "The time cannot be more than one year ahead.");
   }
 
   return parsed;
@@ -160,7 +160,7 @@ function parseRepeat(raw: string | undefined): ReminderRepeat {
   if (raw === undefined) return "none";
   const value = raw.trim().toLowerCase();
   if (!REPEATS.includes(value as ReminderRepeat)) {
-    throw new ToolError("invalid_input", "مقدار تکرار نامعتبر است.");
+    throw new ToolError("invalid_input", "Invalid repeat value.");
   }
   return value as ReminderRepeat;
 }
@@ -168,8 +168,9 @@ function parseRepeat(raw: string | undefined): ReminderRepeat {
 // ---------- list_reminders ----------
 
 export interface ListRemindersInput {
-  /** Reserved; the store is a queue, so only pending reminders are listed. */
-  includeFired?: boolean;
+  // No fields: the store is the scheduler's queue, so a fired reminder is not
+  // retained as history. The input spec is fields:{}, and the validator
+  // rejects unknown fields — this interface mirrors that.
 }
 
 export interface ListRemindersOutput {
@@ -187,7 +188,7 @@ export function createListRemindersTool(
 ): Tool<ListRemindersInput, ListRemindersOutput> {
   return {
     name: "list_reminders",
-    description: "یادآورهای فعال (در انتظار اجرا) کاربر را فهرست کن.",
+    description: "List the user's active (pending) reminders.",
     enabled: true,
     permission: { requires: [LIST_REMINDERS_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -236,7 +237,7 @@ export function createCancelReminderTool(
 ): Tool<CancelReminderInput, CancelReminderOutput> {
   return {
     name: "cancel_reminder",
-    description: "یک یادآور را با شناسه‌اش لغو کن.",
+    description: "Cancel a reminder by its id.",
     enabled: true,
     permission: { requires: [CANCEL_REMINDER_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -248,7 +249,7 @@ export function createCancelReminderTool(
         id: {
           type: "integer",
           required: true,
-          description: "شناسهٔ یادآور، از فهرست یادآورها.",
+          description: "Reminder id, from the reminder list.",
           minimum: 1,
         },
       },
@@ -287,12 +288,8 @@ export function createReminderTools(deps: ReminderToolDeps): readonly Tool<unkno
 function ownerOf(ctx: ToolContext): string {
   const id = ctx.actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست؛ یادآور در دسترس نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown; reminders are unavailable.");
   }
   return id;
 }
 
-/** Format a stored reminder for a model-facing summary. */
-export function describeReminder(r: ReminderRecord): string {
-  return `#${r.id} — ${r.text} (${new Date(r.dueAt).toISOString()}${r.repeat === "none" ? "" : `, ${r.repeat}`})`;
-}

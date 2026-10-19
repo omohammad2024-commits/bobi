@@ -1,7 +1,7 @@
 /* BOBI Mini App — Providers section (UX pass).
  *
- * Views: list → detail (everything inline: probe, discover, models, key,
- * edit, delete) → add (preset grid → 2-field form; custom / 9Router links).
+ * Views: list → detail (tabbed: Overview / Models / API key) → add
+ * (preset grid → 2-field form; custom / 9Router links).
  *
  * Backend contract (POST /miniapp/api/<endpoint>, {initData, ...}):
  *   providers.list    {} -> { providers: [{ id, label, adapterLabel, enabled,
@@ -29,68 +29,21 @@
 (function () {
   "use strict";
 
-  function RS(fa, en) {
+  function RS(en) {
     if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
-      window.__registerSectionStrings(fa, en);
+      window.__registerSectionStrings(en);
     }
   }
 
-  RS(
-    {
-      "prov.emptyTitle": "هنوز پروایدری اضافه نکردی",
-      "prov.emptySub": "برای اینکه بابی واقعاً جواب بده، یه پروایدر هوش مصنوعی وصل کن.",
-      "prov.modelCount": "{n} مدل",
-      "prov.activeBadge": "فعال ⭐",
-      "prov.probeNever": "تست نشده",
-      "prov.setActiveProvider": "فعال‌سازی",
-      "prov.autoActive": "پروایدر فعال شد — بات الان با همین جواب می‌دهد.",
-      "prov.needKeyFirst": "اول کلید را ثبت کن",
-      "prov.keyRequired": "کلید API را وارد کن",
-      "prov.nextTitle": "قدم بعدی",
-      "prov.nextBody": "اول «تست اتصال» را بزن که مطمئن شوی وصل است، بعد «دریافت مدل‌ها».",
-      "prov.discoverHint": "لیست مدل‌ها را مستقیم از سرور پروایدر می‌گیرد؛ تیک بزن و وارد کن.",
-      "prov.selectAll": "انتخاب همه",
-      "prov.selectNone": "برداشتن همه",
-      "prov.imported": "{n} مدل وارد شد ✓",
-      "prov.allImported": "همهٔ مدل‌ها قبلاً وارد شده‌اند.",
-      "prov.accountId": "شناسهٔ حساب",
-      "prov.accountIdHint": "از داشبورد Cloudflare کپی کن و جای {ACCOUNT_ID} بگذار.",
-      "prov.baseUrlPreview": "آدرس نهایی",
-      "prov.customUrlHint": "آدرس پایهٔ API؛ معمولاً به ‎/v1‎ ختم می‌شود.",
-      "prov.customKeyHint": "کلیدی که از پنل آن سرویس گرفتی.",
-      "prov.customModelHint": "اختیاری؛ بعداً هم می‌توانی با «دریافت مدل‌ها» اضافه کنی.",
-      "prov.nineGuide": "اول در داشبورد 9Router یک endpoint بساز و کلیدش را بردار.",
-      "prov.nineUrlHint": "آدرس endpoint ـی که 9Router به تو داده.",
-      "prov.nineKeyHint": "کلید endpoint ـی که در داشبورد 9Router ساختی.",
-      "prov.nineModelHint": "نام دقیق مدلی که در 9Router داری (اجباری).",
-      "prov.activated": "فعال شد",
-      "prov.probing": "در حال تست…",
-      "prov.editProvider": "ویرایش",
-      "prov.deleteProvider": "حذف پروایدر",
-      "prov.keySaved": "کلید ثبت شد ✓",
-      "prov.addCustom": "سفارشی (OpenAI)",
-      "prov.addNine": "9Router",
-      "prov.noModelsYet": "هنوز مدلی اضافه نشده؛ «دریافت مدل‌ها» را بزن.",
-      "prov.modelActive": "مدل فعال",
-      "prov.justAdded": "پروایدر اضافه شد ✓",
-      "prov.probeOkLine": "اتصال موفق ✓",
-      "prov.probeFailLine": "اتصال ناموفق",
-      "prov.agoNow": "لحظاتی پیش",
-      "prov.agoMin": "{n} دقیقه پیش",
-      "prov.agoHour": "{n} ساعت پیش",
-      "prov.agoDay": "{n} روز پیش",
-      "prov.keyHintLabel": "کلید",
-      "prov.discoverTitle": "دریافت مدل‌ها",
-      "prov.actionsTitle": "اقدام‌ها",
-      "prov.keyTitle": "کلید API",
-      "prov.dangerTitle": "حذف",
-      "prov.presetNote": "یه سرویس رو انتخاب کن؛ فقط اسم و کلید می‌خواد.",
-    },
-    {
+  RS({
+      "prov.sub": "Connect AI providers and manage their models.",
+      "prov.tab.overview": "Overview",
+      "prov.tab.models": "Models",
+      "prov.tab.key": "API key",
       "prov.emptyTitle": "No providers yet",
       "prov.emptySub": "Connect an AI provider so BOBI can actually answer.",
       "prov.modelCount": "{n} models",
-      "prov.activeBadge": "Active ⭐",
+      "prov.activeBadge": "Active",
       "prov.probeNever": "Untested",
       "prov.setActiveProvider": "Set active",
       "prov.autoActive": "Provider activated — the bot now answers with it.",
@@ -101,7 +54,7 @@
       "prov.discoverHint": "Pulls the model list straight from the provider's server; check and import.",
       "prov.selectAll": "Select all",
       "prov.selectNone": "Select none",
-      "prov.imported": "{n} models imported ✓",
+      "prov.imported": "{n} models imported",
       "prov.allImported": "All models are already imported.",
       "prov.accountId": "Account ID",
       "prov.accountIdHint": "Copy it from the Cloudflare dashboard.",
@@ -113,17 +66,19 @@
       "prov.nineUrlHint": "The endpoint URL 9Router gave you.",
       "prov.nineKeyHint": "The endpoint key from the 9Router dashboard.",
       "prov.nineModelHint": "Exact model name you have in 9Router (required).",
+      "prov.nineKeyRequired": "Enter the endpoint key.",
+      "prov.nineModelRequired": "Enter the model name.",
       "prov.activated": "Activated",
       "prov.probing": "Testing…",
       "prov.editProvider": "Edit",
       "prov.deleteProvider": "Delete provider",
-      "prov.keySaved": "Key saved ✓",
+      "prov.keySaved": "Key saved",
       "prov.addCustom": "Custom (OpenAI)",
       "prov.addNine": "9Router",
       "prov.noModelsYet": "No models yet; tap “Discover models”.",
       "prov.modelActive": "Active model",
-      "prov.justAdded": "Provider added ✓",
-      "prov.probeOkLine": "Connection OK ✓",
+      "prov.justAdded": "Provider added",
+      "prov.probeOkLine": "Connection OK",
       "prov.probeFailLine": "Connection failed",
       "prov.agoNow": "just now",
       "prov.agoMin": "{n} min ago",
@@ -135,8 +90,7 @@
       "prov.keyTitle": "API key",
       "prov.dangerTitle": "Delete",
       "prov.presetNote": "Pick a service — just a name and key.",
-    }
-  );
+    });
 
   // Fallback presets if providers.presets is unreachable.
   const FALLBACK_PRESETS = [
@@ -147,7 +101,7 @@
     { id: "xai", label: "xAI (Grok)", baseUrl: "https://api.x.ai/v1", suggestedModel: "grok-4", hasPlaceholder: false },
     { id: "together", label: "Together", baseUrl: "https://api.together.xyz/v1", suggestedModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo", hasPlaceholder: false },
     { id: "opencode", label: "OpenCode Zen", baseUrl: "https://opencode.ai/zen/v1", suggestedModel: "nemotron-3-lightning-free", hasPlaceholder: false },
-    { id: "cloudflare", label: "Cloudflare Workers AI", baseUrl: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", suggestedModel: "@cf/meta/llama-3.1-8b-instruct", hasPlaceholder: true, requiredPlaceholder: "ACCOUNT_ID", note: "آدرس شامل شناسهٔ حساب است؛ آن را جایگزین {ACCOUNT_ID} کن." },
+    { id: "cloudflare", label: "Cloudflare Workers AI", baseUrl: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", suggestedModel: "@cf/meta/llama-3.1-8b-instruct", hasPlaceholder: true, requiredPlaceholder: "ACCOUNT_ID", note: "The URL contains your account ID; replace {ACCOUNT_ID} with it." },
   ];
 
   function urlOk(u) {
@@ -159,9 +113,7 @@
     if (!st.view) st.view = { name: "list" };
 
     function num(n) {
-      const s = String(n);
-      if (ctx.lang === "fa") return s.replace(/\d/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹"[d]; });
-      return s;
+      return String(n);
     }
     function fmt(key, n) {
       return ctx.t(key).replace("{n}", num(n));
@@ -194,12 +146,31 @@
       for (let i = 0; i < (n || 4); i++) h += '<div class="skeleton"></div>';
       return h;
     }
+    function tileHue(id) {
+      let h = 0;
+      const s = String(id || "?");
+      for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) % 360;
+      return h;
+    }
+    function provTile(label) {
+      const n = String(label || "?").trim() || "?";
+      const h = tileHue(n);
+      return (
+        '<span class="preset-tile" style="background:linear-gradient(135deg,' +
+        "hsl(" + h + ",55%,52%),hsl(" + ((h + 40) % 360) + ",55%,38%))" + '">' +
+        ctx.esc(n.charAt(0).toUpperCase()) +
+        "</span>"
+      );
+    }
+    function activeBadge() {
+      return '<span class="badge badge-accent">' + ctx.icon("star") + ctx.esc(ctx.t("prov.activeBadge")) + "</span>";
+    }
     function subHeader(title) {
       const wrap = document.createElement("div");
       wrap.innerHTML =
-        '<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">' +
-        '<button type="button" class="btn btn-ghost" id="backBtn">‹ ' + ctx.esc(ctx.t("nav.back")) + "</button>" +
-        '<h2 style="margin:0;font-size:17px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + ctx.esc(title) + "</h2></div>";
+        '<div class="subhead">' +
+        '<button type="button" class="btn btn-ghost btn-sm" id="backBtn">' + ctx.icon("chevL") + ctx.esc(ctx.t("nav.back")) + "</button>" +
+        '<h2>' + ctx.esc(title) + "</h2></div>";
       el.appendChild(wrap);
       wrap.querySelector("#backBtn").addEventListener("click", back);
     }
@@ -214,8 +185,9 @@
       paint();
     }
     function errHtml(e) {
-      return '<div class="error-state"><p>⚠️ ' + ctx.esc((e && (e.message || e.code)) || ctx.t("state.error")) + "</p>" +
-        '<button type="button" class="btn btn-primary" id="retryV">' + ctx.esc(ctx.t("action.retry")) + "</button></div>";
+      return '<div class="error-state"><div class="error-ic">' + ctx.icon("alert") + "</div>" +
+        "<p>" + ctx.esc((e && (e.message || e.code)) || ctx.t("state.error")) + "</p>" +
+        '<button type="button" class="btn btn-primary" id="retryV">' + ctx.icon("refresh") + ctx.esc(ctx.t("action.retry")) + "</button></div>";
     }
     function wireRetry() {
       const b = document.getElementById("retryV");
@@ -242,54 +214,60 @@
         wireRetry();
         return;
       }
-      el.innerHTML = "";
+      el.innerHTML = ctx.pageHead("plug", ctx.t("sec.providers"), ctx.t("prov.sub"));
 
       if (!providers.length) {
         const d = document.createElement("div");
-        d.className = "empty-state";
+        d.className = "card";
         d.innerHTML =
-          '<div style="font-size:44px;margin-bottom:8px">🔌</div>' +
-          "<p style=\"font-weight:700;color:var(--text);font-size:16px;margin:0 0 6px\">" + ctx.esc(ctx.t("prov.emptyTitle")) + "</p>" +
-          '<p style="margin:0 0 16px">' + ctx.esc(ctx.t("prov.emptySub")) + "</p>" +
-          '<button type="button" class="btn btn-primary btn-block" id="emptyAdd">＋ ' + ctx.esc(ctx.t("prov.add")) + "</button>";
+          '<div class="empty-state"><div class="empty-ic">' + ctx.icon("plug") + "</div>" +
+          '<p class="empty-title">' + ctx.esc(ctx.t("prov.emptyTitle")) + "</p>" +
+          '<p class="empty-text">' + ctx.esc(ctx.t("prov.emptySub")) + "</p>" +
+          '<button type="button" class="btn btn-primary" id="emptyAdd">' + ctx.icon("plus") + ctx.esc(ctx.t("prov.add")) + "</button></div>";
         el.appendChild(d);
         d.querySelector("#emptyAdd").addEventListener("click", function () { setView({ name: "add" }); });
         return;
       }
+
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "btn btn-primary btn-block";
+      add.style.margin = "0 0 12px";
+      add.innerHTML = ctx.icon("plus") + ctx.esc(ctx.t("prov.add"));
+      add.addEventListener("click", function () { setView({ name: "add" }); });
+      el.appendChild(add);
 
       for (const p of providers) {
         const b = document.createElement("button");
         b.type = "button";
         b.className = "list-row";
         const keyBadge = p.keyPresent
-          ? '<span class="badge key" dir="ltr">••••' + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span>"
-          : '<span class="badge nokey">' + ctx.esc(ctx.t("prov.noKey")) + "</span>";
-        const activeBadge = p.isActive
-          ? '<span class="badge key">' + ctx.esc(ctx.t("prov.activeBadge")) + "</span>"
-          : "";
+          ? '<span class="badge badge-success" dir="ltr">' + ctx.icon("key") + "••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span>"
+          : '<span class="badge badge-danger">' + ctx.esc(ctx.t("prov.noKey")) + "</span>";
+        const actBadge = p.isActive ? activeBadge() : "";
         b.innerHTML =
-          statusDot(p) +
-          '<div class="list-main"><div class="list-title">' + ctx.esc(p.label || "#" + p.id) + "</div>" +
+          provTile(p.label || p.adapterLabel) +
+          '<div class="list-main"><div class="list-title">' + statusDot(p) + ctx.esc(p.label || "#" + p.id) + "</div>" +
           '<div class="list-sub">' +
           ctx.esc(p.adapterLabel || "") + " · " + fmt("prov.modelCount", p.modelCount || 0) + " · " + ctx.esc(probeText(p)) +
           "</div></div>" +
-          '<div style="display:flex;flex-direction:column;gap:4px;align-items:flex-end">' + activeBadge + keyBadge + "</div>" +
-          '<span class="chev"></span>';
+          '<div class="list-meta">' + actBadge + keyBadge + "</div>" +
+          '<span class="chev">' + ctx.icon("chevR") + "</span>";
         (function (id) {
           b.addEventListener("click", function () { setView({ name: "detail", id: id }); });
         })(p.id);
         el.appendChild(b);
       }
-
-      const add = document.createElement("button");
-      add.type = "button";
-      add.className = "btn btn-primary btn-block";
-      add.textContent = "＋ " + ctx.t("prov.add");
-      add.addEventListener("click", function () { setView({ name: "add" }); });
-      el.appendChild(add);
     }
 
     // ---------------- detail ----------------
+    // Tabbed: Overview (status + actions + danger zone) / Models / API key.
+    const DETAIL_TABS = [
+      ["overview", "prov.tab.overview", "sliders"],
+      ["models", "prov.tab.models", "cpu"],
+      ["key", "prov.tab.key", "key"],
+    ];
+
     async function viewDetail(id, justAdded) {
       el.innerHTML = skeleton(5);
       let p = null, models = [];
@@ -304,44 +282,89 @@
         wireRetry();
         return;
       }
+      if (st._detailId !== String(id)) {
+        st.detailTab = "overview";
+        st._detailId = String(id);
+      }
+      const tab = st.detailTab || "overview";
+
       el.innerHTML = "";
       subHeader(p.label || ("#" + p.id));
 
+      const seg = document.createElement("div");
+      seg.className = "seg";
+      seg.setAttribute("role", "tablist");
+      seg.innerHTML = DETAIL_TABS.map(function (tb) {
+        return '<button type="button" role="tab" data-dtab="' + tb[0] + '" aria-selected="' +
+          (tab === tb[0] ? "true" : "false") + '">' + ctx.icon(tb[2]) + ctx.esc(ctx.t(tb[1])) + "</button>";
+      }).join("");
+      el.appendChild(seg);
+
+      const body = document.createElement("div");
+      el.appendChild(body);
+
+      function renderDetailTab(name) {
+        body.innerHTML = "";
+        if (name === "models") return buildModelsTab(body, p, models);
+        if (name === "key") return buildKeyTab(body, p);
+        return buildOverviewTab(body, p, justAdded, switchTab);
+      }
+      function switchTab(name) {
+        st.detailTab = name;
+        Array.prototype.forEach.call(seg.querySelectorAll("[data-dtab]"), function (b) {
+          b.setAttribute("aria-selected", b.getAttribute("data-dtab") === name ? "true" : "false");
+        });
+        renderDetailTab(name);
+      }
+      Array.prototype.forEach.call(seg.querySelectorAll("[data-dtab]"), function (b) {
+        b.addEventListener("click", function () { switchTab(b.getAttribute("data-dtab")); });
+      });
+      renderDetailTab(tab);
+    }
+
+    // ----- detail tab: overview -----
+    function buildOverviewTab(host, p, justAdded, switchTab) {
       if (justAdded) {
         const nx = document.createElement("div");
-        nx.className = "card";
-        nx.style.borderColor = "var(--success)";
+        nx.className = "note note-info";
+        nx.style.margin = "0 0 12px";
         nx.innerHTML =
-          "<div style=\"font-weight:700;margin-bottom:4px\">✓ " + ctx.esc(ctx.t("prov.justAdded")) + "</div>" +
-          "<div class=\"list-sub\" style=\"white-space:normal\"><strong>" + ctx.esc(ctx.t("prov.nextTitle")) + ":</strong> " +
-          ctx.esc(ctx.t("prov.nextBody")) + "</div>";
-        el.appendChild(nx);
+          ctx.icon("checkCircle") +
+          "<span><strong>" + ctx.esc(ctx.t("prov.justAdded")) + "</strong><br>" +
+          "<strong>" + ctx.esc(ctx.t("prov.nextTitle")) + ":</strong> " +
+          ctx.esc(ctx.t("prov.nextBody")) + "</span>";
+        host.appendChild(nx);
       }
 
       // Status card
       const card = document.createElement("div");
       card.className = "card";
       card.innerHTML =
-        '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px">' +
-        statusDot(p) +
-        "<strong>" + ctx.esc(p.adapterLabel || "") + "</strong>" +
-        (p.isActive ? '<span class="badge key">' + ctx.esc(ctx.t("prov.activeBadge")) + "</span>" : "") +
-        (p.keyPresent
-          ? '<span class="badge key" dir="ltr">' + ctx.esc(ctx.t("prov.keyHintLabel")) + " ••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span>"
-          : '<span class="badge nokey">' + ctx.esc(ctx.t("prov.noKey")) + "</span>") +
+        '<div class="card-head">' +
+        provTile(p.label || p.adapterLabel) +
+        "<div><div class=\"card-title\">" + ctx.esc(p.adapterLabel || "") + "</div>" +
+        '<div class="card-sub" dir="ltr">' + ctx.esc(p.label || "") + "</div></div>" +
+        '<div class="spacer"></div>' +
+        (p.isActive ? activeBadge() : "") +
         "</div>" +
-        '<div class="list-sub" id="probeLine">' + ctx.esc(ctx.t("prov.lastProbe") + ": " + probeText(p)) + "</div>" +
-        '<div style="display:flex;align-items:center;justify-content:space-between;margin-top:10px">' +
-        "<span>" + ctx.esc(ctx.t(p.enabled ? "prov.enabled" : "prov.disabled")) + "</span>" +
-        '<button type="button" class="toggle" id="enabledToggle" role="switch" aria-checked="' + (p.enabled ? "true" : "false") + '"></button>' +
-        "</div>";
-      el.appendChild(card);
+        '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.keyHintLabel")) + "</span>" +
+        (p.keyPresent
+          ? '<span class="v"><span class="badge badge-success" dir="ltr">' + ctx.icon("key") + "••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span></span>"
+          : '<span class="v"><span class="badge badge-danger">' + ctx.esc(ctx.t("prov.noKey")) + "</span></span>") +
+        "</div>" +
+        '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.lastProbe")) + '</span><span class="v" id="probeLine">' +
+        statusDot(p) + " " + ctx.esc(probeText(p)) + "</span></div>" +
+        '<div class="mx-row" style="margin-top:12px"><span style="font-weight:600">' +
+        ctx.esc(ctx.t(p.enabled ? "prov.enabled" : "prov.disabled")) + "</span>" +
+        '<button type="button" class="toggle" id="enabledToggle" role="switch" aria-checked="' + (p.enabled ? "true" : "false") +
+        '" aria-label="' + ctx.esc(ctx.t("prov.enabled")) + '"></button></div>';
+      host.appendChild(card);
       card.querySelector("#enabledToggle").addEventListener("click", async function () {
         try {
           await ctx.api("providers.toggle", { id: p.id, enabled: !p.enabled });
-          ctx.toast(ctx.t("toast.saved"));
+          ctx.toast(ctx.t("toast.saved"), "ok");
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
         }
         paint();
       });
@@ -349,20 +372,25 @@
       // Actions: probe / discover / set-active / edit
       const actions = document.createElement("div");
       actions.className = "card";
+      const probeResId = "probeResult";
       actions.innerHTML =
-        '<div class="list-sub" style="margin-bottom:8px">' + ctx.esc(ctx.t("prov.actionsTitle")) + "</div>" +
+        '<div class="card-head tight"><div class="card-icon">' + ctx.icon("zap") + "</div>" +
+        "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.actionsTitle")) + "</h2></div></div>" +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
-        '<button type="button" class="btn btn-ghost" id="probeBtn">⚡ ' + ctx.esc(ctx.t("action.probe")) + "</button>" +
-        '<button type="button" class="btn btn-ghost" id="discGoBtn">🔍 ' + ctx.esc(ctx.t("prov.discoverTitle")) + "</button>" +
-        '<button type="button" class="btn btn-ghost" id="activateBtn"' + (p.isActive || !p.keyPresent ? " disabled" : "") + ">⭐ " + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>" +
-        '<button type="button" class="btn btn-ghost" id="editBtn">✏️ ' + ctx.esc(ctx.t("prov.editProvider")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="probeBtn">' + ctx.icon("zap") + ctx.esc(ctx.t("action.probe")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="discGoBtn">' + ctx.icon("search") + ctx.esc(ctx.t("prov.discoverTitle")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="activateBtn"' + (p.isActive || !p.keyPresent ? " disabled" : "") + ">" +
+        ctx.icon("star") + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="editBtn">' + ctx.icon("edit") + ctx.esc(ctx.t("prov.editProvider")) + "</button>" +
         "</div>" +
-        '<div class="list-sub" id="probeResult" style="text-align:center;margin-top:8px;white-space:normal"></div>' +
-        (!p.keyPresent ? '<div class="list-sub" style="margin-top:6px">⚠️ ' + ctx.esc(ctx.t("prov.needKeyFirst")) + "</div>" : "");
-      el.appendChild(actions);
+        '<div class="mx-kv" id="' + probeResId + '" style="text-align:center;margin-top:10px"></div>' +
+        (!p.keyPresent
+          ? '<div class="note note-warn">' + ctx.icon("alert") + "<span>" + ctx.esc(ctx.t("prov.needKeyFirst")) + "</span></div>"
+          : "");
+      host.appendChild(actions);
 
       const probeBtn = actions.querySelector("#probeBtn");
-      const probeResult = actions.querySelector("#probeResult");
+      const probeResult = actions.querySelector("#" + probeResId);
       probeBtn.addEventListener("click", async function () {
         probeBtn.disabled = true;
         probeResult.textContent = ctx.t("prov.probing");
@@ -375,8 +403,9 @@
           probeResult.style.color = r.ok ? "var(--success)" : "var(--danger)";
           // refresh the status line in place
           const pl = card.querySelector("#probeLine");
-          if (pl) pl.textContent = ctx.t("prov.lastProbe") + ": " + (r.ok ? "✓" : "✗") + " " + ctx.t("prov.agoNow") +
-            (r.latencyMs !== undefined && r.latencyMs !== null ? " · " + num(r.latencyMs) + " " + ctx.t("prov.ms") : "");
+          if (pl) pl.innerHTML = statusDot({ lastProbe: { ok: r.ok } }) + " " +
+            ctx.esc((r.ok ? "✓" : "✗") + " " + ctx.t("prov.agoNow") +
+              (r.latencyMs !== undefined && r.latencyMs !== null ? " · " + num(r.latencyMs) + " " + ctx.t("prov.ms") : ""));
           const dot = card.querySelector(".dot");
           if (dot) dot.className = "dot " + (r.ok ? "ok" : "err");
         } catch (e2) {
@@ -387,8 +416,7 @@
       });
 
       actions.querySelector("#discGoBtn").addEventListener("click", function () {
-        const mc = document.getElementById("modelsCard");
-        if (mc) mc.scrollIntoView({ behavior: "smooth", block: "start" });
+        switchTab("models");
       });
 
       const activateBtn = actions.querySelector("#activateBtn");
@@ -397,14 +425,14 @@
           activateBtn.disabled = true;
           try {
             const r = await ctx.api("providers.setActive", { id: p.id });
-            let msg = ctx.t("prov.activated") + (r.label ? ": " + r.label : "") + " ✓";
+            let msg = ctx.t("prov.activated") + (r.label ? ": " + r.label : "");
             // Probe on select: warn inline when the fresh selection doesn't answer.
             if (r.probe && !r.probe.ok) {
-              msg += "\n⚠️ " + ctx.t("prov.probeFailLine") + (r.probe.message ? ": " + r.probe.message : "");
+              msg += "\nNote: " + ctx.t("prov.probeFailLine") + (r.probe.message ? ": " + r.probe.message : "");
             }
-            ctx.toast(msg);
+            ctx.toast(msg, r.probe && !r.probe.ok ? "err" : "ok");
           } catch (e) {
-            ctx.toast((e && e.message) || ctx.t("toast.failed"));
+            ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           }
           paint();
         });
@@ -419,8 +447,8 @@
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.url")) + "</label>" +
         '<input id="editUrl" type="url" value="' + ctx.esc(p.baseUrl || "") + '" dir="ltr">' +
         '<div class="error" id="editUrlErr" hidden></div></div>' +
-        '<button type="button" class="btn btn-primary btn-block" id="saveEdit">' + ctx.esc(ctx.t("action.save")) + "</button>";
-      el.appendChild(editCard);
+        '<button type="button" class="btn btn-primary btn-block" id="saveEdit">' + ctx.icon("check") + ctx.esc(ctx.t("action.save")) + "</button>";
+      host.appendChild(editCard);
       actions.querySelector("#editBtn").addEventListener("click", function () {
         editCard.hidden = !editCard.hidden;
       });
@@ -434,47 +462,80 @@
           return;
         }
         errEl.hidden = true;
+        // Only send fields that are actually set; the backend rejects empty
+        // values with a 400, so don't round-trip a cleared URL.
+        const patch = { id: p.id };
+        if (label) patch.label = label;
+        if (url) patch.baseUrl = url;
         try {
-          await ctx.api("providers.update", { id: p.id, label: label, baseUrl: url });
-          ctx.toast(ctx.t("toast.saved"));
+          await ctx.api("providers.update", patch);
+          ctx.toast(ctx.t("toast.saved"), "ok");
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
         }
         paint();
       });
 
-      // Models card
+      // Danger zone: delete provider
+      const dz = document.createElement("div");
+      dz.className = "danger-zone";
+      dz.innerHTML =
+        '<div class="card-title">' + ctx.icon("alert") + ctx.esc(ctx.t("prov.dangerTitle")) + "</div>" +
+        '<button type="button" class="btn btn-danger btn-block" id="delProv">' +
+        ctx.icon("trash") + ctx.esc(ctx.t("prov.deleteProvider")) + "</button>";
+      host.appendChild(dz);
+      dz.querySelector("#delProv").addEventListener("click", async function () {
+        const ok = await ctx.confirmDialog(ctx.t("dialog.confirmTitle"), ctx.t("prov.deleteConfirm"));
+        if (!ok) return;
+        try {
+          await ctx.api("providers.delete", { id: p.id, confirm: true });
+          ctx.toast(ctx.t("toast.deleted"), "ok");
+          setView({ name: "list" });
+        } catch (e) {
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
+        }
+      });
+    }
+
+    // ----- detail tab: models -----
+    function buildModelsTab(host, p, models) {
       const mcard = document.createElement("div");
       mcard.className = "card";
-      mcard.id = "modelsCard";
       mcard.innerHTML =
-        '<div style="font-weight:700;margin-bottom:4px">🧠 ' + ctx.esc(ctx.t("prov.models")) + " · " + fmt("prov.modelCount", models.length) + "</div>" +
-        '<div class="list-sub" style="white-space:normal;margin-bottom:8px">' + ctx.esc(ctx.t("prov.discoverHint")) + "</div>" +
-        '<button type="button" class="btn btn-primary btn-block" id="discBtn">🔍 ' + ctx.esc(ctx.t("prov.discoverTitle")) + "</button>" +
+        '<div class="card-head"><div class="card-icon">' + ctx.icon("cpu") + "</div>" +
+        "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.models")) + "</h2>" +
+        '<p class="card-sub">' + ctx.esc(ctx.t("prov.discoverHint")) + "</p></div>" +
+        '<div class="spacer"></div><span class="badge">' + fmt("prov.modelCount", models.length) + "</span></div>" +
+        '<button type="button" class="btn btn-primary btn-block" id="discBtn" style="margin-top:0"></button>' +
         '<div id="discList"></div>' +
         '<div id="modelRows" style="margin-top:8px"></div>';
-      el.appendChild(mcard);
+      host.appendChild(mcard);
+
+      const discBtn = mcard.querySelector("#discBtn");
+      function discLabel() {
+        discBtn.innerHTML = ctx.icon("search") + ctx.esc(ctx.t("prov.discoverTitle"));
+      }
+      discLabel();
       paintModelRows(mcard.querySelector("#modelRows"), models, p.id);
 
-      mcard.querySelector("#discBtn").addEventListener("click", async function () {
-        const btn = mcard.querySelector("#discBtn");
+      discBtn.addEventListener("click", async function () {
         const list = mcard.querySelector("#discList");
-        btn.disabled = true;
-        btn.textContent = ctx.t("prov.discovering");
+        discBtn.disabled = true;
+        discBtn.textContent = ctx.t("prov.discovering");
         let found = [];
         try {
           const r = await ctx.api("models.discover", { providerId: p.id });
           found = (r.models || []).filter(function (m) { return !m.imported; });
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
-          btn.disabled = false;
-          btn.textContent = "🔍 " + ctx.t("prov.discoverTitle");
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
+          discBtn.disabled = false;
+          discLabel();
           return;
         }
         if (!found.length) {
-          list.innerHTML = '<div class="list-sub" style="margin-top:8px">' + ctx.esc(ctx.t("prov.allImported")) + "</div>";
-          btn.disabled = false;
-          btn.textContent = "🔍 " + ctx.t("prov.discoverTitle");
+          list.innerHTML = '<div class="mx-kv" style="margin-top:8px">' + ctx.esc(ctx.t("prov.allImported")) + "</div>";
+          discBtn.disabled = false;
+          discLabel();
           return;
         }
         let h = '<div style="margin-top:10px;max-height:260px;overflow-y:auto;border:1px solid var(--border);border-radius:12px;padding:4px 8px">';
@@ -484,10 +545,11 @@
         }
         h += "</div>" +
           '<div style="display:flex;gap:8px;margin-top:6px">' +
-          '<button type="button" class="btn btn-ghost" id="selAll" style="flex:1">' + ctx.esc(ctx.t("prov.selectAll")) + "</button>" +
-          '<button type="button" class="btn btn-ghost" id="selNone" style="flex:1">' + ctx.esc(ctx.t("prov.selectNone")) + "</button>" +
+          '<button type="button" class="btn btn-ghost btn-sm" id="selAll" style="flex:1">' + ctx.esc(ctx.t("prov.selectAll")) + "</button>" +
+          '<button type="button" class="btn btn-ghost btn-sm" id="selNone" style="flex:1">' + ctx.esc(ctx.t("prov.selectNone")) + "</button>" +
           "</div>" +
-          '<button type="button" class="btn btn-primary btn-block" id="importBtn">' + ctx.esc(ctx.t("prov.importSelected")) + " (" + num(found.length) + ")</button>";
+          '<button type="button" class="btn btn-primary btn-block" id="importBtn">' + ctx.icon("download") +
+          ctx.esc(ctx.t("prov.importSelected")) + " (" + num(found.length) + ")</button>";
         list.innerHTML = h;
         const setAll = function (v) {
           const boxes = list.querySelectorAll('input[type="checkbox"]');
@@ -502,58 +564,70 @@
           if (!sel.length) return;
           try {
             const r = await ctx.api("models.import", { providerId: p.id, modelIds: sel });
-            ctx.toast(fmt("prov.imported", (r && r.imported) || sel.length));
+            ctx.toast(fmt("prov.imported", (r && r.imported) || sel.length), "ok");
           } catch (e) {
-            ctx.toast((e && e.message) || ctx.t("toast.failed"));
+            ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           }
           paint();
         });
-        btn.disabled = false;
-        btn.textContent = "🔍 " + ctx.t("prov.discoverTitle");
+        discBtn.disabled = false;
+        discLabel();
       });
 
       // Manual add
       const manual = document.createElement("div");
       manual.innerHTML =
-        '<div class="field" style="margin-top:10px"><label>' + ctx.esc(ctx.t("prov.manualAdd")) + "</label>" +
-        '<div style="display:flex;gap:8px"><input id="manualId" type="text" dir="ltr" placeholder="model-id" style="flex:1">' +
-        '<button type="button" class="btn btn-ghost" id="manualAddBtn">' + ctx.esc(ctx.t("action.add")) + "</button></div></div>";
-      mcard.appendChild(manual);
+        '<div class="group-label">' + ctx.icon("plus") + ctx.esc(ctx.t("prov.manualAdd")) + "</div>" +
+        '<div class="field"><div style="display:flex;gap:8px">' +
+        '<input id="manualId" type="text" dir="ltr" placeholder="model-id" style="flex:1;min-width:0" autocomplete="off">' +
+        '<button type="button" class="btn btn-ghost" id="manualAddBtn">' + ctx.icon("plus") + ctx.esc(ctx.t("action.add")) + "</button>" +
+        "</div></div>";
+      host.appendChild(manual);
       manual.querySelector("#manualAddBtn").addEventListener("click", async function () {
         const mid = manual.querySelector("#manualId").value.trim();
         if (!mid) return;
         try {
           await ctx.api("models.add", { providerId: p.id, modelId: mid });
-          ctx.toast(ctx.t("toast.saved"));
+          ctx.toast(ctx.t("toast.saved"), "ok");
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
         }
         paint();
       });
+    }
 
-      // Key card
+    // ----- detail tab: API key -----
+    function buildKeyTab(host, p) {
       const keyCard = document.createElement("div");
       keyCard.className = "card";
       keyCard.innerHTML =
-        '<div style="font-weight:700;margin-bottom:8px">' + ctx.esc(ctx.t("prov.keyTitle")) + "</div>" +
-        '<div class="field"><input id="keyInput" type="password" autocomplete="new-password" placeholder="' +
+        '<div class="card-head"><div class="card-icon">' + ctx.icon("key") + "</div>" +
+        "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.keyTitle")) + "</h2>" +
+        '<p class="card-sub">' +
+        (p.keyPresent
+          ? '<span class="badge badge-success" dir="ltr">' + ctx.icon("key") + "••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span>"
+          : '<span class="badge badge-danger">' + ctx.esc(ctx.t("prov.noKey")) + "</span>") +
+        "</p></div></div>" +
+        '<div class="field"><label>' + ctx.esc(ctx.t(p.keyPresent ? "prov.replaceKey" : "prov.setKey")) + "</label>" +
+        '<input id="keyInput" type="password" autocomplete="new-password" placeholder="' +
         ctx.esc(ctx.t("prov.keyPlaceholder")) + '" dir="ltr"></div>' +
         '<div class="btn-row">' +
-        '<button type="button" class="btn btn-primary" id="saveKey">' + ctx.esc(ctx.t(p.keyPresent ? "prov.replaceKey" : "prov.setKey")) + "</button>" +
-        (p.keyPresent ? '<button type="button" class="btn btn-ghost" id="clearKey">' + ctx.esc(ctx.t("prov.clearKey")) + "</button>" : "") +
+        '<button type="button" class="btn btn-primary" id="saveKey">' + ctx.icon("check") +
+        ctx.esc(ctx.t(p.keyPresent ? "prov.replaceKey" : "prov.setKey")) + "</button>" +
+        (p.keyPresent ? '<button type="button" class="btn btn-ghost" id="clearKey">' + ctx.icon("trash") + ctx.esc(ctx.t("prov.clearKey")) + "</button>" : "") +
         "</div>";
-      el.appendChild(keyCard);
+      host.appendChild(keyCard);
       keyCard.querySelector("#saveKey").addEventListener("click", async function () {
         const key = keyCard.querySelector("#keyInput").value;
         if (!key) {
-          ctx.toast(ctx.t("prov.keyRequired"));
+          ctx.toast(ctx.t("prov.keyRequired"), "err");
           return;
         }
         try {
           await ctx.api("providers.setKey", { id: p.id, key: key });
-          ctx.toast(ctx.t("prov.keySaved"));
+          ctx.toast(ctx.t("prov.keySaved"), "ok");
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
         }
         paint();
       });
@@ -564,59 +638,46 @@
           if (!ok) return;
           try {
             await ctx.api("providers.clearKey", { id: p.id, confirm: true });
-            ctx.toast(ctx.t("toast.deleted"));
+            ctx.toast(ctx.t("toast.deleted"), "ok");
           } catch (e) {
-            ctx.toast((e && e.message) || ctx.t("toast.failed"));
+            ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           }
           paint();
         });
       }
-
-      // Delete provider
-      const del = document.createElement("button");
-      del.type = "button";
-      del.className = "btn btn-danger btn-block";
-      del.textContent = "🗑 " + ctx.t("prov.deleteProvider");
-      del.addEventListener("click", async function () {
-        const ok = await ctx.confirmDialog(ctx.t("dialog.confirmTitle"), ctx.t("prov.deleteConfirm"));
-        if (!ok) return;
-        try {
-          await ctx.api("providers.delete", { id: p.id, confirm: true });
-          ctx.toast(ctx.t("toast.deleted"));
-          setView({ name: "list" });
-        } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
-        }
-      });
-      el.appendChild(del);
     }
 
     function paintModelRows(host, models, providerId) {
       host.innerHTML = "";
       if (!models.length) {
-        host.innerHTML = '<div class="list-sub" style="margin-top:4px">' + ctx.esc(ctx.t("prov.noModelsYet")) + "</div>";
+        host.innerHTML = '<div class="mx-center">' + ctx.esc(ctx.t("prov.noModelsYet")) + "</div>";
         return;
       }
       for (const m of models) {
         const row = document.createElement("div");
         row.className = "card";
-        row.style.marginBottom = "8px";
+        row.style.marginBottom = "9px";
         row.innerHTML =
-          '<div style="display:flex;align-items:center;gap:10px">' +
+          '<div class="mx-row">' +
           '<div class="list-main"><div class="list-title mono" dir="ltr">' + ctx.esc(m.modelId || m.id) + "</div>" +
-          (m.isActive ? '<div class="list-sub">⭐ ' + ctx.esc(ctx.t("prov.modelActive")) + "</div>" : "") +
+          (m.isActive
+            ? '<div style="margin-top:5px"><span class="badge badge-accent">' + ctx.icon("star") + ctx.esc(ctx.t("prov.modelActive")) + "</span></div>"
+            : "") +
           "</div>" +
           '<button type="button" class="toggle" role="switch" aria-checked="' + (m.enabled ? "true" : "false") + '" aria-label="' + ctx.esc(ctx.t("prov.enabled")) + '"></button>' +
           "</div>" +
-          '<div class="btn-row" style="margin-top:8px">' +
-          (m.isActive ? "" : '<button type="button" class="btn btn-ghost act-active">⭐ ' + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>") +
-          '<button type="button" class="btn btn-ghost act-del">🗑</button>' +
+          '<div class="btn-row" style="margin-top:10px">' +
+          (m.isActive
+            ? ""
+            : '<button type="button" class="btn btn-sm btn-subtle act-active">' + ctx.icon("star") + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>") +
+          '<button type="button" class="btn btn-sm btn-danger act-del" aria-label="' + ctx.esc(ctx.t("action.delete")) + '">' + ctx.icon("trash") + "</button>" +
           "</div>";
         row.querySelector(".toggle").addEventListener("click", async function () {
           try {
             await ctx.api("models.toggle", { id: m.id, enabled: !m.enabled });
+            ctx.toast(ctx.t("toast.saved"), "ok");
           } catch (e) {
-            ctx.toast((e && e.message) || ctx.t("toast.failed"));
+            ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           }
           paint();
         });
@@ -624,10 +685,15 @@
         if (actBtn) {
           actBtn.addEventListener("click", async function () {
             try {
-              await ctx.api("models.setActive", { id: m.id });
-              ctx.toast(ctx.t("prov.activated") + " ✓");
+              const r = await ctx.api("models.setActive", { id: m.id });
+              let msg = ctx.t("prov.activated");
+              // Probe on select: warn inline when the fresh selection doesn't answer.
+              if (r && r.probe && !r.probe.ok) {
+                msg += "\nNote: " + ctx.t("prov.probeFailLine") + (r.probe.message ? ": " + r.probe.message : "");
+              }
+              ctx.toast(msg, r && r.probe && !r.probe.ok ? "err" : "ok");
             } catch (e) {
-              ctx.toast((e && e.message) || ctx.t("toast.failed"));
+              ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
             }
             paint();
           });
@@ -637,9 +703,9 @@
           if (!ok) return;
           try {
             await ctx.api("models.delete", { id: m.id, confirm: true });
-            ctx.toast(ctx.t("toast.deleted"));
+            ctx.toast(ctx.t("toast.deleted"), "ok");
           } catch (e) {
-            ctx.toast((e && e.message) || ctx.t("toast.failed"));
+            ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           }
           paint();
         });
@@ -673,19 +739,21 @@
     }
 
     function presetGrid(body, presets) {
-      let h = '<p class="list-sub" style="margin:0 0 10px;white-space:normal">' + ctx.esc(ctx.t("prov.presetNote")) + "</p>";
+      let h = '<p class="mx-muted" style="margin:0 0 12px">' + ctx.esc(ctx.t("prov.presetNote")) + "</p>";
       h += '<div class="preset-grid">';
       for (const pr of presets) {
         h +=
           '<button type="button" class="preset-card" data-pid="' + ctx.esc(pr.id) + '">' +
-          '<div class="preset-name">' + ctx.esc(pr.label) + "</div>" +
+          provTile(pr.label) +
+          '<div style="min-width:0"><div class="preset-name">' + ctx.esc(pr.label) + "</div>" +
           (pr.suggestedModel ? '<div class="preset-sub mono" dir="ltr">' + ctx.esc(pr.suggestedModel) + "</div>" : "") +
-          "</button>";
+          "</div></button>";
       }
       h += "</div>";
-      h += '<div style="display:flex;gap:8px;margin-top:12px">' +
-        '<button type="button" class="btn btn-ghost" id="goCustom" style="flex:1">' + ctx.esc(ctx.t("prov.addCustom")) + "</button>" +
-        '<button type="button" class="btn btn-ghost" id="goNine" style="flex:1">' + ctx.esc(ctx.t("prov.addNine")) + "</button></div>";
+      h += '<div class="group-label">' + ctx.icon("plus") + ctx.esc(ctx.t("prov.add")) + "</div>";
+      h += '<div style="display:flex;gap:8px">' +
+        '<button type="button" class="btn btn-ghost" id="goCustom" style="flex:1">' + ctx.icon("cpu") + ctx.esc(ctx.t("prov.addCustom")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="goNine" style="flex:1">' + ctx.icon("layers") + ctx.esc(ctx.t("prov.addNine")) + "</button></div>";
       body.innerHTML = h;
       body.querySelector("#goCustom").addEventListener("click", function () { setView({ name: "add", tab: "custom" }); });
       body.querySelector("#goNine").addEventListener("click", function () { setView({ name: "add", tab: "nine" }); });
@@ -709,9 +777,11 @@
       card.className = "card";
       card.style.marginTop = "12px";
       card.innerHTML =
-        '<div style="font-weight:700;margin-bottom:6px">🤖 ' + ctx.esc(ctx.t("prov.models")) + "</div>" +
-        '<div class="hint-text" style="margin-bottom:10px;white-space:normal">' + ctx.esc(ctx.t("prov.draftModelsHint")) + "</div>" +
-        '<button type="button" class="btn btn-ghost btn-block" id="dmFetch">' + ctx.esc(ctx.t("prov.fetchModels")) + "</button>" +
+        '<div class="card-head tight"><div class="card-icon">' + ctx.icon("cpu") + "</div>" +
+        "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.models")) + "</h2></div></div>" +
+        '<div class="hint-text" style="margin-bottom:10px">' + ctx.esc(ctx.t("prov.draftModelsHint")) + "</div>" +
+        '<button type="button" class="btn btn-ghost btn-block" id="dmFetch" style="margin-top:0">' +
+        ctx.icon("refresh") + ctx.esc(ctx.t("prov.fetchModels")) + "</button>" +
         '<div class="error" id="dmErr" hidden style="margin-top:8px"></div>' +
         '<div id="dmList" style="margin-top:8px"></div>' +
         '<div id="dmFoot" hidden style="margin-top:10px">' +
@@ -909,7 +979,8 @@
           // Auto-select: tell the owner they're live, no extra steps needed.
           ctx.toast(
             ctx.t("prov.justAdded") +
-              (autoSelected ? "\n✅ " + ctx.t("prov.autoActive") : "")
+              (autoSelected ? "\n" + ctx.t("prov.autoActive") : ""),
+            "ok"
           );
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {
@@ -968,12 +1039,14 @@
             key: key || undefined,
           });
           const ids = picker.selectedIds();
+          let autoSelected = r.autoSelected;
           if (ids.length) {
             try {
-              await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+              const im = await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+              if (im.autoSelected) autoSelected = im.autoSelected;
             } catch (e) { /* provider is saved; models can be added later */ }
           }
-          ctx.toast(ctx.t("prov.justAdded"));
+          ctx.toast(ctx.t("prov.justAdded") + (autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {
           ctx.toast((e && e.message) || ctx.t("toast.failed"));
@@ -985,7 +1058,8 @@
     function nineForm(body) {
       body.innerHTML =
         '<div class="card">' +
-        '<div class="list-sub" style="white-space:normal;margin-bottom:10px">💡 ' + ctx.esc(ctx.t("prov.nineGuide")) + "</div>" +
+        '<div class="list-sub" style="white-space:normal;margin-bottom:10px"><div class="note note-info" style="margin:0">' +
+        ctx.icon("info") + "<span>" + ctx.esc(ctx.t("prov.nineGuide")) + "</span></div></div>" +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.label")) + "</label>" +
         '<input id="nfLabel" type="text" value="9Router" dir="auto"></div>' +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.url")) + "</label>" +
@@ -994,10 +1068,12 @@
         '<div class="error" id="nfUrlErr" hidden></div></div>' +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.key")) + "</label>" +
         '<input id="nfKey" type="password" autocomplete="new-password" dir="ltr">' +
-        '<div class="hint-text">' + ctx.esc(ctx.t("prov.nineKeyHint")) + "</div></div>" +
+        '<div class="hint-text">' + ctx.esc(ctx.t("prov.nineKeyHint")) + "</div>" +
+        '<div class="error" id="nfKeyErr" hidden></div></div>' +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.modelId")) + "</label>" +
         '<input id="nfModel" type="text" dir="ltr" placeholder="model-name">' +
-        '<div class="hint-text">' + ctx.esc(ctx.t("prov.nineModelHint")) + "</div></div>" +
+        '<div class="hint-text">' + ctx.esc(ctx.t("prov.nineModelHint")) + "</div>" +
+        '<div class="error" id="nfModelErr" hidden></div></div>' +
         '<button type="button" class="btn btn-primary btn-block" id="nfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
         "</div>";
       const urlInput = body.querySelector("#nfUrl");
@@ -1016,16 +1092,24 @@
         const url = urlInput.value.trim();
         const key = body.querySelector("#nfKey").value;
         const modelId = body.querySelector("#nfModel").value.trim();
+        const keyErr = body.querySelector("#nfKeyErr");
+        const modelErr = body.querySelector("#nfModelErr");
         if (!urlOk(url)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; return; }
         errEl.hidden = true;
+        // The backend rejects 9Router providers without a key or a model —
+        // surface it inline instead of a bare toast.
+        if (!key) { keyErr.textContent = ctx.t("prov.nineKeyRequired"); keyErr.hidden = false; return; }
+        keyErr.hidden = true;
+        if (!modelId) { modelErr.textContent = ctx.t("prov.nineModelRequired"); modelErr.hidden = false; return; }
+        modelErr.hidden = true;
         const btn = body.querySelector("#nfSave");
         btn.disabled = true;
         try {
           try { window.localStorage.setItem("bobi_nine_url", url); } catch (e) { /* ignore */ }
           const r = await ctx.api("providers.add", {
-            kind: "nine_router", label: label, baseUrl: url, key: key, model: modelId || undefined,
+            kind: "nine_router", label: label, baseUrl: url, key: key, model: modelId,
           });
-          ctx.toast(ctx.t("prov.justAdded"));
+          ctx.toast(ctx.t("prov.justAdded") + (r.autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {
           ctx.toast((e && e.message) || ctx.t("toast.failed"));
@@ -1039,7 +1123,7 @@
 
   window.App.registerSection("providers", {
     titleKey: "sec.providers",
-    icon: "🔌",
+    icon: "plug",
     render: render,
   });
 })();

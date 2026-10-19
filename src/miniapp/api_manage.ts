@@ -11,10 +11,10 @@
  *
  * Conventions:
  * - list endpoints accept `{ q?, limit? }` (limit clamped 1..200);
- * - mutations return `{ ok: true, ... }` or `{ ok: false, error: "<fa>" }`;
+ * - mutations return `{ ok: true, ... }` or `{ ok: false, error: "<en>" }`;
  * - destructive mutations take `{ confirm: true }`; without it the first
  *   call returns `{ needsConfirm: true }`;
- * - errors are generic Persian strings — never stack traces, never secrets.
+ * - errors are generic English strings — never stack traces, never secrets.
  */
 import { Database } from "bun:sqlite";
 import { validateInitData } from "./auth";
@@ -254,11 +254,11 @@ async function route(
   deps: ManageApiDeps,
 ): Promise<Response> {
   if (body === null || typeof body !== "object") {
-    return fail(400, "بدنهٔ درخواست نامعتبر است.");
+    return fail(400, "Invalid request body.");
   }
   const ownerId = authOwner(deps, body);
   if (ownerId === undefined) {
-    return fail(401, "احراز هویت نامعتبر است.");
+    return fail(401, "Invalid authentication.");
   }
   const storage = deps.storage;
   try {
@@ -344,10 +344,10 @@ async function route(
       case "moderation.set":
         return handleModerationSet(storage, ownerId, body);
       default:
-        return fail(404, "یافت نشد.");
+        return fail(404, "Not found.");
     }
   } catch {
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
 }
 
@@ -395,7 +395,7 @@ function handleUserBan(storage: Storage, ownerId: string, body: Record<string, u
   const id = validTargetId(body["id"], ownerId);
   if (id === undefined) {
     audit(storage, "miniapp.users.ban", ownerId, "denied", "bad id");
-    return fail(400, "شناسهٔ کاربر نامعتبر است.");
+    return fail(400, "Invalid user id.");
   }
   if (asBool(body["confirm"]) !== true) {
     return json(200, { needsConfirm: true, userId: id, action: "ban" });
@@ -403,7 +403,7 @@ function handleUserBan(storage: Storage, ownerId: string, body: Record<string, u
   const r = new UserAccessService(storage).ban(id, ownerId);
   if (!r.ok) {
     audit(storage, "miniapp.users.ban", ownerId, "error", `failed id=${id}`);
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
   audit(storage, "miniapp.users.ban", ownerId, "success", `id=${id} prev=${r.previous ?? "?"}`);
   return ok({ userId: id, state: "rejected" });
@@ -413,12 +413,12 @@ function handleUserUnban(storage: Storage, ownerId: string, body: Record<string,
   const id = validTargetId(body["id"], ownerId);
   if (id === undefined) {
     audit(storage, "miniapp.users.unban", ownerId, "denied", "bad id");
-    return fail(400, "شناسهٔ کاربر نامعتبر است.");
+    return fail(400, "Invalid user id.");
   }
   const r = new UserAccessService(storage).unban(id, ownerId);
   if (!r.ok) {
     audit(storage, "miniapp.users.unban", ownerId, "error", `failed id=${id}`);
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
   audit(storage, "miniapp.users.unban", ownerId, "success", `id=${id} prev=${r.previous ?? "?"}`);
   return ok({ userId: id, state: "approved" });
@@ -434,7 +434,7 @@ function memoryJson(m: StoredMemory): Record<string, unknown> {
 
 async function handleMemorySearch(storage: Storage, ownerId: string, body: Record<string, unknown>): Promise<Response> {
   const provider = memoryProviderFor(storage);
-  if (provider === undefined) return fail(503, "سرویس حافظه در دسترس نیست.");
+  if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const limit = clampLimit(body["limit"], 50, MAX_MEMORY_LIST);
   const q = (asString(body["q"]) ?? "").slice(0, 64).toLowerCase();
   return memoryQuery(provider, ownerId, q, limit, 0);
@@ -442,7 +442,7 @@ async function handleMemorySearch(storage: Storage, ownerId: string, body: Recor
 
 async function handleMemoryList(storage: Storage, ownerId: string, body: Record<string, unknown>): Promise<Response> {
   const provider = memoryProviderFor(storage);
-  if (provider === undefined) return fail(503, "سرویس حافظه در دسترس نیست.");
+  if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const limit = clampLimit(body["limit"], 50, MAX_MEMORY_LIST);
   const offsetRaw = asInt(body["offset"]);
   const offset = offsetRaw === undefined ? 0 : Math.max(offsetRaw, 0);
@@ -499,10 +499,10 @@ async function handleCuratorDecide(
   const id = asString(body["id"]);
   const approve = asBool(body["approve"]);
   if (id === undefined || id.trim() === "" || approve === undefined) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   const provider = memoryProviderFor(deps.storage);
-  if (provider === undefined) return fail(503, "سرویس حافظه در دسترس نیست.");
+  if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const store = proposalStoreFor(deps);
   const tool = createCuratorDecideTool({
     provider,
@@ -520,7 +520,7 @@ async function handleCuratorDecide(
     // ToolError messages are user-facing Persian; anything else stays generic.
     const msg = err instanceof Error && /[\u0600-\u06FF]/.test(err.message)
       ? err.message
-      : "خطای داخلی رخ داد.";
+      : "An internal error occurred.";
     audit(deps.storage, "miniapp.curator.decide", ownerId, "error", `id=${id.trim()}`);
     return fail(err instanceof Error && /[\u0600-\u06FF]/.test(err.message) ? 400 : 500, msg);
   }
@@ -528,7 +528,7 @@ async function handleCuratorDecide(
 
 async function handleEventsList(storage: Storage, ownerId: string): Promise<Response> {
   const provider = memoryProviderFor(storage);
-  if (provider === undefined) return fail(503, "سرویس حافظه در دسترس نیست.");
+  if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const store = new EventStore(provider);
   const upcoming = await store.upcoming(ownerId, Date.now());
   return ok({
@@ -585,7 +585,7 @@ function handleBenchTrends(deps: ManageApiDeps, body: Record<string, unknown>): 
     (model !== "" && !MODE_MODEL_RE.test(model)) ||
     (task !== "" && !BENCH_TASK_ID_RE.test(task))
   ) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
 
   let pair: { mode: string; model: string } | null = null;
@@ -677,7 +677,7 @@ function handleBenchSchedule(
   if (!enabled) {
     if (existing === undefined) {
       audit(storage, "miniapp.bench.schedule", ownerId, "denied", "disable missing");
-      return fail(400, "زمان‌بندی بنچ‌مارکی وجود ندارد.");
+      return fail(400, "No benchmark schedule.");
     }
     if (existing.enabled) storage.updateTask(ownerId, existing.id, { enabled: false });
     audit(storage, "miniapp.bench.schedule", ownerId, "success", `disabled id=${existing.id}`);
@@ -694,8 +694,8 @@ function handleBenchSchedule(
       return fail(
         400,
         v.reason === "too_frequent"
-          ? "زمان‌بندی بیش از حد پرتکرار است؛ بنچ‌مارک حداقل هر یک ساعت."
-          : "عبارت کرون نامعتبر است.",
+          ? "Schedule too frequent; benchmark at most hourly."
+          : "Invalid cron expression.",
       );
     }
     cron = v.source;
@@ -704,7 +704,7 @@ function handleBenchSchedule(
     const preset = BENCH_CADENCES[cadence];
     if (preset === undefined) {
       audit(storage, "miniapp.bench.schedule", ownerId, "denied", `bad cadence=${cadence.slice(0, 32)}`);
-      return fail(400, "دورهٔ زمانی نامعتبر است.");
+      return fail(400, "Invalid time range.");
     }
     cron = preset;
   }
@@ -716,7 +716,7 @@ function handleBenchSchedule(
     slot = nextSlotAfterNow(cron);
   } catch {
     audit(storage, "miniapp.bench.schedule", ownerId, "denied", "bad cron");
-    return fail(400, "عبارت کرون نامعتبر است.");
+    return fail(400, "Invalid cron expression.");
   }
 
   const MAX_TASKS_PER_OWNER = 200;
@@ -729,7 +729,7 @@ function handleBenchSchedule(
       })
     ) {
       audit(storage, "miniapp.bench.schedule", ownerId, "error", `update failed id=${existing.id}`);
-      return fail(500, "خطای داخلی رخ داد.");
+      return fail(500, "An internal error occurred.");
     }
     audit(storage, "miniapp.bench.schedule", ownerId, "success", `updated id=${existing.id} cron=${source}`);
     return ok({ id: existing.id, enabled: true, cron: source, ...(cadence !== undefined ? { cadence } : {}) });
@@ -737,7 +737,7 @@ function handleBenchSchedule(
 
   if (storage.countTasks(ownerId) >= MAX_TASKS_PER_OWNER) {
     audit(storage, "miniapp.bench.schedule", ownerId, "denied", "task cap");
-    return fail(400, "تعداد وظایف زمان‌بندی‌شده پر است.");
+    return fail(400, "Scheduled task limit reached.");
   }
   const id = storage.createTask({
     name: BENCH_TASK_NAME,
@@ -752,10 +752,10 @@ function handleBenchSchedule(
   return ok({ id, enabled: true, cron: source, ...(cadence !== undefined ? { cadence } : {}) });
 }
 
-function alertLabelFa(key: string): string {
-  if (key === "bench-worker-failures") return "خطاهای پیاپی اجرای بنچ‌مارک";
-  if (key === "bench-worker-skip:live") return "پرش اجرای زندهٔ بنچ‌مارک";
-  if (key.startsWith("regression:")) return `هشدار افت کیفیت (${key.slice("regression:".length)})`;
+function alertLabel(key: string): string {
+  if (key === "bench-worker-failures") return "Consecutive benchmark run failures";
+  if (key === "bench-worker-skip:live") return "Live benchmark run skipped";
+  if (key.startsWith("regression:")) return `Quality regression warning (${key.slice("regression:".length)})`;
   return key;
 }
 
@@ -781,7 +781,7 @@ function handleBenchAlerts(deps: ManageApiDeps): Response {
     rows = [];
   }
   return ok({
-    alerts: rows.map((r) => ({ key: r.key, labelFa: alertLabelFa(r.key), lastSentMs: r.last_sent_ms })),
+    alerts: rows.map((r) => ({ key: r.key, label: alertLabel(r.key), lastSentMs: r.last_sent_ms })),
   });
 }
 
@@ -813,15 +813,15 @@ function handleSchedulersToggle(
   const id = asInt(body["id"]);
   const enabled = asBool(body["enabled"]);
   if (id === undefined || id < 1 || enabled === undefined) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   const task = storage.listTasks(ownerId, 200).find((t) => t.id === id);
   if (task === undefined) {
-    return fail(404, "زمان‌بند یافت نشد.");
+    return fail(404, "Scheduler not found.");
   }
   if (!storage.updateTask(ownerId, id, { enabled })) {
     audit(storage, "miniapp.schedulers.toggle", ownerId, "error", `toggle failed id=${id}`);
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
   audit(storage, "miniapp.schedulers.toggle", ownerId, "success", `id=${id} enabled=${enabled}`);
   return ok({ id, enabled });
@@ -837,7 +837,7 @@ async function handleDigestPreview(deps: ManageApiDeps, ownerId: string): Promis
     });
     return ok({ text: formatDigest(sections) });
   } catch {
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
 }
 
@@ -926,7 +926,7 @@ function digestConfigSet(
   const task = ownerTask(storage, ownerId, DIGEST_TASK_NAME);
   if (task === undefined) {
     audit(storage, "miniapp.digest.config", ownerId, "denied", "no digest task");
-    return fail(400, "خلاصهٔ صبحگاهی زمان‌بندی‌شده‌ای وجود ندارد.");
+    return fail(400, "No scheduled morning digest.");
   }
   const out: Record<string, unknown> = { id: task.id };
 
@@ -940,7 +940,7 @@ function digestConfigSet(
     const action = readDigestAgentAction(task);
     if (action === null) {
       audit(storage, "miniapp.digest.config", ownerId, "denied", "non-agent action");
-      return fail(400, "این تسک اکشن agent ندارد؛ از تلگرام بررسی کنید.");
+      return fail(400, "This task has no agent action; check via Telegram.");
     }
     let prompt = action.prompt;
     let chatId = action.chatId;
@@ -948,7 +948,7 @@ function digestConfigSet(
       const p = body["prompt"];
       if (typeof p !== "string" || p.trim().length === 0 || p.length > 4000) {
         audit(storage, "miniapp.digest.config", ownerId, "denied", "bad prompt");
-        return fail(400, "پرامپت باید بین ۱ تا ۴۰۰۰ کاراکتر باشد.");
+        return fail(400, "Prompt must be 1–4000 characters.");
       }
       prompt = p;
     }
@@ -956,7 +956,7 @@ function digestConfigSet(
       const c = body["chatId"];
       if (typeof c !== "string" || !CHAT_ID_RE.test(c.trim())) {
         audit(storage, "miniapp.digest.config", ownerId, "denied", "bad chatId");
-        return fail(400, "شناسهٔ چت نامعتبر است.");
+        return fail(400, "Invalid chat id.");
       }
       chatId = c.trim();
     }
@@ -965,11 +965,11 @@ function digestConfigSet(
       actionJson = serializeTaskAction(parseTaskAction({ type: "agent", chatId, prompt }));
     } catch {
       audit(storage, "miniapp.digest.config", ownerId, "denied", "action validation failed");
-      return fail(400, "ورودی معتبر نیست.");
+      return fail(400, "Invalid input.");
     }
     if (!storage.updateTask(ownerId, task.id, { actionJson })) {
       audit(storage, "miniapp.digest.config", ownerId, "error", `update failed id=${task.id}`);
-      return fail(500, "خطای داخلی رخ داد.");
+      return fail(500, "An internal error occurred.");
     }
     audit(storage, "miniapp.digest.config", ownerId, "success", `content updated id=${task.id}`);
     out["prompt"] = prompt;
@@ -1006,8 +1006,8 @@ function setDigestScheduler(
       return fail(
         400,
         v.reason === "too_frequent"
-          ? "زمان‌بندی بیش از حد پرتکرار است؛ خلاصه حداقل هر ۱۵ دقیقه."
-          : "عبارت کرون نامعتبر است.",
+          ? "Schedule too frequent; digest at most every 15 minutes."
+          : "Invalid cron expression.",
       );
     }
     cron = v.source;
@@ -1018,7 +1018,7 @@ function setDigestScheduler(
       typeof timeRaw === "string" && DIGEST_TIME_RE.test(timeRaw) ? timeRaw : undefined;
     if (timeRaw !== undefined && timeValid === undefined) {
       audit(storage, "miniapp.digest.config", ownerId, "denied", "bad time");
-      return fail(400, "ساعت نامعتبر است (قالب HH:MM).");
+      return fail(400, "Invalid time (HH:MM format).");
     }
     cron =
       timeValid === undefined
@@ -1033,11 +1033,11 @@ function setDigestScheduler(
     slot = nextSlotAfterNow(cron);
   } catch {
     audit(storage, "miniapp.digest.config", ownerId, "denied", "bad cron");
-    return fail(400, "عبارت کرون نامعتبر است.");
+    return fail(400, "Invalid cron expression.");
   }
   if (!storage.updateTask(ownerId, task.id, { cronExpr: source, enabled: true, nextRunAtMs: slot })) {
     audit(storage, "miniapp.digest.config", ownerId, "error", `update failed id=${task.id}`);
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
   const timeOut = digestTimeOf(source);
   audit(storage, "miniapp.digest.config", ownerId, "success", `updated id=${task.id} cron=${source}`);
@@ -1120,19 +1120,19 @@ async function handleGroupDigestSet(
   const chatRaw = body["chatId"];
   if (typeof chatRaw !== "string" || !CHAT_ID_RE.test(chatRaw.trim())) {
     audit(storage, "miniapp.group_digest", ownerId, "denied", "bad chatId");
-    return fail(400, "شناسهٔ گروه نامعتبر است.");
+    return fail(400, "Invalid group id.");
   }
   const chatId = chatRaw.trim();
   const enabled = asBool(body["digestEnabled"]);
   if (enabled === undefined) {
     audit(storage, "miniapp.group_digest", ownerId, "denied", "bad digestEnabled");
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   const timeRaw = body["time"];
   const time = timeRaw === undefined ? undefined : validateDigestTime(timeRaw);
   if (time !== undefined && !time.ok) {
     audit(storage, "miniapp.group_digest", ownerId, "denied", "bad time");
-    return fail(400, "ساعت نامعتبر است (قالب HH:MM).");
+    return fail(400, "Invalid time (HH:MM format).");
   }
   const cfg = getAssistantConfig(storage, ownerId, chatId);
   const calls = digestTaskCalls(storage, ownerId);
@@ -1141,7 +1141,7 @@ async function handleGroupDigestSet(
     const res = setAssistantConfig(storage, ownerId, chatId, { digestEnabled: false });
     if (!res.ok) {
       audit(storage, "miniapp.group_digest", ownerId, "error", `off config failed chat=${chatId}`);
-      return fail(400, "ورودی نامعتبر است.");
+      return fail(400, "Invalid input.");
     }
     await cancelGroupDigestTask(calls, chatId);
     audit(storage, "miniapp.group_digest", ownerId, "success", `off chat=${chatId}`);
@@ -1150,14 +1150,14 @@ async function handleGroupDigestSet(
 
   if (!cfg.enabled) {
     audit(storage, "miniapp.group_digest", ownerId, "denied", `on without mode chat=${chatId}`);
-    return fail(400, "اول حالت دستیار گروه را روشن کنید.");
+    return fail(400, "Enable group assistant mode first.");
   }
   let finalTime = cfg.digestTime;
   if (time !== undefined) {
     const res = setAssistantConfig(storage, ownerId, chatId, { digestTime: time.time });
     if (!res.ok) {
       audit(storage, "miniapp.group_digest", ownerId, "error", `time config failed chat=${chatId}`);
-      return fail(400, "ورودی نامعتبر است.");
+      return fail(400, "Invalid input.");
     }
     finalTime = res.config.digestTime;
   }
@@ -1171,14 +1171,14 @@ async function handleGroupDigestSet(
   }
   if (id === undefined) {
     audit(storage, "miniapp.group_digest", ownerId, "error", `schedule failed chat=${chatId}`);
-    return fail(500, "ساخت زمان‌بندی ناموفق بود.");
+    return fail(500, "Failed to create the schedule.");
   }
   if (!cfg.digestEnabled) {
     const res = setAssistantConfig(storage, ownerId, chatId, { digestEnabled: true });
     if (!res.ok) {
       await cancelGroupDigestTask(calls, chatId);
       audit(storage, "miniapp.group_digest", ownerId, "error", `on config failed chat=${chatId}`);
-      return fail(500, "خطای داخلی رخ داد.");
+      return fail(500, "An internal error occurred.");
     }
   }
   audit(storage, "miniapp.group_digest", ownerId, "success", `on chat=${chatId} time=${finalTime} id=${id}`);
@@ -1220,10 +1220,10 @@ function handleSkillsToggle(deps: ManageApiDeps, ownerId: string, body: Record<s
   const name = validSkillName(body["name"]);
   const enabled = asBool(body["enabled"]);
   if (name === undefined || enabled === undefined) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   const status = setSkillEnabled(skillsDirFor(deps), name, enabled);
-  if (status === "missing") return fail(404, "مهارت یافت نشد.");
+  if (status === "missing") return fail(404, "Skill not found.");
   audit(deps.storage, "miniapp.skills.toggle", ownerId, "success", `name=${name} enabled=${enabled}`);
   return ok({ name, enabled: status === "enabled" });
 }
@@ -1231,15 +1231,15 @@ function handleSkillsToggle(deps: ManageApiDeps, ownerId: string, body: Record<s
 function installErrorFa(kind: string): string {
   switch (kind) {
     case "too_large":
-      return "فایل مهارت بیش از حد بزرگ است.";
+      return "Skill file is too large.";
     case "parse":
-      return "فایل مهارت معتبر نیست (فرمت یا فراداده مشکل دارد).";
+      return "Skill file is invalid (format or metadata).";
     case "collision":
-      return "مهارتی با این نام از قبل وجود دارد.";
+      return "A skill with this name already exists.";
     case "limit":
-      return "تعداد مهارت‌ها پر است.";
+      return "Skill limit reached.";
     default:
-      return "نصب مهارت ناموفق بود.";
+      return "Skill installation failed.";
   }
 }
 
@@ -1253,7 +1253,7 @@ function installErrorFa(kind: string): string {
 async function handleSkillInstall(deps: ManageApiDeps, ownerId: string, body: Record<string, unknown>): Promise<Response> {
   const sourceRaw = asString(body["source"]);
   if (sourceRaw === undefined || sourceRaw.trim() === "") {
-    return fail(400, "منبع مهارت را مشخص کنید (متن یا آدرس).");
+    return fail(400, "Specify the skill source (text or URL).");
   }
   const source = sourceRaw.trim();
   const dir = skillsDirFor(deps);
@@ -1266,7 +1266,7 @@ async function handleSkillInstall(deps: ManageApiDeps, ownerId: string, body: Re
       const res = await createPinnedSkillFetcher()(source);
       text = res.text;
     } catch {
-      return fail(400, "دریافت مهارت از آدرس ناموفق بود.");
+      return fail(400, "Failed to fetch the skill from the URL.");
     }
   } else {
     text = source;
@@ -1299,7 +1299,7 @@ async function handleSkillInstall(deps: ManageApiDeps, ownerId: string, body: Re
   try {
     writeSkillFile(dir, finalPlan.validated);
   } catch {
-    return fail(500, "خطای داخلی رخ داد.");
+    return fail(500, "An internal error occurred.");
   }
   audit(deps.storage, "miniapp.skills.install", ownerId, "success", `name=${finalPlan.validated.skill.name}`);
   return ok({ installed: true, name: finalPlan.validated.skill.name, enabled: false });
@@ -1307,12 +1307,12 @@ async function handleSkillInstall(deps: ManageApiDeps, ownerId: string, body: Re
 
 function handleSkillUninstall(deps: ManageApiDeps, ownerId: string, body: Record<string, unknown>): Response {
   const name = validSkillName(body["name"]);
-  if (name === undefined) return fail(400, "ورودی نامعتبر است.");
+  if (name === undefined) return fail(400, "Invalid input.");
   if (asBool(body["confirm"]) !== true) {
     return json(200, { needsConfirm: true, name });
   }
   const removed = uninstallSkillFile(skillsDirFor(deps), name);
-  if (!removed) return fail(404, "مهارت یافت نشد.");
+  if (!removed) return fail(404, "Skill not found.");
   audit(deps.storage, "miniapp.skills.uninstall", ownerId, "success", `name=${name}`);
   return ok({ name, removed: true });
 }
@@ -1345,7 +1345,7 @@ function parsePublisher(raw: unknown): { keyId: string; publicKeyB64: string } |
 function handleTrustAdd(storage: Storage, body: Record<string, unknown>): Response {
   const parsed = parsePublisher(body["publisher"]);
   if (parsed === undefined) {
-    return fail(400, "شناسهٔ ناشر نامعتبر است (اثرانگشت ۶۴ کاراکتری یا کلید عمومی).");
+    return fail(400, "Invalid publisher id (64-char fingerprint or public key).");
   }
   const labelRaw = asString(body["label"]);
   const label = labelRaw !== undefined && labelRaw.trim() !== "" ? labelRaw.trim().slice(0, 64) : shortKeyId(parsed.keyId);
@@ -1360,13 +1360,13 @@ function handleTrustAdd(storage: Storage, body: Record<string, unknown>): Respon
 function handleTrustRemove(storage: Storage, body: Record<string, unknown>): Response {
   const parsed = parsePublisher(body["publisher"]);
   if (parsed === undefined) {
-    return fail(400, "شناسهٔ ناشر نامعتبر است.");
+    return fail(400, "Invalid publisher id.");
   }
   if (asBool(body["confirm"]) !== true) {
     return json(200, { needsConfirm: true, keyId: parsed.keyId });
   }
   const removed = storage.untrustSkillPublisher(parsed.keyId);
-  if (!removed) return fail(404, "ناشر در فهرست اعتماد نیست.");
+  if (!removed) return fail(404, "Publisher is not in the trust list.");
   return ok({ keyId: parsed.keyId, removed: true });
 }
 
@@ -1434,21 +1434,21 @@ function handleTasksComplete(
   const kind = asString(body["kind"]);
   const id = asInt(body["id"]);
   if (kind === undefined || !TASK_KINDS.includes(kind as (typeof TASK_KINDS)[number]) || id === undefined || id < 1) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   if (kind === "goal") {
-    if (!storage.completeGoal(ownerId, id)) return fail(404, "هدف یافت نشد.");
+    if (!storage.completeGoal(ownerId, id)) return fail(404, "Goal not found.");
     audit(storage, "miniapp.tasks.complete", ownerId, "success", `goal id=${id}`);
     return ok({ kind, id });
   }
   if (kind === "reminder") {
     // A reminder has no "done" state; the owner-facing completion is
     // dismissing it (the same transition the cancel tool performs).
-    if (!storage.cancelReminder(ownerId, id)) return fail(404, "یادآور یافت نشد.");
+    if (!storage.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
     audit(storage, "miniapp.tasks.complete", ownerId, "success", `reminder id=${id}`);
     return ok({ kind, id });
   }
-  return fail(400, "این عملیات برای تسک زمان‌بندی‌شده پشتیبانی نمی‌شود.");
+  return fail(400, "This operation is not supported for scheduled tasks.");
 }
 
 function handleTasksCancel(
@@ -1459,25 +1459,25 @@ function handleTasksCancel(
   const kind = asString(body["kind"]);
   const id = asInt(body["id"]);
   if (kind === undefined || !TASK_KINDS.includes(kind as (typeof TASK_KINDS)[number]) || id === undefined || id < 1) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   if (kind === "reminder") {
-    if (!storage.cancelReminder(ownerId, id)) return fail(404, "یادآور یافت نشد.");
+    if (!storage.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
     audit(storage, "miniapp.tasks.cancel", ownerId, "success", `reminder id=${id}`);
     return ok({ kind, id });
   }
   if (kind === "task") {
     const task = storage.listTasks(ownerId, 200).find((t) => t.id === id);
-    if (task === undefined) return fail(404, "تسک یافت نشد.");
+    if (task === undefined) return fail(404, "Task not found.");
     if (asBool(body["confirm"]) !== true) {
       return json(200, { needsConfirm: true, kind, id, name: task.name });
     }
-    if (!storage.deleteTask(ownerId, id)) return fail(500, "خطای داخلی رخ داد.");
+    if (!storage.deleteTask(ownerId, id)) return fail(500, "An internal error occurred.");
     audit(storage, "miniapp.tasks.cancel", ownerId, "success", `task id=${id} name=${task.name}`);
     return ok({ kind, id });
   }
   // Goals have no delete in storage (completeGoal only).
-  return fail(400, "حذف هدف پشتیبانی نمی‌شود؛ می‌توانید آن را کامل کنید.");
+  return fail(400, "Deleting goals is not supported; you can complete it.");
 }
 
 // ------------------------------------------------------------ groups -------
@@ -1520,7 +1520,7 @@ function validGroupId(raw: unknown): string | undefined {
 
 function handleGroupAssistantGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
-  if (groupId === undefined) return fail(400, "شناسهٔ گروه نامعتبر است.");
+  if (groupId === undefined) return fail(400, "Invalid group id.");
   const config = getAssistantConfig(storage, ownerId, groupId);
   return ok({ groupId, config });
 }
@@ -1537,7 +1537,7 @@ function handleGroupAssistantSet(
   const groupId = validGroupId(body["groupId"]);
   const enabled = asBool(body["enabled"]);
   if (groupId === undefined || enabled === undefined) {
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   const patch: Record<string, unknown> = { enabled };
   const smart = asBool(body["smart"]);
@@ -1545,7 +1545,7 @@ function handleGroupAssistantSet(
   const res = setAssistantConfig(storage, ownerId, groupId, patch);
   if (!res.ok) {
     audit(storage, "miniapp.groups.assistant", ownerId, "denied", `chat=${groupId} ${res.errors[0] ?? ""}`);
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   audit(storage, "miniapp.groups.assistant", ownerId, "success", `chat=${groupId} enabled=${enabled}`);
   return ok({ groupId, config: res.config });
@@ -1553,7 +1553,7 @@ function handleGroupAssistantSet(
 
 function handleGroupDigestGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
-  if (groupId === undefined) return fail(400, "شناسهٔ گروه نامعتبر است.");
+  if (groupId === undefined) return fail(400, "Invalid group id.");
   return ok(groupDigestView(storage, ownerId, groupId));
 }
 
@@ -1561,7 +1561,7 @@ function handleGroupDigestGet(storage: Storage, ownerId: string, body: Record<st
 
 function handleModerationGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
-  if (groupId === undefined) return fail(400, "شناسهٔ گروه نامعتبر است.");
+  if (groupId === undefined) return fail(400, "Invalid group id.");
   return ok({ groupId, config: getModConfig(storage, ownerId, groupId) });
 }
 
@@ -1576,19 +1576,19 @@ function handleModerationSet(
   body: Record<string, unknown>,
 ): Response {
   const groupId = validGroupId(body["groupId"]);
-  if (groupId === undefined) return fail(400, "شناسهٔ گروه نامعتبر است.");
+  if (groupId === undefined) return fail(400, "Invalid group id.");
   const patch: Record<string, unknown> = {};
   for (const key of ["enabled", "antiSpam", "linkPolicy", "profanityFilter", "floodWindowSec", "floodMaxMessages"]) {
     const v = body[key];
     if (v !== undefined) patch[key] = v;
   }
   if (Object.keys(patch).length === 0) {
-    return fail(400, "فیلدی برای تغییر مشخص نشده است.");
+    return fail(400, "No fields specified to change.");
   }
   const res = setModConfig(storage, ownerId, groupId, patch);
   if (!res.ok) {
     audit(storage, "miniapp.moderation.set", ownerId, "denied", `chat=${groupId}`);
-    return fail(400, "ورودی نامعتبر است.");
+    return fail(400, "Invalid input.");
   }
   audit(storage, "miniapp.moderation.set", ownerId, "success", `chat=${groupId}`);
   return ok({ groupId, config: res.config });

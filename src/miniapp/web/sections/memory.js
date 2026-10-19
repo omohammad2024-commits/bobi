@@ -4,35 +4,14 @@
 (function () {
   "use strict";
 
-  function RS(fa, en) {
+  function RS(en) {
     if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
-      window.__registerSectionStrings(fa, en);
+      window.__registerSectionStrings(en);
     }
   }
 
-  RS(
-    {
-      "mem.tab.search": "جستجو",
-      "mem.tab.all": "همه",
-      "mem.tab.curator": "پیشنهادها",
-      "mem.tab.events": "رویدادها",
-      "mem.search.ph": "در حافظه جستجو کن…",
-      "mem.search.btn": "جستجو",
-      "mem.search.hint": "نام، موضوع، کلید یا تاریخ",
-      "mem.approve": "تأیید",
-      "mem.reject": "رد",
-      "mem.decided": "ثبت شد ✓",
-      "mem.reason": "دلیل",
-      "mem.updated": "به‌روزرسانی",
-      "mem.kind.birthday": "تولد",
-      "mem.kind.anniversary": "سالگرد",
-      "mem.kind.monthly": "ماهانه",
-      "mem.kind.once": "یک‌باره",
-      "mem.pending": "در انتظار بررسی",
-      "mem.today": "امروز 🎉",
-      "mem.daysLeft": "{n} روز مانده"
-    },
-    {
+  RS({
+      "mem.sub": "Search what BOBI remembers, review proposals, track events.",
       "mem.tab.search": "Search",
       "mem.tab.all": "All",
       "mem.tab.curator": "Proposals",
@@ -42,7 +21,7 @@
       "mem.search.hint": "Name, topic, key, or date",
       "mem.approve": "Approve",
       "mem.reject": "Reject",
-      "mem.decided": "Recorded ✓",
+      "mem.decided": "Recorded",
       "mem.reason": "Reason",
       "mem.updated": "Updated",
       "mem.kind.birthday": "Birthday",
@@ -50,10 +29,9 @@
       "mem.kind.monthly": "Monthly",
       "mem.kind.once": "One-time",
       "mem.pending": "Pending review",
-      "mem.today": "Today 🎉",
+      "mem.today": "Today",
       "mem.daysLeft": "{n} days left"
-    }
-  );
+    });
 
   var TAB = "search";
 
@@ -63,14 +41,10 @@
     });
   }
 
-  function lang() {
-    return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "fa";
-  }
-
   function fmtTs(ts) {
     var n = Number(ts);
     if (!n) return "—";
-    var loc = lang() === "fa" ? "fa-IR" : "en-US";
+    var loc = "en-US";
     try {
       return new Date(n).toLocaleString(loc, { dateStyle: "medium", timeStyle: "short" });
     } catch (e) {
@@ -78,40 +52,26 @@
     }
   }
 
-  function styleTag() {
-    return (
-      "<style>" +
-      ".mx-tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 10px}" +
-      ".mx-tab{flex:1 0 auto;min-height:44px;padding:10px 14px;border-radius:12px;border:1px solid var(--border,#e2e2e2);background:var(--card,#fff);font-size:14px;white-space:nowrap}" +
-      ".mx-tab[aria-selected=true]{background:var(--accent,#2a7fff);color:#fff;border-color:var(--accent,#2a7fff)}" +
-      ".mx-spin{width:28px;height:28px;margin:18px auto;border:3px solid var(--border,#e2e2e2);border-top-color:var(--accent,#2a7fff);border-radius:50%;animation:mxrot 0.8s linear infinite}" +
-      "@keyframes mxrot{to{transform:rotate(360deg)}}" +
-      ".mx-center{text-align:center;padding:26px 12px;color:var(--muted,#777)}" +
-      ".mx-kv{font-size:12px;color:var(--muted,#777);word-break:break-all}" +
-      ".mx-pre{white-space:pre-wrap;word-break:break-word;margin:6px 0 0;font-size:14px;line-height:1.7}" +
-      ".mx-actions{display:flex;gap:8px;margin-top:10px}" +
-      ".mx-actions .btn{flex:1;min-height:44px}" +
-      ".mx-searchrow{display:flex;gap:8px;margin-bottom:6px}" +
-      ".mx-searchrow .input{flex:1;min-height:44px}" +
-      ".mx-hint{font-size:12px;color:var(--muted,#777);margin:0 0 12px}" +
-      "</style>"
-    );
-  }
-
   function loadingHtml(t) {
-    return '<div class="mx-center"><div class="mx-spin"></div><div>' + esc(t("state.loading")) + "</div></div>";
+    return '<div class="loading-state"><div class="spinner"></div><div>' + esc(t("state.loading")) + "</div></div>";
   }
 
   function emptyHtml(t) {
-    return '<div class="mx-center">' + esc(t("state.empty")) + "</div>";
+    var I = window.AppIcons.svg;
+    return (
+      '<div class="card"><div class="empty-state"><div class="empty-ic">' + I("database") + "</div>" +
+      '<p class="empty-title">' + esc(t("state.empty")) + "</p></div></div>"
+    );
   }
 
   function errorHtml(t, err, retry) {
+    var I = window.AppIcons.svg;
     return (
-      '<div class="card mx-center"><div>⚠️ ' + esc(t("state.error")) + "</div>" +
-      (err && err.message ? '<div class="mx-kv">' + esc(err.message) + "</div>" : "") +
-      '<div style="margin-top:12px"><button class="btn btn-primary" data-retry style="min-height:44px;min-width:120px">' +
-      esc(t("action.retry")) + "</button></div></div>"
+      '<div class="card"><div class="error-state"><div class="error-ic">' + I("alert") + "</div>" +
+      "<p>" + esc(t("state.error")) + "</p>" +
+      (err && err.message ? '<div class="mx-kv" style="margin-bottom:12px">' + esc(err.message) + "</div>" : "") +
+      '<button class="btn btn-primary" data-retry>' + I("refresh") + esc(t("action.retry")) + "</button>" +
+      "</div></div>"
     );
   }
 
@@ -121,13 +81,16 @@
   }
 
   function memoryCard(m, t) {
+    var I = window.AppIcons.svg;
     var key = m.key !== undefined ? m.key : m.id;
     return (
-      '<div class="card">' +
-      (key !== undefined && key !== "" ? '<div class="mx-kv">🔑 ' + esc(key) + "</div>" : "") +
-      '<div class="mx-pre">' + esc(m.content !== undefined ? m.content : m.text !== undefined ? m.text : m.snippet || "") + "</div>" +
+      '<div class="card" style="margin-bottom:9px">' +
+      (key !== undefined && key !== ""
+        ? '<div style="margin-bottom:8px"><span class="badge badge-accent">' + I("key") + esc(key) + "</span></div>"
+        : "") +
+      '<div class="mx-pre" style="margin-top:0">' + esc(m.content !== undefined ? m.content : m.text !== undefined ? m.text : m.snippet || "") + "</div>" +
       (m.updatedAt || m.createdAt
-        ? '<div class="mx-kv">' + esc(t("mem.updated")) + ": " + esc(fmtTs(m.updatedAt || m.createdAt)) + "</div>"
+        ? '<div class="mx-kv" style="margin-top:8px">' + esc(t("mem.updated")) + ": " + esc(fmtTs(m.updatedAt || m.createdAt)) + "</div>"
         : "") +
       "</div>"
     );
@@ -135,10 +98,12 @@
 
   async function showSearch(body, ctx) {
     var t = ctx.t;
+    var I = window.AppIcons.svg;
     body.innerHTML =
       '<form class="mx-searchrow" data-form>' +
-      '<input class="input" data-q placeholder="' + esc(t("mem.search.ph")) + '" enterkeyhint="search" />' +
-      '<button class="btn btn-primary" type="submit" style="min-height:44px">' + esc(t("mem.search.btn")) + "</button>" +
+      '<div class="searchbar" style="flex:1;margin-bottom:0">' + I("search") +
+      '<input class="input" data-q placeholder="' + esc(t("mem.search.ph")) + '" enterkeyhint="search" autocomplete="off" /></div>' +
+      '<button class="btn btn-primary" type="submit" style="min-height:46px">' + esc(t("mem.search.btn")) + "</button>" +
       "</form>" +
       '<p class="mx-hint">' + esc(t("mem.search.hint")) + "</p>" +
       '<div data-results></div>';
@@ -184,6 +149,7 @@
 
   async function showCurator(body, ctx) {
     var t = ctx.t;
+    var I = window.AppIcons.svg;
     async function load() {
       body.innerHTML = loadingHtml(t);
       try {
@@ -196,13 +162,13 @@
         body.innerHTML = items
           .map(function (p, i) {
             return (
-              '<div class="card" data-p="' + i + '">' +
-              '<div class="mx-kv">' + esc(t("mem.pending")) +
-              (p.kindFa ? ' · <span class="badge">' + esc(p.kindFa) + "</span>" : "") + "</div>" +
-              '<div class="mx-pre">' + esc(p.summaryFa || "") + "</div>" +
+              '<div class="card" data-p="' + i + '" style="margin-bottom:9px;border-inline-start:3px solid var(--warning)">' +
+              '<div style="margin-bottom:8px"><span class="badge badge-warn">' + I("clock") + esc(t("mem.pending")) + "</span>" +
+              (p.kindFa ? ' <span class="badge">' + esc(p.kindFa) + "</span>" : "") + "</div>" +
+              '<div class="mx-pre" style="margin-top:0">' + esc(p.summaryFa || "") + "</div>" +
               '<div class="mx-actions">' +
-              '<button class="btn btn-primary" data-approve>' + esc(t("mem.approve")) + "</button>" +
-              '<button class="btn btn-ghost" data-reject>' + esc(t("mem.reject")) + "</button>" +
+              '<button class="btn btn-sm btn-subtle" data-approve>' + I("check") + esc(t("mem.approve")) + "</button>" +
+              '<button class="btn btn-sm btn-ghost" data-reject>' + I("x") + esc(t("mem.reject")) + "</button>" +
               "</div></div>"
             );
           })
@@ -215,11 +181,11 @@
             ctx
               .api("curator.decide", { id: p.id, approve: approve })
               .then(function () {
-                ctx.toast(t("mem.decided"));
+                ctx.toast(t("mem.decided"), "ok");
                 load();
               })
               .catch(function (err) {
-                ctx.toast(t("toast.failed") + (err && err.message ? ": " + err.message : ""));
+                ctx.toast(t("toast.failed") + (err && err.message ? ": " + err.message : ""), "err");
                 Array.prototype.forEach.call(btns, function (b) { b.disabled = false; });
               });
           }
@@ -236,6 +202,7 @@
 
   async function showEvents(body, ctx) {
     var t = ctx.t;
+    var I = window.AppIcons.svg;
     body.innerHTML = loadingHtml(t);
     try {
       var r = await ctx.api("events.list", {});
@@ -249,23 +216,26 @@
           var kindKey = "mem.kind." + (ev.kind || "");
           var kindLabel = t(kindKey) === kindKey ? ev.kind || "" : t(kindKey);
           var d = ev.daysUntil === undefined || ev.daysUntil === null ? null : Number(ev.daysUntil);
-          var daysLabel = "";
+          var daysBadge = "";
           if (d !== null && !isNaN(d)) {
-            if (d === 0) daysLabel = t("mem.today");
-            else {
-              var ds = String(d);
-              if (lang() === "fa") ds = ds.replace(/\d/g, function (x) { return "۰۱۲۳۴۵۶۷۸۹"[x]; });
-              daysLabel = t("mem.daysLeft").replace("{n}", ds);
-            }
+            if (d === 0) daysBadge = '<span class="badge badge-warn">' + I("sparkles") + esc(t("mem.today")) + "</span>";
+            else if (d <= 7) daysBadge = '<span class="badge badge-info">' + esc(t("mem.daysLeft").replace("{n}", String(d))) + "</span>";
+            else daysBadge = '<span class="badge">' + esc(t("mem.daysLeft").replace("{n}", String(d))) + "</span>";
           }
           return (
-            '<div class="card">' +
-            '<div><strong>' + esc(ev.name || "") + "</strong>" +
-            (ev.labelFa ? ' · <span class="badge">' + esc(ev.labelFa) + "</span>" : "") +
-            (kindLabel ? ' <span class="badge">' + esc(kindLabel) + "</span>" : "") +
+            '<div class="card" style="margin-bottom:9px">' +
+            '<div class="card-head tight">' +
+            '<div class="card-icon">' + I("calendar") + "</div>" +
+            "<div><div class=\"card-title\">" + esc(ev.name || "") + "</div></div>" +
+            '<div class="spacer"></div>' + daysBadge +
             "</div>" +
-            (daysLabel ? '<div class="mx-kv" style="margin-top:4px">📅 ' + esc(daysLabel) + "</div>" : "") +
-            (ev.note ? '<div class="mx-pre">' + esc(ev.note) + "</div>" : "") +
+            ((ev.labelFa || kindLabel)
+              ? '<div style="margin-bottom:6px">' +
+                (ev.labelFa ? '<span class="badge">' + esc(ev.labelFa) + "</span> " : "") +
+                (kindLabel ? '<span class="badge">' + esc(kindLabel) + "</span>" : "") +
+                "</div>"
+              : "") +
+            (ev.note ? '<div class="mx-pre" style="margin-top:0">' + esc(ev.note) + "</div>" : "") +
             "</div>"
           );
         })
@@ -286,7 +256,7 @@
   function render(el, ctx) {
     var t = ctx.t;
     el.innerHTML =
-      styleTag() +
+      ctx.pageHead("database", t("sec.memory"), t("mem.sub")) +
       '<div class="mx-tabs" role="tablist">' +
       TABS.map(function (tb) {
         return (
@@ -317,7 +287,7 @@
 
   function boot() {
     if (window.App && typeof window.App.registerSection === "function") {
-      window.App.registerSection("memory", { titleKey: "sec.memory", icon: "🧠", render: render });
+      window.App.registerSection("memory", { titleKey: "sec.memory", icon: "database", render: render });
     } else {
       document.addEventListener("DOMContentLoaded", boot, { once: true });
     }

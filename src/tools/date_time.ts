@@ -47,7 +47,7 @@ export function isValidTimeZone(tz: string): boolean {
 
 export const dateTimeTool: Tool<DateTimeInput, DateTimeOutput> = {
   name: "date_time",
-  description: "تاریخ، ساعت و روز هفته در یک timezone معتبر.",
+  description: "Current date, time and weekday in a valid IANA timezone.",
   enabled: true,
   permission: { requires: [DATE_TIME_PERMISSION] },
   toolset: "utils",
@@ -55,12 +55,12 @@ export const dateTimeTool: Tool<DateTimeInput, DateTimeOutput> = {
     fields: {
       timezone: {
         type: "string",
-        description: "شناسهٔ timezone معتبر IANA.",
+        description: "A valid IANA timezone id.",
         maxLength: 64,
       },
       locale: {
         type: "string",
-        description: "کد زبان برای نمایش روز هفته.",
+        description: "Language tag for rendering the weekday.",
         minLength: 2,
         maxLength: 16,
       },
@@ -72,14 +72,14 @@ export const dateTimeTool: Tool<DateTimeInput, DateTimeOutput> = {
     if (!isValidTimeZone(timezone)) {
       throw new ToolError(
         "invalid_input",
-        "timezone نامعتبر است.",
+        "Invalid timezone.",
         { timezone },
       );
     }
 
     const locale = input.locale ?? "fa-IR";
     if (!isValidLocale(locale)) {
-      throw new ToolError("invalid_input", "زبان نامعتبر است.", { locale });
+      throw new ToolError("invalid_input", "Invalid locale.", { locale });
     }
 
     const now = ctx.clock();

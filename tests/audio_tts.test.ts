@@ -298,7 +298,7 @@ describe("voice picker callbacks", () => {
   });
 
   test("the picker keyboard carries the three canonical callbacks", () => {
-    const kb = buildVoiceKeyboard("fa");
+    const kb = buildVoiceKeyboard("en");
     const data = JSON.stringify(kb);
     expect(data).toContain(VOICE_CALLBACKS.auto);
     expect(data).toContain(VOICE_CALLBACKS.always);
@@ -492,7 +492,7 @@ describe("deliverReply", () => {
     );
     expect(sent.map((s) => s.kind)).toEqual(["text", "text"]);
     expect(sent[0]?.body).toBe(
-      "تبدیل متن به صدا پیکربندی نشده است؛ حالت صوتی در دسترس نیست.",
+      "Text-to-speech is not configured; voice mode is unavailable.",
     );
     expect(sent[1]?.body).toBe("a");
     expect(prefs.getUserPref("7", VOICE_UNCONFIGURED_NOTIFIED_KEY)).toBe("1");
@@ -575,14 +575,14 @@ describe("handleVoiceCommand", () => {
     const env: VoiceCommandEnv = { prefs: store };
     await handleVoiceCommand(fakeVoiceCtx(replies), env);
     expect(replies.length).toBe(1);
-    expect(replies[0]).toContain("پیکربندی نشده");
+    expect(replies[0]).toContain("not configured");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
   });
 
   test("does not set the pref when baseUrl is empty", async () => {
     const replies: string[] = [];
     const store = prefsWith("auto");
-    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: { ...TTS, baseUrl: "" }, prefs: store }, "fa", "always");
+    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: { ...TTS, baseUrl: "" }, prefs: store }, "en", "always");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
   });
 
@@ -591,14 +591,14 @@ describe("handleVoiceCommand", () => {
     const env: VoiceCommandEnv = { tts: TTS, prefs: store };
 
     const r1: string[] = [];
-    await handleVoiceCommand(fakeVoiceCtx(r1), env, "fa", "always");
+    await handleVoiceCommand(fakeVoiceCtx(r1), env, "en", "always");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("always");
-    expect(r1[0]).toContain("همیشه");
+    expect(r1[0]).toContain("always");
 
     const r2: string[] = [];
-    await handleVoiceCommand(fakeVoiceCtx(r2), env, "fa", "never");
+    await handleVoiceCommand(fakeVoiceCtx(r2), env, "en", "never");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("never");
-    expect(r2[0]).toContain("هرگز");
+    expect(r2[0]).toContain("never");
 
     const r3: string[] = [];
     await handleVoiceCommand(fakeVoiceCtx(r3), env, "en", "auto");
@@ -610,8 +610,8 @@ describe("handleVoiceCommand", () => {
     const replies: string[] = [];
     const store = prefsWith("auto");
     const env: VoiceCommandEnv = { tts: TTS, prefs: store };
-    await handleVoiceCommand(fakeVoiceCtx(replies), env, "fa", "maybe");
-    expect(replies[0]).toContain("نامعتبر");
+    await handleVoiceCommand(fakeVoiceCtx(replies), env, "en", "maybe");
+    expect(replies[0]).toContain("Unknown option");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
   });
 
@@ -619,9 +619,9 @@ describe("handleVoiceCommand", () => {
     const { calls, ctx } = fakePickerCtx();
     const store = prefsWith("always");
     const env: VoiceCommandEnv = { tts: TTS, prefs: store };
-    await handleVoiceCommand(ctx, env, "fa");
+    await handleVoiceCommand(ctx, env, "en");
     expect(calls.length).toBe(1);
-    expect(calls[0]?.text).toContain("همیشه");
+    expect(calls[0]?.text).toContain("always");
     expect(calls[0]?.markup).toBeDefined();
   });
 
@@ -641,8 +641,8 @@ describe("handleVoiceCommand", () => {
         throw new Error("disk full");
       },
     };
-    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: TTS, prefs: store }, "fa", "never");
-    expect(replies[0]).toContain("ناموفق بود");
+    await handleVoiceCommand(fakeVoiceCtx(replies), { tts: TTS, prefs: store }, "en", "never");
+    expect(replies[0]).toContain("Couldn't save");
   });
 });
 
@@ -651,10 +651,10 @@ describe("handleVoiceCallback", () => {
     const { answered, replies, ctx } = fakeCallbackCtx();
     const store = prefsWith("auto");
     const env: VoiceCommandEnv = { tts: TTS, prefs: store };
-    await handleVoiceCallback(ctx, env, VOICE_CALLBACKS.always, "fa");
+    await handleVoiceCallback(ctx, env, VOICE_CALLBACKS.always, "en");
     expect(answered.length).toBe(1);
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("always");
-    expect(replies[0]).toContain("همیشه");
+    expect(replies[0]).toContain("always");
   });
 
   test("junk picker data is rejected without touching the store", async () => {
@@ -669,9 +669,9 @@ describe("handleVoiceCallback", () => {
   test("a tap with TTS unconfigured reports it and does not persist", async () => {
     const { replies, ctx } = fakeCallbackCtx();
     const store = prefsWith("auto");
-    await handleVoiceCallback(ctx, { prefs: store }, VOICE_CALLBACKS.never, "fa");
+    await handleVoiceCallback(ctx, { prefs: store }, VOICE_CALLBACKS.never, "en");
     expect(store.getUserPref("7", VOICE_MODE_KEY)).toBe("auto");
-    expect(replies[0]).toContain("پیکربندی نشده");
+    expect(replies[0]).toContain("not configured");
   });
 });
 

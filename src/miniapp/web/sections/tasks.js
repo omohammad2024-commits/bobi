@@ -1,37 +1,49 @@
 /* BOBI Mini App · section: tasks
  * Owner-only: reminders, tasks and goals grouped, with tap-to-act
- * complete/cancel. ctx.api only. */
+ * complete/cancel. ctx.api only.
+ *
+ * Backend contract (POST /miniapp/api/<endpoint>, {initData, ...}):
+ *   tasks.list    {} -> { ok, reminders: [{ id, kind:"reminder", text, dueAtMs,
+ *                       repeat, state }], tasks: [{ id, kind:"task", name, enabled,
+ *                       cron, nextRunAtMs }], goals: [{ id, kind:"goal", title,
+ *                       status, description? }] }
+ *   tasks.complete { kind, id } -> { ok, kind, id }
+ *                       kind "reminder": dismisses (cancelReminder)
+ *                       kind "goal": completes the goal
+ *                       kind "task": NOT supported (400)
+ *   tasks.cancel   { kind, id, confirm? } -> { ok, kind, id }
+ *                       kind "reminder": dismisses
+ *                       kind "task": deletes the scheduled task (needs confirm:true)
+ *                       kind "goal": NOT supported (400)
+ */
 (function () {
   "use strict";
 
-  function RS(fa, en) {
+  function RS(en) {
     if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
-      window.__registerSectionStrings(fa, en);
+      window.__registerSectionStrings(en);
     }
   }
 
-  RS(
-    {
-      "tsk.reminders": "یادآورها",
-      "tsk.tasks": "کارها",
-      "tsk.goals": "هدف‌ها",
-      "tsk.complete": "انجام شد",
-      "tsk.cancel": "لغو",
-      "tsk.due": "مهلت",
-      "tsk.done": "ثبت شد ✓",
-      "tsk.empty": "موردی نیست"
-    },
-    {
+  RS({
+      "tsk.sub": "Reminders, scheduled tasks and goals.",
       "tsk.reminders": "Reminders",
       "tsk.tasks": "Tasks",
       "tsk.goals": "Goals",
       "tsk.complete": "Complete",
       "tsk.cancel": "Cancel",
       "tsk.due": "Due",
-      "tsk.done": "Recorded ✓",
+      "tsk.nextRun": "Next run",
+      "tsk.done": "Recorded",
+      "tsk.cancelConfirm": "Delete this scheduled task?",
       "tsk.empty": "Nothing here"
-    }
-  );
+    });
+
+  var GROUP_META = {
+    reminder: { titleKey: "tsk.reminders", icon: "bell", cardIcon: "amber" },
+    task: { titleKey: "tsk.tasks", icon: "clock", cardIcon: "" },
+    goal: { titleKey: "tsk.goals", icon: "target", cardIcon: "green" },
+  };
 
   function esc(v) {
     return String(v === undefined || v === null ? "" : v).replace(/[&<>"']/g, function (c) {
@@ -39,14 +51,10 @@
     });
   }
 
-  function lang() {
-    return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "fa";
-  }
-
   function fmtTs(ts) {
     var n = Number(ts);
     if (!n) return "";
-    var loc = lang() === "fa" ? "fa-IR" : "en-US";
+    var loc = "en-US";
     try {
       var d = new Date(n);
       var now = new Date();
@@ -59,32 +67,17 @@
     }
   }
 
-  function styleTag() {
-    return (
-      "<style>" +
-      ".mx-spin{width:28px;height:28px;margin:18px auto;border:3px solid var(--border,#e2e2e2);border-top-color:var(--accent,#2a7fff);border-radius:50%;animation:mxrot 0.8s linear infinite}" +
-      "@keyframes mxrot{to{transform:rotate(360deg)}}" +
-      ".mx-center{text-align:center;padding:26px 12px;color:var(--muted,#777)}" +
-      ".mx-secttl{font-weight:700;margin:2px 0 8px;font-size:15px}" +
-      ".mx-muted{font-size:12px;color:var(--muted,#777)}" +
-      ".mx-item{font-size:14px;line-height:1.7}" +
-      ".mx-actions{display:flex;gap:8px;margin-top:10px}" +
-      ".mx-actions .btn{flex:1;min-height:44px}" +
-      ".mx-kv{font-size:12px;color:var(--muted,#777);word-break:break-all}" +
-      "</style>"
-    );
-  }
-
   function loadingHtml(t) {
-    return '<div class="mx-center"><div class="mx-spin"></div><div>' + esc(t("state.loading")) + "</div></div>";
+    return '<div class="loading-state"><div class="spinner"></div><div>' + esc(t("state.loading")) + "</div></div>";
   }
 
   function errorHtml(t, err) {
     return (
-      '<div class="card mx-center"><div>⚠️ ' + esc(t("state.error")) + "</div>" +
-      (err && err.message ? '<div class="mx-kv">' + esc(err.message) + "</div>" : "") +
-      '<div style="margin-top:12px"><button class="btn" data-retry style="min-height:44px;min-width:120px">' +
-      esc(t("action.retry")) + "</button></div></div>"
+      '<div class="card"><div class="error-state"><div class="error-ic">' + window.AppIcons.svg("alert") + "</div>" +
+      "<p>" + esc(t("state.error")) + "</p>" +
+      (err && err.message ? '<div class="mx-kv" style="margin-bottom:12px">' + esc(err.message) + "</div>" : "") +
+      '<button class="btn btn-primary" data-retry>' + window.AppIcons.svg("refresh") + esc(t("action.retry")) + "</button>" +
+      "</div></div>"
     );
   }
 
@@ -106,73 +99,111 @@
 
   async function render(el, ctx) {
     var t = ctx.t;
-    el.innerHTML = styleTag() + loadingHtml(t);
+    var I = window.AppIcons.svg;
+    el.innerHTML = ctx.pageHead("tasks", t("sec.tasks"), t("tsk.sub")) + loadingHtml(t);
 
     async function load() {
-      el.innerHTML = styleTag() + loadingHtml(t);
+      el.innerHTML = ctx.pageHead("tasks", t("sec.tasks"), t("tsk.sub")) + loadingHtml(t);
       try {
         var r = await ctx.api("tasks.list", {});
         var g = normGroups(r);
 
-        function groupHtml(title, icon, items) {
+        function groupHtml(kind, items) {
+          var meta = GROUP_META[kind];
           var body = items.length
             ? items
                 .map(function (it, i) {
                   var id = it.id !== undefined ? it.id : it.key;
                   var text = it.text || it.title || it.name || "";
-                  var due = it.due || it.dueAt || it.remindAt || it.deadline;
+                  var due = it.dueAtMs || it.due || it.dueAt || it.remindAt || it.deadline;
+                  var nextRun = kind === "task" ? it.nextRunAtMs : null;
+                  // The backend only supports: reminder → complete+cancel,
+                  // task → cancel (with confirm), goal → complete.
+                  var showComplete = kind === "reminder" || kind === "goal";
+                  var showCancel = kind === "reminder" || kind === "task";
+                  var meta2 =
+                    (due ? '<span class="meta-chip">' + I("clock") + esc(t("tsk.due")) + ": " + esc(fmtTs(due)) + "</span>" : "") +
+                    (nextRun ? '<span class="meta-chip">' + I("refresh") + esc(t("tsk.nextRun")) + ": " + esc(fmtTs(nextRun)) + "</span>" : "");
                   return (
-                    '<div class="card" data-item data-idx="' + i + '">' +
+                    '<div class="card" data-item data-idx="' + i + '" style="margin-bottom:9px">' +
                     '<div class="mx-item">' + esc(text) + "</div>" +
-                    (due ? '<div class="mx-muted">⏰ ' + esc(t("tsk.due")) + ": " + esc(fmtTs(due)) + "</div>" : "") +
+                    (meta2 ? '<div class="meta-chips" style="margin-top:8px">' + meta2 + "</div>" : "") +
                     '<div class="mx-actions">' +
-                    '<button class="btn" data-complete>' + esc(t("tsk.complete")) + "</button>" +
-                    '<button class="btn" data-cancel style="color:var(--danger,#d32f2f)">' + esc(t("tsk.cancel")) + "</button>" +
+                    (showComplete
+                      ? '<button class="btn btn-sm btn-subtle" data-complete>' + I("check") + esc(t("tsk.complete")) + "</button>"
+                      : "") +
+                    (showCancel
+                      ? '<button class="btn btn-sm btn-danger" data-cancel>' + I("x") + esc(t("tsk.cancel")) + "</button>"
+                      : "") +
                     "</div></div>"
                   );
                 })
                 .join("")
             : '<div class="mx-center">' + esc(t("tsk.empty")) + "</div>";
-          var html =
-            '<div class="card"><div class="mx-secttl">' + icon + " " + esc(title) + "</div>" + body + "</div>";
-          return { html: html, items: items };
+          return (
+            '<div class="card"><div class="card-head">' +
+            '<div class="card-icon' + (meta.cardIcon ? " " + meta.cardIcon : "") + '">' + I(meta.icon) + "</div>" +
+            "<div><h2 class=\"card-title\">" + esc(t(meta.titleKey)) + "</h2></div>" +
+            '<div class="spacer"></div><span class="badge">' + items.length + "</span>" +
+            "</div>" + body + "</div>"
+          );
         }
 
-        var parts = [
-          groupHtml(t("tsk.reminders"), "⏰", g.reminders),
-          groupHtml(t("tsk.tasks"), "✅", g.tasks),
-          groupHtml(t("tsk.goals"), "🎯", g.goals)
+        var order = [
+          { kind: "reminder", items: g.reminders },
+          { kind: "task", items: g.tasks },
+          { kind: "goal", items: g.goals },
         ];
-        el.innerHTML = styleTag() + parts.map(function (p) { return p.html; }).join("");
+        el.innerHTML =
+          ctx.pageHead("tasks", t("sec.tasks"), t("tsk.sub")) +
+          order.map(function (o) { return { html: groupHtml(o.kind, o.items), kind: o.kind, items: o.items }; })
+            .map(function (p) { return p.html; })
+            .join("");
 
-        // Wire each section's item cards to their own group's items.
-        var sectionCards = el.querySelectorAll(":scope > .card");
-        parts.forEach(function (p, pi) {
-          var sec = sectionCards[pi];
+        // Wire each group's item cards to their own items.
+        var cards = el.querySelectorAll(":scope > .card");
+        order.forEach(function (o, pi) {
+          var sec = cards[pi];
           if (!sec) return;
           Array.prototype.forEach.call(sec.querySelectorAll("[data-item]"), function (card, ci) {
-            var it = p.items[ci];
+            var it = o.items[ci];
             var id = it.id !== undefined ? it.id : it.key;
-            function act(endpoint) {
+            function act(endpoint, params) {
               var btns = card.querySelectorAll("button");
               Array.prototype.forEach.call(btns, function (b) { b.disabled = true; });
               ctx
-                .api(endpoint, { id: id })
+                .api(endpoint, params)
                 .then(function () {
-                  ctx.toast(t("tsk.done"));
+                  ctx.toast(t("tsk.done"), "ok");
                   load();
                 })
                 .catch(function (err) {
-                  ctx.toast(t("toast.failed") + (err && err.message ? ": " + err.message : ""));
+                  ctx.toast(t("toast.failed") + (err && err.message ? ": " + err.message : ""), "err");
                   Array.prototype.forEach.call(btns, function (b) { b.disabled = false; });
                 });
             }
-            card.querySelector("[data-complete]").addEventListener("click", function () { act("tasks.complete"); });
-            card.querySelector("[data-cancel]").addEventListener("click", function () { act("tasks.cancel"); });
+            var completeBtn = card.querySelector("[data-complete]");
+            if (completeBtn) {
+              completeBtn.addEventListener("click", function () {
+                act("tasks.complete", { kind: o.kind, id: id });
+              });
+            }
+            var cancelBtn = card.querySelector("[data-cancel]");
+            if (cancelBtn) {
+              cancelBtn.addEventListener("click", async function () {
+                var params = { kind: o.kind, id: id };
+                if (o.kind === "task") {
+                  var ok = await ctx.confirmDialog(t("dialog.confirmTitle"), t("tsk.cancelConfirm"));
+                  if (!ok) return;
+                  params.confirm = true;
+                }
+                act("tasks.cancel", params);
+              });
+            }
           });
         });
       } catch (err) {
-        el.innerHTML = styleTag() + errorHtml(t, err);
+        el.innerHTML = ctx.pageHead("tasks", t("sec.tasks"), t("tsk.sub")) + errorHtml(t, err);
         var b = el.querySelector("[data-retry]");
         if (b) b.addEventListener("click", load);
       }
@@ -183,7 +214,7 @@
 
   function boot() {
     if (window.App && typeof window.App.registerSection === "function") {
-      window.App.registerSection("tasks", { titleKey: "sec.tasks", icon: "✅", render: render });
+      window.App.registerSection("tasks", { titleKey: "sec.tasks", icon: "tasks", render: render });
     } else {
       document.addEventListener("DOMContentLoaded", boot, { once: true });
     }

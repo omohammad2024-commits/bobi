@@ -37,29 +37,29 @@ export function isToolError(err: unknown): err is ToolError {
 /** Coerce any thrown value into a ToolError without leaking internals. */
 export function toToolError(err: unknown): ToolError {
   if (err instanceof ToolError) return err;
-  return new ToolError("internal", "خطای داخلی ابزار.");
+  return new ToolError("internal", "Internal tool error.");
 }
 
-/** Short, user-facing Persian message per error kind. */
+/** Short, user-facing English message per error kind. */
 export function userMessageFor(kind: ToolErrorKind): string {
   switch (kind) {
     case "invalid_input":
-      return "ورودی نامعتبر است.";
+      return "Invalid input.";
     case "not_found":
-      return "ابزار یافت نشد.";
+      return "Tool not found.";
     case "disabled":
-      return "این ابزار غیرفعال است.";
+      return "This tool is disabled.";
     case "not_allowed":
-      return "مجوز اجرای این ابزار را ندارید.";
+      return "You are not allowed to run this tool.";
     case "timeout":
-      return "اجرای ابزار طول کشید و لغو شد.";
+      return "The tool run timed out.";
     case "aborted":
-      return "اجرای ابزار لغو شد.";
+      return "The tool run was cancelled.";
     case "overloaded":
-      return "سیستم شلوغ است؛ لحظه‌ای بعد تلاش کن.";
+      return "The system is busy; try again in a moment.";
     case "invalid_result":
-      return "نتیجهٔ ابزار نامعتبر بود.";
+      return "The tool returned an invalid result.";
     case "internal":
-      return "خطای داخلی ابزار.";
+      return "Internal tool error.";
   }
 }

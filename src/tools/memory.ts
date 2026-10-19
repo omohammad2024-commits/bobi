@@ -78,7 +78,7 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
   return {
     name: "remember",
     description:
-      "یک نکتهٔ پایدار دربارهٔ کاربر را برای همیشه ذخیره کن (نام، ترجیح، پروژه). برای اطلاعات زودگذر استفاده نکن.",
+      "Store a lasting note about the user (name, preference, project). Do not use for fleeting information.",
     enabled: true,
     permission: { requires: [REMEMBER_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -90,14 +90,14 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
         key: {
           type: "string",
           required: true,
-          description: "برچسب کوتاه و یکتا، مثل «نام پروژه».",
+          description: "Short unique label, e.g. \"project name\".",
           minLength: 1,
           maxLength: MAX_KEY_LENGTH,
         },
         content: {
           type: "string",
           required: true,
-          description: "متن چیزی که باید به خاطر بماند.",
+          description: "The text to remember.",
           minLength: 1,
           maxLength: MAX_CONTENT_LENGTH,
         },
@@ -108,7 +108,7 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       const key = normalizeKey(input.key);
       const content = input.content.trim();
       if (content.length === 0) {
-        throw new ToolError("invalid_input", "متن حافظه خالی است.");
+        throw new ToolError("invalid_input", "Memory text is empty.");
       }
 
       const userId = ownerOf(ctx.actor);
@@ -119,7 +119,7 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       if (existing === undefined && (await deps.provider.count(userId)) >= MAX_MEMORIES_PER_USER) {
         throw new ToolError(
           "invalid_input",
-          "حافظه پر است؛ ابتدا با forget چند مورد را پاک کن.",
+          "Memory is full; forget some items first.",
         );
       }
 
@@ -177,7 +177,7 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
   return {
     name: "recall",
     description:
-      "حافظه‌ها را جستجو کن. بدون query همهٔ موارد اخیر را برمی‌گرداند.",
+      "Search memories. Without a query, returns recent items.",
     enabled: true,
     permission: { requires: [RECALL_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -188,12 +188,12 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       fields: {
         query: {
           type: "string",
-          description: "عبارت جستجو در کلید و متن حافظه‌ها.",
+          description: "Search phrase in memory keys and text.",
           maxLength: 200,
         },
         limit: {
           type: "integer",
-          description: `حداکثر تعداد نتیجه (۱ تا ${MAX_RECALL_LIMIT}).`,
+          description: `Maximum results (1 to ${MAX_RECALL_LIMIT}).`,
           minimum: 1,
           maximum: MAX_RECALL_LIMIT,
         },
@@ -223,11 +223,7 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       // means "not available right now" — fall back to the original
       // substring ranking, silently. Ranking is an enhancement, never a
       // dependency.
-      const semanticHits = await deps.semantic?.search(
-        userId,
-        query,
-        HYBRID_SEMANTIC_CANDIDATES,
-      );
+      const semanticHits = await safeSemanticSearch(deps, userId, query);
       if (semanticHits !== undefined) {
         const textRanked = rank(all, query);
         const fusedKeys = reciprocalRankFusion(
@@ -261,6 +257,27 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       };
     },
   };
+}
+
+/**
+ * Semantic search with the documented silent fallback.
+ *
+ * The index contract says search() resolves to undefined "when not available
+ * right now", but a failing store underneath it can still reject (search
+ * joins back to the provider per hit). A throwing semantic layer must never
+ * break recall: catch it and fall back to the substring ranking, silently.
+ */
+async function safeSemanticSearch(
+  deps: MemoryDeps,
+  userId: string,
+  query: string,
+): Promise<Array<{ key: string; content: string; score: number }> | undefined> {
+  if (deps.semantic === undefined) return undefined;
+  try {
+    return await deps.semantic.search(userId, query, HYBRID_SEMANTIC_CANDIDATES);
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -303,7 +320,7 @@ export interface ForgetOutput {
 export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutput> {
   return {
     name: "forget",
-    description: "یک حافظه را با کلیدش پاک کن.",
+    description: "Delete a memory by its key.",
     enabled: true,
     permission: { requires: [FORGET_PERMISSION] },
     // Two-tier access: owner-only (withheld from public actors by the
@@ -315,7 +332,7 @@ export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutp
         key: {
           type: "string",
           required: true,
-          description: "کلید حافظه‌ای که باید پاک شود.",
+          description: "Key of the memory to delete.",
           minLength: 1,
           maxLength: MAX_KEY_LENGTH,
         },
@@ -357,7 +374,7 @@ export function createMemoryTools(deps: MemoryDeps): readonly Tool<unknown, unkn
 function ownerOf(actor: ToolActor): string {
   const id = actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست؛ حافظه در دسترس نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown; memory is unavailable.");
   }
   return id;
 }
@@ -373,10 +390,10 @@ function ownerOf(actor: ToolActor): string {
 function normalizeKey(raw: string): string {
   const key = raw.trim().replace(/\s+/g, " ");
   if (key.length === 0) {
-    throw new ToolError("invalid_input", "کلید حافظه خالی است.");
+    throw new ToolError("invalid_input", "Memory key is empty.");
   }
   if (key.length > MAX_KEY_LENGTH) {
-    throw new ToolError("invalid_input", "کلید حافظه خیلی طولانی است.");
+    throw new ToolError("invalid_input", "Memory key is too long.");
   }
   return key;
 }

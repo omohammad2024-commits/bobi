@@ -130,7 +130,7 @@ describe("connection target validation", () => {
         timeoutMs: 1000,
         signal: new AbortController().signal,
       }),
-    ).rejects.toThrow(/آدرس سرویس/);
+    ).rejects.toThrow(/Service address/);
   });
 });
 

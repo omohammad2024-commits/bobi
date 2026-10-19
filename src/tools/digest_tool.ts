@@ -54,7 +54,7 @@ export function createDigestTool(deps: DigestToolDeps): Tool<Record<string, neve
   return {
     name: "build_digest",
     description:
-      "خلاصهٔ صبحگاهی فارسی: کارهای امروز، یادآورها، پیشنهادهای حافظه، مصرف دیروز، سرخط خبرها و نکته‌های حافظه (فقط مالک).",
+      "Morning digest: today's work, reminders, memory suggestions, yesterday's usage, headlines and memory notes (owner only).",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [BUILD_DIGEST_PERMISSION] },
@@ -64,10 +64,10 @@ export function createDigestTool(deps: DigestToolDeps): Tool<Record<string, neve
     async run(_input: Record<string, never>, ctx: ToolContext): Promise<DigestToolOutput> {
       const userId = ctx.actor.userId;
       if (typeof userId !== "string" || userId.length === 0 || userId === "unknown") {
-        throw new ToolError("not_allowed", "هویت مشخص نیست.");
+        throw new ToolError("not_allowed", "Identity is unknown.");
       }
       if (!deps.isOwner(userId)) {
-        throw new ToolError("not_allowed", "خلاصهٔ صبحگاهی فقط برای مالک است.");
+        throw new ToolError("not_allowed", "The morning digest is owner only.");
       }
 
       const sections = await buildDigest({

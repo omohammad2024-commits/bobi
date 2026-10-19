@@ -77,15 +77,15 @@ export interface UnitOutput {
 
 export const unitConverterTool: Tool<UnitInput, UnitOutput> = {
   name: "unit_converter",
-  description: "تبدیل واحدهای طول، جرم، حجم و دما.",
+  description: "Convert length, mass, volume and temperature units.",
   enabled: true,
   permission: { requires: [UNIT_CONVERTER_PERMISSION] },
   toolset: "utils",
   input: {
     fields: {
-      value: { type: "number", required: true, description: "مقدار ورودی." },
-      from: { type: "string", required: true, description: "واحد مبدأ.", maxLength: 8 },
-      to: { type: "string", required: true, description: "واحد مقصد.", maxLength: 8 },
+      value: { type: "number", required: true, description: "Input value." },
+      from: { type: "string", required: true, description: "Source unit.", maxLength: 8 },
+      to: { type: "string", required: true, description: "Target unit.", maxLength: 8 },
     },
   },
 
@@ -102,7 +102,7 @@ export const unitConverterTool: Tool<UnitInput, UnitOutput> = {
 function normalizeUnit(unit: string): string {
   const u = unit.trim().toLowerCase();
   if (u.length === 0 || !/^[a-z0-9]+$/.test(u)) {
-    throw new ToolError("invalid_input", "واحد نامعتبر است.", { unit });
+    throw new ToolError("invalid_input", "Invalid unit.", { unit });
   }
   return u;
 }
@@ -115,7 +115,7 @@ export function convert(value: number, from: string, to: string): number {
   if (isTempUnit(from) !== isTempUnit(to)) {
     throw new ToolError(
       "invalid_input",
-      "تبدیل بین دما و سایر مقیاس‌ها پشتیبانی نمی‌شود.",
+      "Temperature cannot be converted to other scales.",
       { from, to },
     );
   }
@@ -123,15 +123,15 @@ export function convert(value: number, from: string, to: string): number {
   const src = BASE[from];
   const dst = BASE[to];
   if (!src || !dst) {
-    throw new ToolError("invalid_input", "واحد نامعتبر است.", { from, to });
+    throw new ToolError("invalid_input", "Invalid unit.", { from, to });
   }
   if (src.category !== dst.category) {
-    throw new ToolError("invalid_input", "واحدها از یک مقیاس نیستند.", { from, to });
+    throw new ToolError("invalid_input", "Units are not from the same category.", { from, to });
   }
 
   const result = (value * src.factor) / dst.factor;
   if (!Number.isFinite(result)) {
-    throw new ToolError("invalid_input", "نتیجه عدد معتبری نیست.");
+    throw new ToolError("invalid_input", "The result is not a valid number.");
   }
   return result;
 }
@@ -143,7 +143,7 @@ function isTempUnit(u: string): u is TempUnit {
 function categoryOf(unit: string): Category | "temperature" {
   if (isTempUnit(unit)) return "temperature";
   const entry = BASE[unit];
-  if (!entry) throw new ToolError("invalid_input", "واحد نامعتبر است.", { unit });
+  if (!entry) throw new ToolError("invalid_input", "Invalid unit.", { unit });
   return entry.category;
 }
 
@@ -151,11 +151,11 @@ function categoryOf(unit: string): Category | "temperature" {
 function convertTemperature(value: number, from: TempUnit, to: TempUnit): number {
   const c = toCelsius(value, from);
   if (c < -273.15) {
-    throw new ToolError("invalid_input", "دما کمتر از صفر مطلق است.");
+    throw new ToolError("invalid_input", "Temperature is below absolute zero.");
   }
   const result = fromCelsius(c, to);
   if (!Number.isFinite(result)) {
-    throw new ToolError("invalid_input", "نتیجه عدد معتبری نیست.");
+    throw new ToolError("invalid_input", "The result is not a valid number.");
   }
   return result;
 }

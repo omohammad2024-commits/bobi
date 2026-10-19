@@ -30,7 +30,7 @@ export interface TextOutput {
 
 export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
   name: "text_utilities",
-  description: "شمارش کاراکتر و کلمه و آمار سادهٔ متن.",
+  description: "Character/word counts and simple text statistics.",
   enabled: true,
   permission: { requires: [TEXT_UTILITIES_PERMISSION] },
   toolset: "utils",
@@ -39,7 +39,7 @@ export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
       text: {
         type: "string",
         required: true,
-        description: "متنی که باید تحلیل شود.",
+        description: "The text to analyse.",
         minLength: 1,
         maxLength: MAX_TEXT_LENGTH,
       },
@@ -52,7 +52,7 @@ export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
     if (text.length > MAX_TEXT_LENGTH) {
       throw new ToolError(
         "invalid_input",
-        "متن خیلی طولانی است.",
+        "Text is too long.",
         { limit: MAX_TEXT_LENGTH },
       );
     }
@@ -60,7 +60,7 @@ export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
     // Length alone is not content: whitespace-only input is rejected here
     // rather than reported as a valid zero-word analysis.
     if (text.trim().length === 0) {
-      throw new ToolError("invalid_input", "متن خالی است.", { limit: 0 });
+      throw new ToolError("invalid_input", "Text is empty.", { limit: 0 });
     }
 
     const words = text

@@ -37,7 +37,7 @@ const MAGNITUDE_LIMIT = 1e308;
 
 export const calculatorTool: Tool<CalcInput, CalcOutput> = {
   name: "calculator",
-  description: "جمع، تفریق، ضرب و تقسیم دو عدد.",
+  description: "Add, subtract, multiply or divide two numbers.",
   enabled: true,
   permission: { requires: [CALCULATOR_PERMISSION] },
   toolset: "utils",
@@ -46,16 +46,21 @@ export const calculatorTool: Tool<CalcInput, CalcOutput> = {
       op: {
         type: "enum",
         required: true,
-        description: "عملیات ریاضی.",
+        description: "The arithmetic operation.",
         choices: ["add", "subtract", "multiply", "divide"],
       },
-      a: { type: "number", required: true, description: "عملوند اول." },
-      b: { type: "number", required: true, description: "عملوند دوم." },
+      a: { type: "number", required: true, description: "First operand." },
+      b: { type: "number", required: true, description: "Second operand." },
     },
   },
 
   async run(input: CalcInput, _ctx: ToolContext): Promise<CalcOutput> {
     const fn = OPS[input.op];
+    if (fn === undefined) {
+      // Defence in depth: the validator rejects unknown ops first, but a
+      // direct caller bypassing validation gets a clean error, not a crash.
+      throw new ToolError("invalid_input", "Invalid operation.", { op: input.op });
+    }
     const result = fn(input.a, input.b);
 
     if (!Number.isFinite(result)) {
@@ -76,10 +81,10 @@ export const calculatorTool: Tool<CalcInput, CalcOutput> = {
 function describe(kind: "divide_by_zero" | "non_finite" | "overflow"): string {
   switch (kind) {
     case "divide_by_zero":
-      return "تقسیم بر صفر مجاز نیست.";
+      return "Division by zero is not allowed.";
     case "non_finite":
-      return "نتیجه عدد معتبری نیست.";
+      return "The result is not a valid number.";
     case "overflow":
-      return "نتیجه خارج از محدودهٔ عدد است.";
+      return "The result is out of numeric range.";
   }
 }

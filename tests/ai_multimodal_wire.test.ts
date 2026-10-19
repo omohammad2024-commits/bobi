@@ -122,13 +122,13 @@ describe("an attachment that cannot be sent is reported, not dropped", () => {
     // No image part is sent...
     expect(typeof wire["content"]).toBe("string");
     // ...but the model learns why, so it can tell the user.
-    expect(wire["content"] as string).toContain("حجم");
+    expect(wire["content"] as string).toContain("exceeds size limit");
   });
 
   test("an unsupported type is named in the text", () => {
     const video = { type: "image", mediaType: "video/mp4", base64: "AAAA" } as unknown as ContentPart;
     const wire = toWireMessages([{ role: "user", content: "ببین", parts: [video] }])[0]!;
-    expect(wire["content"] as string).toContain("پشتیبانی");
+    expect(wire["content"] as string).toContain("not supported");
   });
 
   test("the same holds for the other two adapters", () => {
@@ -137,11 +137,11 @@ describe("an attachment that cannot be sent is reported, not dropped", () => {
 
     const anthropic = anthropicMessage(message);
     expect(typeof anthropic.content).toBe("string");
-    expect(anthropic.content as string).toContain("حجم");
+    expect(anthropic.content as string).toContain("exceeds size limit");
 
     const gemini = geminiMessage(message);
     const parts = gemini.parts as Array<Record<string, unknown>>;
-    expect(parts[0]!["text"] as string).toContain("حجم");
+    expect(parts[0]!["text"] as string).toContain("exceeds size limit");
   });
 
   test("a mixture keeps the good attachment and reports the bad one", () => {
@@ -151,7 +151,7 @@ describe("an attachment that cannot be sent is reported, not dropped", () => {
     // The sendable image still goes.
     expect(content.some((c) => c["type"] === "image_url")).toBe(true);
     // And the rejected one is mentioned.
-    expect(JSON.stringify(content)).toContain("حجم");
+    expect(JSON.stringify(content)).toContain("exceeds size limit");
   });
 });
 

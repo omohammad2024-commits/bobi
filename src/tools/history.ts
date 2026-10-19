@@ -52,7 +52,7 @@ export function createSearchHistoryTool(
   return {
     name: "search_history",
     description:
-      "در تاریخچهٔ گفتگوها جستجوی تمام‌متن کن؛ برای پیدا کردن حرف‌های قبلی در هر گفتگویی. فقط گفتگوهای خودت جستجو می‌شود.",
+      "Full-text search across conversation history; find earlier messages in any conversation. Only your own conversations are searched.",
     enabled: true,
     // Two-tier access: owner-only (withheld from public actors by the
     // authorization bridge; the model is never told it exists). The actor's
@@ -66,19 +66,19 @@ export function createSearchHistoryTool(
         query: {
           type: "string",
           required: true,
-          description: "عبارت جستجو در متن پیام‌ها.",
+          description: "Search phrase in message text.",
           minLength: 1,
           maxLength: 200,
         },
         limit: {
           type: "integer",
-          description: `حداکثر تعداد نتیجه (۱ تا ${MAX_SEARCH_LIMIT}).`,
+          description: `Maximum results (1 to ${MAX_SEARCH_LIMIT}).`,
           minimum: 1,
           maximum: MAX_SEARCH_LIMIT,
         },
         conversationId: {
           type: "integer",
-          description: "محدود کردن جستجو به یک گفتگو (فقط گفتگوهای خودت).",
+          description: "Limit the search to one conversation (only your own).",
           minimum: 1,
         },
       },
@@ -87,7 +87,7 @@ export function createSearchHistoryTool(
     async run(input: SearchHistoryInput, ctx: ToolContext): Promise<SearchHistoryOutput> {
       const query = input.query.trim();
       if (query.length === 0) {
-        throw new ToolError("invalid_input", "عبارت جستجو خالی است.");
+        throw new ToolError("invalid_input", "Search query is empty.");
       }
 
       // SECURITY: the owner id comes from the server-supplied actor, never
@@ -134,7 +134,7 @@ export function createHistoryTools(deps: HistoryDeps): readonly Tool<unknown, un
 function ownerOf(actor: ToolActor): string {
   const id = actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست؛ جستجو در دسترس نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown; search is unavailable.");
   }
   return id;
 }

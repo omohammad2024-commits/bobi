@@ -2,9 +2,9 @@
  * Two-tier access model tests (owner directive, Oct 18 2026).
  *
  * TIER 1 — OWNER (محمد): full access, no behaviour change.
- * TIER 2 — PUBLIC: chat + /start (public) + /help (public part) + /commands
- * + /lang. Everything else is owner-only: invisible in menus AND refused by
- * server-side gates.
+ * TIER 2 — PUBLIC: chat + /start (public) + /help (public part) + /commands.
+ * Everything else is owner-only: invisible in menus AND refused by
+ * server-side gates. (/lang was removed Oct 2026: the UI is English-only.)
  *
  * Covers: classification of every command, tier-gate refusals (fa+en, no
  * leak), forged palette callbacks across ALL owner-only commands, menu
@@ -74,9 +74,9 @@ const HERMES_DEFS = [
   // Phase-3: owner-only commands (invisible to the public via ownerOnly).
   ...SKILLS_COMMAND_DEFS,
   ...BENCH_COMMAND_DEFS,
-  { command: "gassistant", descriptionFa: "حالت دستیار گروه", descriptionEn: "Group assistant mode", ownerOnly: true },
-  { command: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", descriptionEn: "Summarize group discussion", ownerOnly: true },
-  { command: "gpoll", descriptionFa: "نظرسنجی در گروه", descriptionEn: "Create a group poll", ownerOnly: true },
+  { command: "gassistant", descriptionEn: "Group assistant mode", ownerOnly: true },
+  { command: "gsummary", descriptionEn: "Summarize group discussion", ownerOnly: true },
+  { command: "gpoll", descriptionEn: "Create a group poll", ownerOnly: true },
 ];
 
 function authForOwner() {
@@ -127,8 +127,8 @@ function fakeCbCtx(fromId: number, authed: boolean) {
 // ---------------------------------------------------------------------------
 
 describe("tier classification", () => {
-  test("the public surface is exactly start/help/commands/lang/voice", () => {
-    expect([...PUBLIC_COMMANDS].sort()).toEqual(["commands", "help", "lang", "start", "voice"]);
+  test("the public surface is exactly start/help/commands/voice", () => {
+    expect([...PUBLIC_COMMANDS].sort()).toEqual(["commands", "help", "start", "voice"]);
     for (const c of COMMAND_HELP) {
       expect(commandTier(c.name)).toBe(c.ownerOnly ? "owner" : "public");
       expect(isPublicCommand(c.name)).toBe(!c.ownerOnly);
@@ -141,13 +141,12 @@ describe("tier classification", () => {
     expect(isPublicCommand("admin")).toBe(false);
   });
 
-  test("visibleCommandHelp(false) exposes exactly the public five", () => {
+  test("visibleCommandHelp(false) exposes exactly the public four", () => {
     expect(visibleCommandHelp(false).map((c) => c.name)).toEqual([
       "start",
       "help",
       "commands",
       "voice",
-      "lang",
     ]);
   });
 
@@ -164,7 +163,7 @@ describe("tier classification", () => {
   test("/help text for the public contains zero owner-only commands", () => {
     const replies: string[] = [];
     const ctx = { reply: async (t: string) => { replies.push(t); } };
-    return handleHelpCommand(ctx, false, "fa").then(() => {
+    return handleHelpCommand(ctx, false, "en").then(() => {
       const text = replies.join("\n");
       for (const c of COMMAND_HELP) {
         if (c.ownerOnly) expect(text).not.toContain(`/${c.name}`);
@@ -181,14 +180,14 @@ describe("tier classification", () => {
 describe("requireOwnerTier", () => {
   test("the owner passes through untouched", async () => {
     const { ctx, replies } = fakeCmdCtx(OWNER);
-    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "fa")).toBe(true);
+    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "en")).toBe(true);
     expect(replies).toEqual([]);
   });
 
   test("a stranger gets the short polite Persian refusal — nothing about the command", async () => {
     const { ctx, replies } = fakeCmdCtx(STRANGER);
-    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "fa")).toBe(false);
-    expect(replies).toEqual([t("tier.refused", "fa")]);
+    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "en")).toBe(false);
+    expect(replies).toEqual([t("tier.refused", "en")]);
     // No leak: the refusal names no feature, no command, no capability.
     for (const leak of ["model", "admin", "حافظه", "توکن", "دستور"]) {
       expect(replies[0]).not.toContain(leak);
@@ -205,16 +204,16 @@ describe("requireOwnerTier", () => {
     expect(isOwnerCtx({ from: { id: STRANGER } }, {})).toBe(false);
     expect(isOwnerCtx({}, { auth: authForOwner() })).toBe(false);
     const { ctx, replies } = fakeCmdCtx(STRANGER);
-    expect(await requireOwnerTier(ctx, {}, "fa")).toBe(false);
-    expect(replies).toEqual([t("tier.refused", "fa")]);
+    expect(await requireOwnerTier(ctx, {}, "en")).toBe(false);
+    expect(replies).toEqual([t("tier.refused", "en")]);
   });
 
   test("ownership comes from the numeric id only — a group chat does not confuse it", async () => {
     const { ctx, replies } = fakeCmdCtx(STRANGER, "supergroup");
-    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "fa")).toBe(false);
+    expect(await requireOwnerTier(ctx, { auth: authForOwner() }, "en")).toBe(false);
     expect(replies).toHaveLength(1);
     const owner = fakeCmdCtx(OWNER, "supergroup");
-    expect(await requireOwnerTier(owner.ctx, { auth: authForOwner() }, "fa")).toBe(true);
+    expect(await requireOwnerTier(owner.ctx, { auth: authForOwner() }, "en")).toBe(true);
     expect(owner.replies).toEqual([]);
   });
 });
@@ -230,27 +229,27 @@ describe("forged palette callbacks across all owner-only commands", () => {
     expect(ownerOnly.length).toBe(69);
     for (const name of ownerOnly) {
       const f = fakeCbCtx(STRANGER, false);
-      await handlePaletteCallback(f.ctx, f.env, `pal:cmd:${name}`, "fa");
+      await handlePaletteCallback(f.ctx, f.env, `pal:cmd:${name}`, "en");
       expect(f.sent, name).toHaveLength(1);
-      expect(f.sent[0], name).toContain("فقط برای مالک");
+      expect(f.sent[0], name).toContain("owner-only");
     }
   });
 
   test("runPaletteCommand refuses every owner-only command for a stranger", async () => {
     for (const name of ownerOnly) {
       const f = fakeCbCtx(STRANGER, false);
-      await runPaletteCommand(name, f.ctx, f.env, "fa");
+      await runPaletteCommand(name, f.ctx, f.env, "en");
       expect(f.sent, name).toHaveLength(1);
-      expect(f.sent[0], name).toContain("فقط برای مالک");
+      expect(f.sent[0], name).toContain("owner-only");
     }
   });
 
   test("the owner still runs them (spot check)", async () => {
     for (const name of ["pause", "version", "status"]) {
       const f = fakeCbCtx(OWNER, true);
-      await runPaletteCommand(name, f.ctx, f.env, "fa");
+      await runPaletteCommand(name, f.ctx, f.env, "en");
       expect(f.sent.length, name).toBeGreaterThan(0);
-      expect(f.sent[0], name).not.toContain("فقط برای مالک");
+      expect(f.sent[0], name).not.toContain("owner-only");
     }
   });
 });
@@ -262,14 +261,14 @@ describe("forged palette callbacks across all owner-only commands", () => {
 describe("menu invisibility", () => {
   test("the default setMyCommands scope contains zero owner-only commands", () => {
     const pub = publicMenuCommands(HERMES_DEFS);
-    expect(pub.length).toBe(5);
+    expect(pub.length).toBe(4); // start/help/commands/voice (/lang removed)
     expect(pub.every((d) => !d.ownerOnly)).toBe(true);
     const own = ownerMenuCommands(HERMES_DEFS);
-    expect(own.length).toBe(74);
+    expect(own.length).toBe(73); // 11 builtins + 62 Hermes defs
   });
 
   test("the public palette render contains no owner group or command", () => {
-    const render = paletteCategoriesRender(false, "fa");
+    const render = paletteCategoriesRender(false, "en");
     const kb = JSON.stringify(render.keyboard);
     expect(kb).not.toContain("owner");
     for (const c of COMMAND_HELP) {
@@ -281,7 +280,7 @@ describe("menu invisibility", () => {
   });
 
   test("fuzz: the public main menu never emits owner-only callbacks", () => {
-    for (const lang of ["fa", "en"] as const) {
+    for (const lang of ["en"] as const) {
       const kb = buildPublicMainMenu(lang) as unknown as {
         inline_keyboard: Array<Array<{ callback_data?: string; text: string }>>;
       };
@@ -300,14 +299,14 @@ describe("menu invisibility", () => {
     }
   });
 
-  test("the owner menu still has the full six buttons", () => {
-    const kb = buildMainMenu("fa") as unknown as {
+  test("the owner menu is a clean 2x2 grid", () => {
+    const kb = buildMainMenu("en") as unknown as {
       inline_keyboard: Array<Array<{ callback_data?: string }>>;
     };
     const data = kb.inline_keyboard.flat().map((b) => b.callback_data ?? "");
     expect(data).toContain(CALLBACKS.tools);
     expect(data).toContain(CALLBACKS.settings);
-    expect(data).toHaveLength(6);
+    expect(data).toHaveLength(4);
   });
 });
 
@@ -481,9 +480,9 @@ describe("handleUserRestrict", () => {
   test("ban → unban round trip", () => {
     const { storage, users } = svc();
     try {
-      expect(handleUserRestrict("fa", users, String(OWNER), "ban", "42", "ban")).toContain("42");
+      expect(handleUserRestrict("en", users, String(OWNER), "ban", "42", "ban")).toContain("42");
       expect(users.stateOf("42")).toBe("rejected");
-      expect(handleUserRestrict("fa", users, String(OWNER), "unban", "42", "unban")).toContain("42");
+      expect(handleUserRestrict("en", users, String(OWNER), "unban", "42", "unban")).toContain("42");
       expect(users.stateOf("42")).toBe("approved");
     } finally {
       storage.close();
@@ -493,7 +492,7 @@ describe("handleUserRestrict", () => {
   test("mute → unmute round trip", () => {
     const { storage, users } = svc();
     try {
-      handleUserRestrict("fa", users, String(OWNER), "mute", "42", "mute");
+      handleUserRestrict("en", users, String(OWNER), "mute", "42", "mute");
       expect(users.stateOf("42")).toBe("revoked");
       handleUserRestrict("en", users, String(OWNER), "unmute", "42", "unmute");
       expect(users.stateOf("42")).toBe("approved");
@@ -505,11 +504,11 @@ describe("handleUserRestrict", () => {
   test("missing/invalid target and self-target are refused, never executed", () => {
     const { storage, users } = svc();
     try {
-      expect(handleUserRestrict("fa", users, String(OWNER), "ban", undefined, "ban")).toContain("/ban");
-      expect(handleUserRestrict("fa", users, String(OWNER), "ban", "@someone", "ban")).toContain("معتبر");
-      expect(handleUserRestrict("fa", users, String(OWNER), "ban", String(OWNER), "ban")).toContain("خودت");
+      expect(handleUserRestrict("en", users, String(OWNER), "ban", undefined, "ban")).toContain("/ban");
+      expect(handleUserRestrict("en", users, String(OWNER), "ban", "@someone", "ban")).toContain("Invalid");
+      expect(handleUserRestrict("en", users, String(OWNER), "ban", String(OWNER), "ban")).toContain("yourself");
       expect(users.stateOf(String(OWNER))).toBeUndefined();
-      expect(handleUserRestrict("fa", undefined, String(OWNER), "ban", "42", "ban")).toContain("در دسترس نیست");
+      expect(handleUserRestrict("en", undefined, String(OWNER), "ban", "42", "ban")).toContain("unavailable");
     } finally {
       storage.close();
     }
@@ -553,7 +552,7 @@ describe("sess: namespace tier gate", () => {
       answerCallbackQuery: async () => {},
     };
     for (const h of handlers) await h(fakeCtx as never);
-    expect(replies).toEqual([t("tier.refused", "fa")]);
+    expect(replies).toEqual([t("tier.refused", "en")]);
   });
 });
 
@@ -568,32 +567,31 @@ describe("creator identity", () => {
     timezone: "Asia/Tehran",
   };
 
-  test("the base prompt names محمد as creator and father, in fa and en", () => {
+  test("the base prompt names Mohammad as creator and father", () => {
     const prompt = buildSystemPrompt(base);
-    expect(prompt).toContain("محمد");
     expect(prompt).toContain("Mohammad");
-    expect(prompt).toContain("سازنده و پدر");
+    expect(prompt).toContain("creator and father");
   });
 
   test("identity survives every personality skin", () => {
     for (const name of ["default", "concise", "playful"]) {
       const skin = getPersonality(name)!;
       const prompt = buildSystemPrompt({ ...base, personality: skin.systemAddition });
-      expect(prompt, name).toContain("محمد");
       expect(prompt, name).toContain("Mohammad");
+      expect(prompt, name).toContain("creator and father");
     }
   });
 
-  test("identity is not a session fact: it precedes the personality block and needs no history", () => {
+  test("identity is not a session fact: it precedes the tool rules and needs no history", () => {
     const skin = getPersonality("playful")!;
     const prompt = buildSystemPrompt({ ...base, personality: skin.systemAddition });
-    // The creator block sits in the base IDENTITY section, before the tone.
-    expect(prompt.indexOf("محمد")).toBeLessThan(prompt.indexOf("لحن پاسخ‌گویی"));
+    // The creator block sits in the base IDENTITY section, before the tools.
+    expect(prompt.indexOf("Mohammad")).toBeLessThan(prompt.indexOf("Tool rules:"));
   });
 
   test("anti-impersonation: the prompt says ownership is never decided from chat claims", () => {
     const prompt = buildSystemPrompt(base);
-    expect(prompt).toContain("شناسه‌ی تلگرام");
-    expect(prompt).toContain("ادعا");
+    expect(prompt).toContain("never from chat text");
+    expect(prompt).toContain("ownership is determined by the system");
   });
 });

@@ -213,7 +213,7 @@ export class ToolExecutor {
           return this.fail(
             req,
             started,
-            new ToolError("invalid_result", "نتیجهٔ ابزار نامعتبر بود."),
+            new ToolError("invalid_result", userMessageFor("invalid_result")),
             "error",
           );
         }
@@ -240,6 +240,10 @@ export class ToolExecutor {
   can(toolName: string, actor: ToolActor): boolean {
     const tool = this.registry.find(toolName);
     if (!tool) return false;
+    // A disabled tool cannot run, so "may run right now" is false for it —
+    // callers that gate UI on can() must not offer a tool execute() would
+    // refuse. (Audit fix, Oct 2026.)
+    if (!tool.enabled) return false;
     return hasPermission(tool.permission.requires, actor.permissions);
   }
 

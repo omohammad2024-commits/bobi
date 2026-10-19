@@ -154,7 +154,7 @@ describe("AI admin authorization", () => {
     const h = harness();
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.open(c.ctx);
-    expect(c.sent[0]?.text).toContain("مدیریت هوش مصنوعی");
+    expect(c.sent[0]?.text).toContain("AI management");
     h.storage.close();
   });
 
@@ -163,7 +163,7 @@ describe("AI admin authorization", () => {
     const c = fakeCtx({ id: USER_ID });
     await h.ai.open(c.ctx);
     expect(c.sent[0]?.text).toContain("فقط برای مالک");
-    expect(c.sent[0]?.text).not.toContain("مدیریت هوش مصنوعی");
+    expect(c.sent[0]?.text).not.toContain("AI management");
     h.storage.close();
   });
 
@@ -262,7 +262,7 @@ describe("credential safety in the panel", () => {
       encode({ kind: "ai_provider", providerId: active.providerId }),
     );
     const text = c.sent.map((s) => s.text).join("\n");
-    expect(text).toContain("تنظیم‌شده");
+    expect(text).toContain("Key: set");
     expect(text).not.toContain("sk-key-000");
     h.storage.close();
   });
@@ -316,7 +316,7 @@ describe("credential safety in the panel", () => {
     const c2 = fakeCtx({ id: OWNER_ID });
     await h.ai.handleText(c2.ctx, "نام: تست\nآدرس سرویس: https://x.invalid/v1\nکلید API: sk-key");
     expect(c2.sent[0]?.text).not.toContain("sk-key");
-    expect(c2.sent[0]?.text).toContain("کلید رمزنگاری");
+    expect(c2.sent[0]?.text).toContain("credential encryption key");
     // No provider was written.
     expect(h.storage.listProviders().length).toBe(0);
     h.storage.close();
@@ -367,7 +367,7 @@ describe("AI admin workflow", () => {
     // with no selection and produce an unexplained failure.
     const c1 = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c1.ctx, encode({ kind: "ai_toggle", providerId: active.providerId }));
-    expect(c1.sent[0]?.text).toContain("پروایدر فعال است");
+    expect(c1.sent[0]?.text).toContain("is active");
     expect(h.providers.view(active.providerId)?.enabled).toBe(true);
 
     // Once another provider is active, disabling works.
@@ -434,7 +434,7 @@ describe("AI admin workflow", () => {
     expect(res.ok).toBe(false);
     if (!res.ok) {
       expect(res.reason).toBe("last_enabled");
-      expect(res.message).toContain("تنها مدل فعال");
+      expect(res.message).toContain("only enabled model");
     }
     h.storage.close();
   });
@@ -446,7 +446,7 @@ describe("AI admin workflow", () => {
     // First tap only asks: the key must survive until the confirmation.
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_clear_key", providerId: active.providerId }));
     expect(h.providers.credentialStatus(active.providerId)).toBe("set");
-    expect(c.sent.map((s) => s.text).join("\n")).toContain("پاک شود");
+    expect(c.sent.map((s) => s.text).join("\n")).toContain("Clear key");
     // Second tap clears.
     await h.ai.handleCallback(
       c.ctx,
@@ -524,7 +524,7 @@ describe("AI admin workflow", () => {
     );
     // Still the active provider: the confirmation refuses, it does not delete.
     expect(h.storage.getProvider(active.providerId)).toBeDefined();
-    expect(c1.sent.map((s) => s.text).join("\n")).toContain("در حال استفاده");
+    expect(c1.sent.map((s) => s.text).join("\n")).toContain("is in use");
 
     // Add a second provider and switch to it.
     const p2 = h.providers.create({
@@ -600,8 +600,8 @@ describe("provider health", () => {
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: p.data }));
     const text = c.sent.map((s) => s.text).join("\n");
-    expect(text).toContain("ناموفق");
-    expect(text).toContain("اعتبارنامه");
+    expect(text).toContain("failed");
+    expect(text).toContain("Credential");
     h.storage.close();
   });
 
@@ -630,8 +630,8 @@ describe("provider health", () => {
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: p.data }));
     const text = c.sent.map((s) => s.text).join("\n");
-    expect(text).toContain("ناموفق");
-    expect(text).toContain("اعتبارنامه");
+    expect(text).toContain("failed");
+    expect(text).toContain("Credential");
     h.storage.close();
   });
 
@@ -662,7 +662,7 @@ describe("provider health", () => {
     const health = new ProviderHealthService(h.storage, h.providers, h.secrets, stalling, 200);
     const probe = await health.probe(active.providerId);
     expect(probe.ok).toBe(false);
-    expect(probe.message).toContain("زمان");
+    expect(probe.message).toContain("No response arrived in time.");
     h.storage.close();
   });
 

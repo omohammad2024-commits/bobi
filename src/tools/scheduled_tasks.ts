@@ -15,7 +15,7 @@
 import { CronError, nextAfterSchedule, parseCron } from "../scheduler/cron";
 import type { CronSchedule } from "../scheduler/cron";
 import { ToolError } from "./errors";
-import type { ScheduledTaskRecord, ScheduledTaskStatus, Storage } from "../storage/storage";
+import type { ScheduledTaskStatus, Storage } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
 
 export const SCHEDULE_TASK_PERMISSION = "tools:schedule_task";
@@ -66,13 +66,13 @@ export interface ScheduledTaskToolDeps {
 /**
  * Validate an untrusted action value into a TaskAction.
  *
- * Throws ToolError("invalid_input") with a Persian message on any shape
+ * Throws ToolError("invalid_input") with an English message on any shape
  * violation. Called at creation time AND again by the scheduler before
  * execution, so a row written around this validator can never dispatch.
  */
 export function parseTaskAction(raw: unknown): TaskAction {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new ToolError("invalid_input", "اکشن باید یک آبجکت باشد.");
+    throw new ToolError("invalid_input", "The action must be an object.");
   }
   const obj = raw as Record<string, unknown>;
   const type = obj["type"];
@@ -80,18 +80,18 @@ export function parseTaskAction(raw: unknown): TaskAction {
   if (type === "tool") {
     const tool: unknown = obj["tool"];
     if (typeof tool !== "string" || !TOOL_NAME_RE.test(tool)) {
-      throw new ToolError("invalid_input", "نام ابزار نامعتبر است.");
+      throw new ToolError("invalid_input", "Invalid tool name.");
     }
     if (FORBIDDEN_NESTED_TOOLS.has(tool)) {
       // A task that spawns tasks would grow without bound: every run adds a
       // row, each new row runs and adds another. The per-owner cap would stop
       // it eventually, but "eventually fills the table then fails forever" is
       // not a feature. Refuse it up front instead.
-      throw new ToolError("invalid_input", "یک وظیفهٔ زمان‌بندی‌شده نمی‌تواند وظیفهٔ دیگری بسازد.");
+      throw new ToolError("invalid_input", "A scheduled task cannot create another task.");
     }
     const input: unknown = obj["input"] ?? {};
     if (typeof input !== "object" || input === null || Array.isArray(input)) {
-      throw new ToolError("invalid_input", "ورودی ابزار باید یک آبجکت باشد.");
+      throw new ToolError("invalid_input", "Tool input must be an object.");
     }
     return { type: "tool", tool, input: input as Record<string, unknown> };
   }
@@ -100,10 +100,10 @@ export function parseTaskAction(raw: unknown): TaskAction {
     const chatId: unknown = obj["chatId"];
     const text: unknown = obj["text"];
     if (typeof chatId !== "string" || chatId.length === 0 || chatId.length > MAX_CHAT_ID_LENGTH) {
-      throw new ToolError("invalid_input", "شناسهٔ چت نامعتبر است.");
+      throw new ToolError("invalid_input", "Invalid chat id.");
     }
     if (typeof text !== "string" || text.trim().length === 0 || text.length > MAX_MESSAGE_TEXT) {
-      throw new ToolError("invalid_input", "متن پیام باید بین ۱ تا ۲۰۰۰ کاراکتر باشد.");
+      throw new ToolError("invalid_input", "Message text must be 1 to 2000 characters.");
     }
     return { type: "message", chatId, text };
   }
@@ -112,22 +112,22 @@ export function parseTaskAction(raw: unknown): TaskAction {
     const chatId: unknown = obj["chatId"];
     const prompt: unknown = obj["prompt"];
     if (typeof chatId !== "string" || chatId.length === 0 || chatId.length > MAX_CHAT_ID_LENGTH) {
-      throw new ToolError("invalid_input", "شناسهٔ چت نامعتبر است.");
+      throw new ToolError("invalid_input", "Invalid chat id.");
     }
     if (typeof prompt !== "string" || prompt.trim().length === 0 || prompt.length > MAX_AGENT_PROMPT) {
-      throw new ToolError("invalid_input", "پرامپت ایجنت باید بین ۱ تا ۴۰۰۰ کاراکتر باشد.");
+      throw new ToolError("invalid_input", "Agent prompt must be 1 to 4000 characters.");
     }
     return { type: "agent", chatId, prompt };
   }
 
-  throw new ToolError("invalid_input", "نوع اکشن نامعتبر است؛ یکی از tool، message یا agent.");
+  throw new ToolError("invalid_input", "Invalid action type; one of tool, message or agent.");
 }
 
 /** Serialize a validated action for storage, enforcing the size cap. */
 export function serializeTaskAction(action: TaskAction): string {
   const json = JSON.stringify(action);
   if (new TextEncoder().encode(json).length > MAX_ACTION_BYTES) {
-    throw new ToolError("invalid_input", "اکشن بیش از حد بزرگ است.");
+    throw new ToolError("invalid_input", "The action is too large.");
   }
   return json;
 }
@@ -159,7 +159,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
   return {
     name: "schedule_task",
     description:
-      "یک وظیفهٔ زمان‌بندی‌شده با عبارت کرون بساز (فقط مالک). اکشن می‌تواند اجرای ابزار، ارسال پیام یا اجرای ایجنت باشد.",
+      "Create a scheduled task with a cron expression (owner only). The action can run a tool, send a message, or run an agent.",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [SCHEDULE_TASK_PERMISSION] },
@@ -169,20 +169,20 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
         name: {
           type: "string",
           required: true,
-          description: "نام کوتاه وظیفه.",
+          description: "Short task name.",
           minLength: 1,
           maxLength: MAX_NAME_LENGTH,
         },
         cron: {
           type: "string",
           required: true,
-          description: "عبارت کرون (۵ فیلد) یا @hourly/@daily/@weekly/@monthly.",
+          description: "Cron expression (5 fields) or @hourly/@daily/@weekly/@monthly.",
           minLength: 1,
           maxLength: 120,
         },
         timezone: {
           type: "string",
-          description: "منطقهٔ زمانی IANA؛ پیش‌فرض منطقهٔ زمانی ربات.",
+          description: "IANA timezone; defaults to the bot's timezone.",
           minLength: 1,
           maxLength: 64,
         },
@@ -190,11 +190,11 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
           type: "object",
           required: true,
           description:
-            "اکشن ساخت‌یافته: {type:\"tool\", tool, input} یا {type:\"message\", chatId, text} یا {type:\"agent\", chatId, prompt}.",
+            "Structured action: {type:\"tool\", tool, input} or {type:\"message\", chatId, text} or {type:\"agent\", chatId, prompt}.",
         },
         enabled: {
           type: "boolean",
-          description: "پیش‌فرض فعال است؛ false یعنی فعلاً اجرا نشود.",
+          description: "Enabled by default; false means do not run yet.",
         },
       },
     },
@@ -204,7 +204,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
 
       const name = input.name.trim();
       if (name.length === 0) {
-        throw new ToolError("invalid_input", "نام وظیفه خالی است.");
+        throw new ToolError("invalid_input", "Task name is empty.");
       }
 
       let schedule: CronSchedule;
@@ -213,7 +213,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
       } catch (err) {
         throw new ToolError(
           "invalid_input",
-          err instanceof CronError ? `عبارت کرون نامعتبر است: ${err.message}` : "عبارت کرون نامعتبر است.",
+          err instanceof CronError ? `Invalid cron expression: ${err.message}` : "Invalid cron expression.",
         );
       }
 
@@ -224,13 +224,13 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
       const actionJson = serializeTaskAction(action);
 
       if (deps.toolExists !== undefined && action.type === "tool" && !deps.toolExists(action.tool)) {
-        throw new ToolError("invalid_input", `ابزاری با نام «${action.tool}» وجود ندارد.`);
+        throw new ToolError("invalid_input", `No tool named "${action.tool}" exists.`);
       }
 
       if (deps.storage.countTasks(userId) >= MAX_TASKS_PER_OWNER) {
         throw new ToolError(
           "invalid_input",
-          "تعداد وظایف زمان‌بندی‌شده پر است؛ ابتدا چند مورد را حذف کن.",
+          "Too many scheduled tasks; delete some first.",
         );
       }
 
@@ -241,7 +241,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
       } catch (err) {
         throw new ToolError(
           "invalid_input",
-          err instanceof CronError ? `زمان‌بندی ناممکن است: ${err.message}` : "زمان‌بندی ناممکن است.",
+          err instanceof CronError ? `Impossible schedule: ${err.message}` : "Impossible schedule.",
         );
       }
 
@@ -286,7 +286,7 @@ export interface ListTasksOutput {
 export function createListTasksTool(deps: ScheduledTaskToolDeps): Tool<Record<string, never>, ListTasksOutput> {
   return {
     name: "list_tasks",
-    description: "وظایف زمان‌بندی‌شده را فهرست کن (فقط مالک).",
+    description: "List scheduled tasks (owner only).",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [LIST_TASKS_PERMISSION] },
@@ -329,7 +329,7 @@ export interface CancelTaskOutput {
 export function createCancelTaskTool(deps: ScheduledTaskToolDeps): Tool<CancelTaskInput, CancelTaskOutput> {
   return {
     name: "cancel_task",
-    description: "یک وظیفهٔ زمان‌بندی‌شده را با شناسه‌اش حذف کن (فقط مالک).",
+    description: "Delete a scheduled task by its id (owner only).",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [CANCEL_TASK_PERMISSION] },
@@ -339,7 +339,7 @@ export function createCancelTaskTool(deps: ScheduledTaskToolDeps): Tool<CancelTa
         id: {
           type: "integer",
           required: true,
-          description: "شناسهٔ وظیفه، از فهرست وظایف.",
+          description: "Task id, from the task list.",
           minimum: 1,
         },
       },
@@ -383,27 +383,27 @@ export function createScheduledTaskTools(
 function ownerOf(ctx: ToolContext, deps: ScheduledTaskToolDeps): string {
   const id = ctx.actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست.");
+    throw new ToolError("not_allowed", "Identity is unknown.");
   }
   if (!deps.isOwner(id)) {
-    throw new ToolError("not_allowed", "مدیریت وظایف زمان‌بندی‌شده فقط برای مالک است.");
+    throw new ToolError("not_allowed", "Scheduled task management is owner only.");
   }
   return id;
 }
 
-function assertTimezoneOrThrow(tz: string): void {
+/**
+ * Exported for tests: the empty check must come before the Intl check (an
+ * empty zone fails Intl first, which would make the empty-case branch
+ * unreachable and untestable).
+ */
+export function assertTimezoneOrThrow(tz: string): void {
+  if (tz.length === 0) {
+    throw new ToolError("invalid_input", "Timezone is empty.");
+  }
   try {
     new Intl.DateTimeFormat("en-US", { timeZone: tz });
   } catch {
-    throw new ToolError("invalid_input", `منطقهٔ زمانی نامعتبر است: ${tz}`);
-  }
-  if (tz.length === 0) {
-    throw new ToolError("invalid_input", "منطقهٔ زمانی خالی است.");
+    throw new ToolError("invalid_input", `Invalid timezone: ${tz}`);
   }
 }
 
-/** Format a stored task for a model-facing summary. */
-export function describeTask(r: ScheduledTaskRecord): string {
-  const state = r.enabled ? "فعال" : "غیرفعال";
-  return `#${r.id} — ${r.name} (${r.cronExpr}، ${r.timezone}، ${state}، اجرای بعدی: ${new Date(r.nextRunAtMs).toISOString()})`;
-}

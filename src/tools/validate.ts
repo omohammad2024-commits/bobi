@@ -14,7 +14,7 @@ import type { FieldSpec, ToolInput, ToolInputSpec } from "./types";
 /** Throws a ToolError("invalid_input") listing the offending field. */
 export function validateInput(spec: ToolInputSpec, raw: unknown): ToolInput {
   if (!isPlainObject(raw)) {
-    throw new ToolError("invalid_input", "ورودی ابزار باید یک شیء باشد.");
+    throw new ToolError("invalid_input", "Tool input must be an object.");
   }
 
   const rawObj = raw as Record<string, unknown>;
@@ -22,7 +22,7 @@ export function validateInput(spec: ToolInputSpec, raw: unknown): ToolInput {
 
   for (const key of Object.keys(rawObj)) {
     if (!allowed.has(key)) {
-      throw new ToolError("invalid_input", `فیلد ناشناس: ${key}.`, { field: key });
+      throw new ToolError("invalid_input", `Unknown field: ${key}.`, { field: key });
     }
   }
 
@@ -32,14 +32,16 @@ export function validateInput(spec: ToolInputSpec, raw: unknown): ToolInput {
 
     if (value === undefined) {
       if (fs.required) {
-        throw new ToolError("invalid_input", `فیلد الزامی نیست: ${field}.`, { field });
+        // NOTE: the message used to read "not required" here — a wrong
+        // message for a missing REQUIRED field. Fixed (audit, Oct 2026).
+        throw new ToolError("invalid_input", `Missing required field: ${field}.`, { field });
       }
       continue;
     }
 
     if (value === null) {
       if (fs.nullable) continue;
-      throw new ToolError("invalid_input", `فیلد نمی‌تواند خالی باشد: ${field}.`, { field });
+      throw new ToolError("invalid_input", `Field must not be null: ${field}.`, { field });
     }
 
     out[field] = checkField(field, fs, value);
@@ -58,7 +60,7 @@ function checkField(field: string, fs: FieldSpec, value: unknown): unknown {
       return checkInteger(field, fs, value);
     case "boolean":
       if (typeof value !== "boolean") {
-        throw new ToolError("invalid_input", `فیلد باید بولی باشد: ${field}.`, { field });
+        throw new ToolError("invalid_input", `Field must be a boolean: ${field}.`, { field });
       }
       return value;
     case "enum":
@@ -69,7 +71,7 @@ function checkField(field: string, fs: FieldSpec, value: unknown): unknown {
       // Passed through as-is: the consumer validates it. Only the shape is
       // checked here, so a non-object cannot slip through as one.
       if (!isPlainObject(value)) {
-        throw new ToolError("invalid_input", `فیلد باید شیء باشد: ${field}.`, { field });
+        throw new ToolError("invalid_input", `Field must be an object: ${field}.`, { field });
       }
       return value;
   }
@@ -77,13 +79,13 @@ function checkField(field: string, fs: FieldSpec, value: unknown): unknown {
 
 function checkString(field: string, fs: FieldSpec, value: unknown): string {
   if (typeof value !== "string") {
-    throw new ToolError("invalid_input", `فیلد باید رشته باشد: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field must be a string: ${field}.`, { field });
   }
   if (fs.minLength !== undefined && value.length < fs.minLength) {
-    throw new ToolError("invalid_input", `فیلد خیلی کوتاه است: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field is too short: ${field}.`, { field });
   }
   if (fs.maxLength !== undefined && value.length > fs.maxLength) {
-    throw new ToolError("invalid_input", `فیلد خیلی طولانی است: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field is too long: ${field}.`, { field });
   }
   return value;
 }
@@ -95,16 +97,16 @@ function checkNumber(
   requireInteger = false,
 ): number {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new ToolError("invalid_input", `فیلد باید عدد باشد: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field must be a number: ${field}.`, { field });
   }
   if (requireInteger && !Number.isInteger(value)) {
-    throw new ToolError("invalid_input", `فیلد باید عدد صحیح باشد: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field must be an integer: ${field}.`, { field });
   }
   if (fs.minimum !== undefined && value < fs.minimum) {
-    throw new ToolError("invalid_input", `مقدار کمتر از حد مجاز است: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Value is below the allowed minimum: ${field}.`, { field });
   }
   if (fs.maximum !== undefined && value > fs.maximum) {
-    throw new ToolError("invalid_input", `مقدار بیشتر از حد مجاز است: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Value is above the allowed maximum: ${field}.`, { field });
   }
   return value;
 }
@@ -115,20 +117,26 @@ function checkInteger(field: string, fs: FieldSpec, value: unknown): number {
 
 function checkEnum(field: string, fs: FieldSpec, value: unknown): string {
   if (typeof value !== "string") {
-    throw new ToolError("invalid_input", `فیلد باید رشته باشد: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field must be a string: ${field}.`, { field });
   }
   if (!fs.choices?.includes(value)) {
-    throw new ToolError("invalid_input", `مقدار نامعتبر برای ${field}.`, { field });
+    // Name the allowed values: the caller is usually a model that can pick
+    // a valid one once it sees the list.
+    const expected =
+      fs.choices !== undefined && fs.choices.length > 0
+        ? `: expected one of ${fs.choices.map((c) => JSON.stringify(c)).join(", ")}`
+        : "";
+    throw new ToolError("invalid_input", `Invalid value for ${field}${expected}.`, { field });
   }
   return value;
 }
 
 function checkArray(field: string, fs: FieldSpec, value: unknown): unknown[] {
   if (!Array.isArray(value)) {
-    throw new ToolError("invalid_input", `فیلد باید آرایه باشد: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Field must be an array: ${field}.`, { field });
   }
   if (fs.maxItems !== undefined && value.length > fs.maxItems) {
-    throw new ToolError("invalid_input", `آرایه خیلی بلند است: ${field}.`, { field });
+    throw new ToolError("invalid_input", `Array is too long: ${field}.`, { field });
   }
   return value;
 }

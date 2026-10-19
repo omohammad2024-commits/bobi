@@ -1,40 +1,52 @@
 /* BOBI Mini App · section: groups
  * Owner-only: group list → tap → detail with group-assistant settings,
- * group digest config, and auto-moderation (rendered dynamically from the
- * backend's schema). ctx.api only. */
+ * group digest config, and auto-moderation. ctx.api only.
+ *
+ * Backend contract (POST /miniapp/api/<endpoint>, {initData, ...}):
+ *   groups.list          {} -> { ok, groups: [{ chatId, assistantEnabled,
+ *                            digestEnabled, moderationEnabled }] }
+ *   groups.assistant     { groupId } -> { ok, groupId, config: { enabled,
+ *                            replyOnlyWhenCalled, summaryMaxMessages,
+ *                            pollsAllowed, digestEnabled, digestTime,
+ *                            smartSummary } }
+ *   groups.assistant.set { groupId, enabled, smart? } -> { ok, groupId, config }
+ *                            (only enabled + smart are settable here)
+ *   groups.digests       { groupId } -> { ok, chatId, assistantEnabled,
+ *                            digestEnabled, digestTime, task: { exists, enabled,
+ *                            cron, nextRunAtMs, lastRunAtMs?, lastStatus? } }
+ *   groups.digests.set   { chatId, digestEnabled, time? } -> { ok, chatId,
+ *                            digestEnabled, time?, taskId? }
+ *   moderation.get       { groupId } -> { ok, groupId, config: { enabled,
+ *                            antiSpam, linkPolicy, profanityFilter,
+ *                            floodWindowSec, floodMaxMessages } }
+ *   moderation.set       { groupId, ...patch } -> { ok, groupId, config }
+ */
 (function () {
   "use strict";
 
-  function RS(fa, en) {
+  function RS(en) {
     if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
-      window.__registerSectionStrings(fa, en);
+      window.__registerSectionStrings(en);
     }
   }
 
-  RS(
-    {
-      "grp.list.title": "گروه‌ها",
-      "grp.assistant.title": "دستیار گروه",
-      "grp.assistant.desc": "پاسخ‌گویی هوشمند در گروه (فقط با اجازهٔ شما)",
-      "grp.digests.title": "دایجست گروه",
-      "grp.mod.title": "مدیریت خودکار",
-      "grp.members": "عضو",
-      "grp.saved": "ذخیره شد ✓",
-      "grp.empty": "گروهی ثبت نشده است",
-      "grp.open": "باز کردن"
-    },
-    {
+  RS({
+      "grp.sub": "Assistant, digests and moderation per group.",
       "grp.list.title": "Groups",
       "grp.assistant.title": "Group assistant",
-      "grp.assistant.desc": "Smart replies in the group (only with your opt-in)",
+      "grp.assistant.sub": "Smart replies in the group",
+      "grp.assistant.desc": "BOBI replies in the group only with your opt-in.",
+      "grp.assistant.enabled": "Assistant mode",
+      "grp.assistant.smart": "Smart summaries (LLM)",
       "grp.digests.title": "Group digest",
+      "grp.digests.sub": "Daily summary to your inbox",
+      "grp.digests.enabled": "Daily digest",
+      "grp.digests.time": "Digest time",
       "grp.mod.title": "Auto moderation",
-      "grp.members": "members",
-      "grp.saved": "Saved ✓",
-      "grp.empty": "No groups yet",
-      "grp.open": "Open"
-    }
-  );
+      "grp.mod.sub": "Spam, links and flood control",
+      "grp.saved": "Saved",
+      "grp.empty": "No groups yet"
+    });
 
   var selected = null; // selected group object
 
@@ -44,48 +56,22 @@
     });
   }
 
-  function lang() {
-    return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "fa";
-  }
-
   function humanize(k) {
     return String(k).replace(/_/g, " ").replace(/([a-z])([A-Z])/g, "$1 $2");
   }
 
-  function styleTag() {
-    return (
-      "<style>" +
-      ".mx-spin{width:28px;height:28px;margin:18px auto;border:3px solid var(--border,#e2e2e2);border-top-color:var(--accent,#2a7fff);border-radius:50%;animation:mxrot 0.8s linear infinite}" +
-      "@keyframes mxrot{to{transform:rotate(360deg)}}" +
-      ".mx-center{text-align:center;padding:26px 12px;color:var(--muted,#777)}" +
-      ".mx-row{display:flex;align-items:center;justify-content:space-between;gap:10px}" +
-      ".mx-muted{font-size:12px;color:var(--muted,#777)}" +
-      ".mx-secttl{font-weight:700;margin:2px 0 8px;font-size:15px}" +
-      ".mx-gitem{display:flex;align-items:center;justify-content:space-between;gap:10px;width:100%;text-align:start;min-height:60px;background:var(--card,#fff);border:1px solid var(--border,#e2e2e2);border-radius:12px;padding:12px 14px;margin-bottom:8px;font-size:15px}" +
-      ".mx-toggle{min-width:64px;min-height:44px;border-radius:22px;border:1px solid var(--border,#e2e2e2);background:var(--muted-bg,#eee);font-size:13px}" +
-      ".mx-toggle[aria-checked=true]{background:var(--accent,#2a7fff);color:#fff;border-color:var(--accent,#2a7fff)}" +
-      ".mx-field{margin:10px 0}" +
-      ".mx-field label{display:block;font-size:13px;margin-bottom:6px;color:var(--muted,#555)}" +
-      ".mx-field .input,.mx-field select,.mx-field textarea{min-height:44px;width:100%}" +
-      ".mx-field textarea{min-height:80px}" +
-      ".mx-kv{font-size:12px;color:var(--muted,#777);word-break:break-all}" +
-      ".mx-btnrow{display:flex;gap:8px;margin-top:10px}" +
-      ".mx-btnrow .btn{flex:1;min-height:44px}" +
-      ".mx-back{min-height:44px;margin-bottom:10px}" +
-      "</style>"
-    );
-  }
-
   function loadingHtml(t) {
-    return '<div class="mx-center"><div class="mx-spin"></div><div>' + esc(t("state.loading")) + "</div></div>";
+    return '<div class="loading-state"><div class="spinner"></div><div>' + esc(t("state.loading")) + "</div></div>";
   }
 
   function errorHtml(t, err) {
+    var I = window.AppIcons.svg;
     return (
-      '<div class="card mx-center"><div>⚠️ ' + esc(t("state.error")) + "</div>" +
-      (err && err.message ? '<div class="mx-kv">' + esc(err.message) + "</div>" : "") +
-      '<div style="margin-top:12px"><button class="btn" data-retry style="min-height:44px;min-width:120px">' +
-      esc(t("action.retry")) + "</button></div></div>"
+      '<div class="card"><div class="error-state"><div class="error-ic">' + I("alert") + "</div>" +
+      "<p>" + esc(t("state.error")) + "</p>" +
+      (err && err.message ? '<div class="mx-kv" style="margin-bottom:12px">' + esc(err.message) + "</div>" : "") +
+      '<button class="btn btn-primary" data-retry>' + I("refresh") + esc(t("action.retry")) + "</button>" +
+      "</div></div>"
     );
   }
 
@@ -97,6 +83,7 @@
   }
 
   function wireToggle(btn, t) {
+    if (!btn) return;
     btn.addEventListener("click", function () {
       var on = btn.getAttribute("aria-checked") !== "true";
       btn.setAttribute("aria-checked", on ? "true" : "false");
@@ -104,135 +91,117 @@
     });
   }
 
-  /* --- Dynamic schema-driven form ---------------------------------------
-   * Accepts either {schema:{fields:[{key,label,type,options,hint}]}, values:{}}
-   * or a flat values object (falls back to type inference). Returns
-   * {html, read(root), wire(root)}. */
-  function schemaForm(payload, t, prefix) {
-    var schema = payload && payload.schema ? payload.schema : null;
-    var values = (payload && payload.values) || payload || {};
-    if (schema && !schema.fields && Array.isArray(schema)) schema = { fields: schema };
-    var fields = [];
-    var html;
+  function cardHead(I, ic, title, sub, icCls) {
+    return (
+      '<div class="card-head"><div class="card-icon' + (icCls ? " " + icCls : "") + '">' + I(ic) + "</div>" +
+      "<div><h2 class=\"card-title\">" + esc(title) + "</h2>" +
+      (sub ? '<p class="card-sub">' + esc(sub) + "</p>" : "") + "</div></div>"
+    );
+  }
 
-    if (schema && Array.isArray(schema.fields) && schema.fields.length) {
-      html = schema.fields
-        .map(function (f, i) {
-          var key = f.key || f.name;
-          var id = prefix + "-" + i;
-          var label = f.label || humanize(key);
-          var v = values[key];
-          if (f.type === "boolean" || typeof v === "boolean") {
-            fields.push({ id: id, key: key, type: "bool" });
-            return (
-              '<div class="mx-field"><div class="mx-row"><label for="' + id + '">' + esc(label) +
-              (f.hint ? '<div class="mx-muted">' + esc(f.hint) + "</div>" : "") + "</label>" +
-              toggleHtml(!!v, t, id) + "</div></div>"
-            );
-          }
-          if (f.type === "select" && Array.isArray(f.options)) {
-            fields.push({ id: id, key: key, type: "select" });
-            return (
-              '<div class="mx-field"><label for="' + id + '">' + esc(label) + "</label>" +
-              '<select class="input" id="' + id + '">' +
-              f.options
-                .map(function (o) {
-                  var ov = typeof o === "string" ? o : o.value;
-                  var ol = typeof o === "string" ? o : o.label || o.value;
-                  return '<option value="' + esc(ov) + '"' + (String(v) === String(ov) ? " selected" : "") + ">" + esc(ol) + "</option>";
-                })
-                .join("") + "</select></div>"
-            );
-          }
-          var type = f.type === "number" || typeof v === "number" ? "number" : "text";
-          if (f.type === "time" || (/time|hour/i.test(key) && typeof v === "string" && /^\d{1,2}:\d{2}/.test(v))) type = "time";
-          if (f.type === "textarea") {
-            fields.push({ id: id, key: key, type: "textarea" });
-            return (
-              '<div class="mx-field"><label for="' + id + '">' + esc(label) + "</label>" +
-              '<textarea class="input" id="' + id + '">' + esc(v !== undefined ? v : "") + "</textarea></div>"
-            );
-          }
-          fields.push({ id: id, key: key, type: type });
+  /* Moderation config form: explicit fields (the backend accepts exactly
+   * these six keys). linkPolicy renders as a select. */
+  var MOD_FIELDS = [
+    { key: "enabled", type: "bool" },
+    { key: "antiSpam", type: "bool" },
+    { key: "linkPolicy", type: "select", options: ["allow", "warn", "delete"] },
+    { key: "profanityFilter", type: "bool" },
+    { key: "floodWindowSec", type: "number" },
+    { key: "floodMaxMessages", type: "number" },
+  ];
+
+  function schemaForm(opts, t) {
+    var values = (opts && opts.values) || {};
+    var prefix = (opts && opts.prefix) || "mx";
+    var fields = MOD_FIELDS.filter(function (f) { return values[f.key] !== undefined; });
+    var html = fields
+      .map(function (f, i) {
+        var id = prefix + "-" + i;
+        var v = values[f.key];
+        var label = humanize(f.key);
+        if (f.type === "bool") {
           return (
-            '<div class="mx-field"><label for="' + id + '">' + esc(label) + "</label>" +
-            '<input class="input" id="' + id + '" type="' + type + '" value="' + esc(v !== undefined ? v : "") + '"/></div>'
+            '<div class="field"><div class="mx-row"><label for="' + id + '">' + esc(label) + "</label>" +
+            toggleHtml(!!v, t, id) + "</div></div>"
           );
-        })
-        .join("");
-    } else {
-      // Flat object fallback: infer controls from value types.
-      html = Object.keys(values)
-        .filter(function (k) { return typeof values[k] !== "object" || values[k] === null; })
-        .map(function (k, i) {
-          var v = values[k];
-          var id = prefix + "-" + i;
-          var label = humanize(k);
-          if (typeof v === "boolean") {
-            fields.push({ id: id, key: k, type: "bool" });
-            return (
-              '<div class="mx-field"><div class="mx-row"><label for="' + id + '">' + esc(label) + "</label>" +
-              toggleHtml(v, t, id) + "</div></div>"
-            );
-          }
-          var type = typeof v === "number" ? "number" : "text";
-          fields.push({ id: id, key: k, type: type });
+        }
+        if (f.type === "select") {
           return (
-            '<div class="mx-field"><label for="' + id + '">' + esc(label) + "</label>" +
-            '<input class="input" id="' + id + '" type="' + type + '" value="' + esc(v !== undefined ? v : "") + '"/></div>'
+            '<div class="field"><label for="' + id + '">' + esc(label) + "</label>" +
+            '<select class="input" id="' + id + '">' +
+            f.options
+              .map(function (o) {
+                return '<option value="' + esc(o) + '"' + (String(v) === o ? " selected" : "") + ">" + esc(o) + "</option>";
+              })
+              .join("") + "</select></div>"
           );
-        })
-        .join("");
-    }
+        }
+        return (
+          '<div class="field"><label for="' + id + '">' + esc(label) + "</label>" +
+          '<input class="input" id="' + id + '" type="number" value="' + esc(v !== undefined ? v : "") + '"/></div>'
+        );
+      })
+      .join("");
 
     return {
       html: html,
       wire: function (root) {
-        fields.forEach(function (f) {
+        fields.forEach(function (f, i) {
           if (f.type !== "bool") return;
-          var n = root.querySelector("#" + f.id);
-          if (n) wireToggle(n, t);
+          wireToggle(root.querySelector("#" + prefix + "-" + i), t);
         });
       },
       read: function (root) {
         var out = {};
-        fields.forEach(function (f) {
-          var n = root.querySelector("#" + f.id);
+        fields.forEach(function (f, i) {
+          var n = root.querySelector("#" + prefix + "-" + i);
           if (!n) return;
           if (f.type === "bool") out[f.key] = n.getAttribute("aria-checked") === "true";
           else if (f.type === "number") out[f.key] = Number(n.value);
           else out[f.key] = n.value;
         });
         return out;
-      }
+      },
     };
+  }
+
+  function metaChips(g, I) {
+    var chips = "";
+    if (g.assistantEnabled) chips += '<span class="meta-chip lit">' + I("bot") + "Assistant</span>";
+    if (g.digestEnabled) chips += '<span class="meta-chip lit">' + I("bell") + "Digest</span>";
+    if (g.moderationEnabled) chips += '<span class="meta-chip lit">' + I("shield") + "Mod</span>";
+    return chips ? '<div class="meta-chips">' + chips + "</div>" : "";
   }
 
   async function showList(el, ctx) {
     var t = ctx.t;
-    el.innerHTML = styleTag() + loadingHtml(t);
+    var I = window.AppIcons.svg;
+    el.innerHTML = ctx.pageHead("users", t("sec.groups"), t("grp.sub")) + loadingHtml(t);
     try {
       var r = await ctx.api("groups.list", {});
       var groups = r.groups || r.items || [];
       if (!groups.length) {
-        el.innerHTML = styleTag() + '<div class="mx-center">' + esc(t("grp.empty")) + "</div>";
+        el.innerHTML =
+          ctx.pageHead("users", t("sec.groups"), t("grp.sub")) +
+          '<div class="card"><div class="empty-state"><div class="empty-ic">' + I("users") + "</div>" +
+          '<p class="empty-title">' + esc(t("grp.empty")) + "</p></div></div>";
         return;
       }
-      el.innerHTML =
-        styleTag() +
-        '<div class="mx-secttl">👥 ' + esc(t("grp.list.title")) + "</div>" +
+      var html =
+        ctx.pageHead("users", t("sec.groups"), t("grp.sub")) +
         groups
           .map(function (g, i) {
-            var title = g.title || g.name || g.id;
-            var meta = [];
-            if (g.memberCount || g.members) meta.push(num(g.memberCount || g.members) + " " + t("grp.members"));
+            var chatId = g.chatId || "";
             return (
-              '<button class="mx-gitem" data-g="' + i + '"><span><strong>' + esc(title) + "</strong>" +
-              (meta.length ? '<div class="mx-muted">' + esc(meta.join(" · ")) + "</div>" : "") +
-              '</span><span>‹</span></button>'
+              '<button class="list-row" data-g="' + i + '">' +
+              window.AppIcons.avatar("G" + chatId) +
+              '<div class="list-main"><div class="list-title mono" dir="ltr">' + esc(chatId) + "</div>" +
+              metaChips(g, I) +
+              '</div><span class="chev">' + I("chevR") + "</span></button>"
             );
           })
           .join("");
+      el.innerHTML = html;
       Array.prototype.forEach.call(el.querySelectorAll("[data-g]"), function (b) {
         b.addEventListener("click", function () {
           selected = groups[Number(b.getAttribute("data-g"))];
@@ -240,69 +209,74 @@
         });
       });
     } catch (err) {
-      el.innerHTML = styleTag() + errorHtml(t, err);
+      el.innerHTML = ctx.pageHead("users", t("sec.groups"), t("grp.sub")) + errorHtml(t, err);
       var rb = el.querySelector("[data-retry]");
       if (rb) rb.addEventListener("click", function () { showList(el, ctx); });
     }
   }
 
-  function num(n) {
-    var v = Number(n);
-    if (!isFinite(v)) return String(n);
-    try {
-      return v.toLocaleString(lang() === "fa" ? "fa-IR" : "en-US");
-    } catch (e) {
-      return String(v);
-    }
-  }
-
   async function showDetail(el, ctx) {
     var t = ctx.t;
+    var I = window.AppIcons.svg;
     var g = selected;
     if (!g) { showList(el, ctx); return; }
-    var gid = g.id !== undefined ? g.id : g.groupId;
-    var title = g.title || g.name || gid;
-    el.innerHTML = styleTag() + loadingHtml(t);
+    var gid = g.chatId || "";
+    el.innerHTML = loadingHtml(t);
 
     var assistant = null, digests = null, moderation = null;
     try {
-      try { var ra = await ctx.api("groups.assistant", { groupId: gid }); assistant = ra.assistant || ra; } catch (e1) {}
-      try { var rd = await ctx.api("groups.digests", { groupId: gid }); digests = rd.digests || rd.digest || rd; } catch (e2) {}
-      try { var rm = await ctx.api("moderation.get", { groupId: gid }); moderation = rm.moderation || rm; } catch (e3) {}
+      try { var ra = await ctx.api("groups.assistant", { groupId: gid }); assistant = ra.config || null; } catch (e1) {}
+      try { var rd = await ctx.api("groups.digests", { groupId: gid }); digests = rd || null; } catch (e2) {}
+      try { var rm = await ctx.api("moderation.get", { groupId: gid }); moderation = rm.config || null; } catch (e3) {}
     } catch (err) {
-      el.innerHTML = styleTag() + errorHtml(t, err);
+      el.innerHTML = errorHtml(t, err);
       var rb = el.querySelector("[data-retry]");
       if (rb) rb.addEventListener("click", function () { showDetail(el, ctx); });
       return;
     }
 
-    var asstForm = assistant ? schemaForm(assistant, t, "asst") : null;
-    var digForm = digests ? schemaForm(digests, t, "dig") : null;
-    var modForm = moderation ? schemaForm(moderation, t, "mod") : null;
+    /* Assistant: the setter only accepts { enabled, smart } — render just
+     * those two toggles, never the whole config object. */
+    var asstHtml = assistant
+      ? '<div class="field"><div class="mx-row"><label for="mx-ga-enabled">' + esc(t("grp.assistant.enabled")) + "</label>" +
+        toggleHtml(!!assistant.enabled, t, "mx-ga-enabled") + "</div></div>" +
+        '<div class="field"><div class="mx-row"><label for="mx-ga-smart">' + esc(t("grp.assistant.smart")) + "</label>" +
+        toggleHtml(!!assistant.smartSummary, t, "mx-ga-smart") + "</div></div>"
+      : "";
+
+    /* Digest: { chatId, digestEnabled, time? } via groups.digests.set. */
+    var digHtml = digests
+      ? '<div class="field"><div class="mx-row"><label for="mx-gd-enabled">' + esc(t("grp.digests.enabled")) + "</label>" +
+        toggleHtml(!!digests.digestEnabled, t, "mx-gd-enabled") + "</div></div>" +
+        '<div class="field"><label for="mx-gd-time">' + esc(t("grp.digests.time")) + "</label>" +
+        '<input class="input" id="mx-gd-time" type="time" dir="ltr" value="' + esc(digests.digestTime || "") + '"/></div>'
+      : "";
+
+    var modForm = moderation ? schemaForm({ values: moderation, prefix: "mod" }, t) : null;
 
     el.innerHTML =
-      styleTag() +
-      '<button class="btn mx-back" data-back>‹ ' + esc(t("nav.back")) + "</button>" +
-      '<div class="mx-secttl">👥 ' + esc(title) + "</div>" +
-      (asstForm
-        ? '<div class="card"><div class="mx-secttl">🤖 ' + esc(t("grp.assistant.title")) + "</div>" +
-          '<div class="mx-muted" style="margin-bottom:6px">' + esc(t("grp.assistant.desc")) + "</div>" +
-          asstForm.html +
-          '<div class="mx-btnrow"><button class="btn" data-save-asst>' + esc(t("action.save")) + "</button></div></div>"
+      '<div class="subhead"><button type="button" class="btn btn-ghost btn-sm" data-back>' +
+      I("chevL") + esc(t("nav.back")) + "</button>" +
+      '<h2><span dir="ltr">' + esc(gid) + "</span></h2></div>" +
+      (asstHtml
+        ? '<div class="card">' + cardHead(I, "bot", t("grp.assistant.title"), t("grp.assistant.sub")) +
+          '<div class="note note-info">' + I("info") + "<span>" + esc(t("grp.assistant.desc")) + "</span></div>" +
+          asstHtml +
+          '<div class="mx-btnrow"><button class="btn btn-primary" data-save-asst>' + I("check") + esc(t("action.save")) + "</button></div></div>"
         : "") +
-      (digForm
-        ? '<div class="card"><div class="mx-secttl">📰 ' + esc(t("grp.digests.title")) + "</div>" +
-          digForm.html +
-          '<div class="mx-btnrow"><button class="btn" data-save-dig>' + esc(t("action.save")) + "</button></div></div>"
+      (digHtml
+        ? '<div class="card">' + cardHead(I, "bell", t("grp.digests.title"), t("grp.digests.sub"), "amber") +
+          digHtml +
+          '<div class="mx-btnrow"><button class="btn btn-primary" data-save-dig>' + I("check") + esc(t("action.save")) + "</button></div></div>"
         : "") +
       (modForm
-        ? '<div class="card"><div class="mx-secttl">🛡️ ' + esc(t("grp.mod.title")) + "</div>" +
+        ? '<div class="card">' + cardHead(I, "shield", t("grp.mod.title"), t("grp.mod.sub"), "green") +
           modForm.html +
-          '<div class="mx-btnrow"><button class="btn" data-save-mod>' + esc(t("action.save")) + "</button></div></div>"
+          '<div class="mx-btnrow"><button class="btn btn-primary" data-save-mod>' + I("check") + esc(t("action.save")) + "</button></div></div>"
         : "");
 
-    if (asstForm) asstForm.wire(el);
-    if (digForm) digForm.wire(el);
+    wireToggle(el.querySelector("#mx-ga-enabled"), t);
+    wireToggle(el.querySelector("#mx-gd-enabled"), t);
     if (modForm) modForm.wire(el);
 
     el.querySelector("[data-back]").addEventListener("click", function () {
@@ -310,30 +284,56 @@
       showList(el, ctx);
     });
 
-    function bindSave(sel, form, endpoint, extra) {
-      var btn = el.querySelector(sel);
-      if (!btn || !form) return;
-      btn.addEventListener("click", async function () {
-        btn.disabled = true;
-        try {
-          var params = form.read(el);
-          params.groupId = gid;
-          if (extra) for (var k in extra) params[k] = extra[k];
-          await ctx.api(endpoint, params);
-          ctx.toast(t("grp.saved"));
-        } catch (err) {
-          ctx.toast(t("toast.failed") + (err && err.message ? ": " + err.message : ""));
-        } finally {
-          btn.disabled = false;
-        }
+    async function saving(btn, fn) {
+      btn.disabled = true;
+      try {
+        await fn();
+        ctx.toast(t("grp.saved"), "ok");
+      } catch (err) {
+        ctx.toast((err && err.message) || t("toast.failed"), "err");
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    var asstBtn = el.querySelector("[data-save-asst]");
+    if (asstBtn && assistant) {
+      asstBtn.addEventListener("click", function () {
+        saving(asstBtn, function () {
+          return ctx.api("groups.assistant.set", {
+            groupId: gid,
+            enabled: el.querySelector("#mx-ga-enabled").getAttribute("aria-checked") === "true",
+            smart: el.querySelector("#mx-ga-smart").getAttribute("aria-checked") === "true",
+          });
+        });
       });
     }
 
-    // groups.assistant is a single endpoint: GET with {groupId}, SET by including values.
-    bindSave("[data-save-asst]", asstForm, "groups.assistant");
-    // groups.digests likewise: GET with {groupId}, SET by including values.
-    bindSave("[data-save-dig]", digForm, "groups.digests");
-    bindSave("[data-save-mod]", modForm, "moderation.set");
+    var digBtn = el.querySelector("[data-save-dig]");
+    if (digBtn && digests) {
+      digBtn.addEventListener("click", function () {
+        saving(digBtn, function () {
+          var params = {
+            chatId: gid,
+            digestEnabled: el.querySelector("#mx-gd-enabled").getAttribute("aria-checked") === "true",
+          };
+          var timeVal = el.querySelector("#mx-gd-time").value;
+          if (timeVal) params.time = timeVal;
+          return ctx.api("groups.digests.set", params);
+        });
+      });
+    }
+
+    var modBtn = el.querySelector("[data-save-mod]");
+    if (modBtn && modForm) {
+      modBtn.addEventListener("click", function () {
+        saving(modBtn, function () {
+          var params = modForm.read(el);
+          params.groupId = gid;
+          return ctx.api("moderation.set", params);
+        });
+      });
+    }
   }
 
   function render(el, ctx) {
@@ -344,7 +344,7 @@
 
   function boot() {
     if (window.App && typeof window.App.registerSection === "function") {
-      window.App.registerSection("groups", { titleKey: "sec.groups", icon: "👥", render: render });
+      window.App.registerSection("groups", { titleKey: "sec.groups", icon: "users", render: render });
     } else {
       document.addEventListener("DOMContentLoaded", boot, { once: true });
     }

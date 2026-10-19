@@ -1,45 +1,34 @@
 /* BOBI Mini App · section: usage
  * Owner-only: usage.report with 7/30-day period selector — stat cards
- * plus a simple daily bar chart (SVG, RTL-aware, no libs). ctx.api only. */
+ * plus a per-model breakdown table. ctx.api only.
+ *
+ * Backend contract (POST /miniapp/api/<endpoint>, {initData, ...}):
+ *   usage.report { days? } -> { ok, days, runs, inputTokens, outputTokens,
+ *                   estimatedUsd, byModel: [{ modelId, runs, inputTokens,
+ *                   outputTokens, estimatedUsd }] }
+ *   (the backend has NO daily breakdown — don't render one)
+ */
 (function () {
   "use strict";
 
-  function RS(fa, en) {
+  function RS(en) {
     if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
-      window.__registerSectionStrings(fa, en);
+      window.__registerSectionStrings(en);
     }
   }
 
-  RS(
-    {
-      "us.period7": "۷ روز",
-      "us.period30": "۳۰ روز",
-      "us.daily.title": "مصرف روزانه",
-      "us.empty": "داده‌ای برای این بازه نیست",
-      "us.k.messages": "پیام‌ها",
-      "us.k.tokens": "توکن‌ها",
-      "us.k.tokens_in": "توکن ورودی",
-      "us.k.tokens_out": "توکن خروجی",
-      "us.k.cost": "هزینه",
-      "us.k.cost_usd": "هزینه (دلار)",
-      "us.k.tool_calls": "فراخوانی ابزار",
-      "us.k.llm_calls": "فراخوانی مدل"
-    },
-    {
+  RS({
+      "us.sub": "Token usage and cost breakdown.",
       "us.period7": "7 days",
       "us.period30": "30 days",
-      "us.daily.title": "Daily usage",
-      "us.empty": "No data for this period",
-      "us.k.messages": "Messages",
-      "us.k.tokens": "Tokens",
-      "us.k.tokens_in": "Input tokens",
-      "us.k.tokens_out": "Output tokens",
-      "us.k.cost": "Cost",
-      "us.k.cost_usd": "Cost (USD)",
-      "us.k.tool_calls": "Tool calls",
-      "us.k.llm_calls": "Model calls"
-    }
-  );
+      "us.bymodel.title": "By model",
+      "us.bymodel.sub": "Runs, tokens and cost per model",
+      "us.k.runs": "Runs",
+      "us.k.inputTokens": "Input tokens",
+      "us.k.outputTokens": "Output tokens",
+      "us.k.costUsd": "Est. cost (USD)",
+      "us.empty": "No data for this period"
+    });
 
   var PERIOD = 7;
 
@@ -49,54 +38,34 @@
     });
   }
 
-  function lang() {
-    return (window.I18N && window.I18N.getLang && window.I18N.getLang()) || "fa";
-  }
-
-  function rtl() {
-    return document.documentElement && document.documentElement.dir === "rtl";
-  }
-
   function num(n) {
     var v = Number(n);
     if (!isFinite(v)) return "—";
     try {
-      return v.toLocaleString(lang() === "fa" ? "fa-IR" : "en-US");
+      return v.toLocaleString("en-US");
     } catch (e) {
       return String(v);
     }
   }
 
-  function styleTag() {
-    return (
-      "<style>" +
-      ".mx-spin{width:28px;height:28px;margin:18px auto;border:3px solid var(--border,#e2e2e2);border-top-color:var(--accent,#2a7fff);border-radius:50%;animation:mxrot 0.8s linear infinite}" +
-      "@keyframes mxrot{to{transform:rotate(360deg)}}" +
-      ".mx-center{text-align:center;padding:26px 12px;color:var(--muted,#777)}" +
-      ".mx-period{display:flex;gap:8px;margin-bottom:12px}" +
-      ".mx-period .btn{flex:1;min-height:44px}" +
-      ".mx-period .btn[aria-pressed=true]{background:var(--accent,#2a7fff);color:#fff;border-color:var(--accent,#2a7fff)}" +
-      ".mx-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:4px}" +
-      ".mx-stat{background:var(--card,#fff);border:1px solid var(--border,#e2e2e2);border-radius:12px;padding:14px 12px;text-align:center}" +
-      ".mx-stat b{display:block;font-size:22px;margin-bottom:2px}" +
-      ".mx-stat span{font-size:12px;color:var(--muted,#777)}" +
-      ".mx-secttl{font-weight:700;margin:2px 0 8px;font-size:15px}" +
-      ".mx-chart{width:100%;height:auto;display:block}" +
-      ".mx-kv{font-size:12px;color:var(--muted,#777);word-break:break-all}" +
-      "</style>"
-    );
+  function fmtCost(v) {
+    var n = Number(v);
+    if (!isFinite(n)) return "—";
+    return "$" + n.toFixed(4);
   }
 
   function loadingHtml(t) {
-    return '<div class="mx-center"><div class="mx-spin"></div><div>' + esc(t("state.loading")) + "</div></div>";
+    return '<div class="loading-state"><div class="spinner"></div><div>' + esc(t("state.loading")) + "</div></div>";
   }
 
   function errorHtml(t, err) {
+    var I = window.AppIcons.svg;
     return (
-      '<div class="card mx-center"><div>⚠️ ' + esc(t("state.error")) + "</div>" +
-      (err && err.message ? '<div class="mx-kv">' + esc(err.message) + "</div>" : "") +
-      '<div style="margin-top:12px"><button class="btn" data-retry style="min-height:44px;min-width:120px">' +
-      esc(t("action.retry")) + "</button></div></div>"
+      '<div class="card"><div class="error-state"><div class="error-ic">' + I("alert") + "</div>" +
+      "<p>" + esc(t("state.error")) + "</p>" +
+      (err && err.message ? '<div class="mx-kv" style="margin-bottom:12px">' + esc(err.message) + "</div>" : "") +
+      '<button class="btn btn-primary" data-retry>' + I("refresh") + esc(t("action.retry")) + "</button>" +
+      "</div></div>"
     );
   }
 
@@ -107,82 +76,89 @@
     return String(key).replace(/_/g, " ");
   }
 
-  /* Accept {stats:[{key,label,value}]} | {totals:{k:v}} shapes. */
+  /* Backend shape: flat { runs, inputTokens, outputTokens, estimatedUsd }.
+   * Keep the legacy {stats}|{totals} fallbacks for robustness. */
   function normStats(r, t) {
+    if (
+      r.runs !== undefined ||
+      r.inputTokens !== undefined ||
+      r.outputTokens !== undefined ||
+      r.estimatedUsd !== undefined
+    ) {
+      return [
+        { label: t("us.k.runs"), value: r.runs || 0, icon: "gauge", ic: "" },
+        { label: t("us.k.inputTokens"), value: r.inputTokens || 0, icon: "download", ic: "blue" },
+        { label: t("us.k.outputTokens"), value: r.outputTokens || 0, icon: "upload", ic: "green" },
+        { label: t("us.k.costUsd"), value: fmtCost(r.estimatedUsd), icon: "trend", ic: "amber", raw: true },
+      ];
+    }
     if (Array.isArray(r.stats)) {
       return r.stats.map(function (s) {
-        return { label: s.label || labelFor(s.key, t), value: s.value };
+        return { label: s.label || labelFor(s.key, t), value: s.value, icon: "chart", ic: "" };
       });
     }
     var src = r.totals || r.summary || null;
     if (src && typeof src === "object") {
       return Object.keys(src).map(function (k) {
-        return { label: labelFor(k, t), value: src[k] };
+        return { label: labelFor(k, t), value: src[k], icon: "chart", ic: "" };
       });
     }
     return [];
   }
 
-  /* Accept {daily:[{label|day|date, value|count|tokens}]} | {series:[...]} */
-  function normDaily(r) {
-    var arr = r.daily || r.series || r.days || [];
-    return arr
-      .map(function (d) {
-        var label = d.label || d.day || d.date || "";
-        var value = d.value !== undefined ? d.value : d.count !== undefined ? d.count : d.tokens;
-        return { label: String(label), value: Number(value) };
-      })
-      .filter(function (d) { return isFinite(d.value); });
-  }
-
-  function barsHtml(daily, t) {
-    if (!daily.length) return '<div class="mx-center">' + esc(t("us.empty")) + "</div>";
-    var W = 360, H = 170, padB = 26, padT = 10, padX = 8;
-    var max = Math.max.apply(null, daily.map(function (d) { return d.value; }));
-    if (max <= 0) max = 1;
-    var isRtl = rtl();
-    var n = daily.length;
-    var slot = (W - 2 * padX) / n;
-    var bw = Math.min(34, slot * 0.62);
-    var bars = daily
-      .map(function (d, i) {
-        var h = ((H - padB - padT) * d.value) / max;
-        var cx = padX + slot * (i + 0.5);
-        var x = isRtl ? W - cx - bw / 2 : cx - bw / 2;
-        var y = H - padB - h;
-        var short = d.label.length > 6 ? d.label.slice(0, 6) : d.label;
+  /* Backend shape: byModel: [{ modelId, runs, inputTokens, outputTokens, estimatedUsd }] */
+  function byModelHtml(rows, t) {
+    var I = window.AppIcons.svg;
+    if (!rows || !rows.length) return "";
+    var body = rows
+      .map(function (m) {
         return (
-          '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + bw.toFixed(1) + '" height="' + h.toFixed(1) + '" rx="4" fill="var(--accent,#2a7fff)" opacity="0.85"/>' +
-          '<text x="' + (isRtl ? W - cx : cx).toFixed(1) + '" y="' + (H - 8) + '" font-size="10" text-anchor="middle" fill="var(--muted,#777)">' + esc(short) + "</text>"
+          "<tr><td class=\"mono\" dir=\"ltr\">" + esc(m.modelId || "—") + "</td>" +
+          "<td>" + esc(num(m.runs)) + "</td>" +
+          "<td>" + esc(num((m.inputTokens || 0) + (m.outputTokens || 0))) + "</td>" +
+          "<td><strong>" + esc(fmtCost(m.estimatedUsd)) + "</strong></td></tr>"
         );
       })
       .join("");
-    return '<svg class="mx-chart" viewBox="0 0 ' + W + " " + H + '" role="img" aria-label="' + esc(t("us.daily.title")) + '">' + bars + "</svg>";
+    return (
+      '<div class="card"><div class="card-head">' +
+      '<div class="card-icon">' + I("cpu") + "</div>" +
+      "<div><h2 class=\"card-title\">" + esc(t("us.bymodel.title")) + "</h2>" +
+      '<p class="card-sub">' + esc(t("us.bymodel.sub")) + "</p></div></div>" +
+      '<div style="overflow-x:auto;margin:0 -16px;padding:0 16px"><table class="mx-table"><thead><tr>' +
+      "<th>Model</th><th>" + esc(t("us.k.runs")) + "</th><th>Tokens</th><th>" + esc(t("us.k.costUsd")) + "</th>" +
+      "</tr></thead><tbody>" + body + "</tbody></table></div></div>"
+    );
   }
 
   async function render(el, ctx) {
     var t = ctx.t;
+    var I = window.AppIcons.svg;
 
     async function load() {
-      el.innerHTML = styleTag() + periodHtml(t) + loadingHtml(t);
+      el.innerHTML = ctx.pageHead("trend", t("sec.usage"), t("us.sub")) + periodHtml(t) + loadingHtml(t);
       wirePeriod();
       var body = el.querySelector("[data-body]");
       try {
-        var r = await ctx.api("usage.report", { period: PERIOD });
+        var r = await ctx.api("usage.report", { days: PERIOD });
         var stats = normStats(r, t);
-        var daily = normDaily(r);
         var statsHtml = stats.length
-          ? '<div class="mx-stats">' +
+          ? '<div class="stat-grid">' +
             stats
               .map(function (s) {
-                return '<div class="mx-stat"><b>' + esc(num(s.value)) + "</b><span>" + esc(s.label) + "</span></div>";
+                var val = s.raw ? s.value : typeof s.value === "number" ? num(s.value) : s.value;
+                return (
+                  '<div class="stat-card"><div class="stat-top">' +
+                  '<div class="stat-ic' + (s.ic ? " " + s.ic : "") + '">' + I(s.icon || "chart") + "</div>" +
+                  "</div>" +
+                  '<div class="stat-value">' + esc(val) + "</div>" +
+                  '<div class="stat-label">' + esc(s.label) + "</div></div>"
+                );
               })
               .join("") +
             "</div>"
-          : '<div class="mx-center">' + esc(t("us.empty")) + "</div>";
-        body.innerHTML =
-          statsHtml +
-          '<div class="card"><div class="mx-secttl">' + esc(t("us.daily.title")) + "</div>" + barsHtml(daily, t) + "</div>";
+          : '<div class="card"><div class="mx-center">' + esc(t("us.empty")) + "</div></div>";
+        body.innerHTML = statsHtml + byModelHtml(r.byModel, t);
       } catch (err) {
         body.innerHTML = errorHtml(t, err);
         var b = body.querySelector("[data-retry]");
@@ -192,7 +168,7 @@
 
     function periodHtml(tt) {
       return (
-        '<div class="mx-period" role="group">' +
+        '<div class="mx-period" role="group" aria-label="Period">' +
         '<button class="btn" data-p="7" aria-pressed="' + (PERIOD === 7 ? "true" : "false") + '">' + esc(tt("us.period7")) + "</button>" +
         '<button class="btn" data-p="30" aria-pressed="' + (PERIOD === 30 ? "true" : "false") + '">' + esc(tt("us.period30")) + "</button>" +
         "</div><div data-body></div>"
@@ -216,7 +192,7 @@
 
   function boot() {
     if (window.App && typeof window.App.registerSection === "function") {
-      window.App.registerSection("usage", { titleKey: "sec.usage", icon: "📈", render: render });
+      window.App.registerSection("usage", { titleKey: "sec.usage", icon: "trend", render: render });
     } else {
       document.addEventListener("DOMContentLoaded", boot, { once: true });
     }

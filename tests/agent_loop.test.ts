@@ -195,7 +195,7 @@ describe("agent loop — budgets", () => {
     // that pairing.
     const toolMsgs = provider.requests[1]!.messages.filter((m) => m.role === "tool");
     expect(toolMsgs).toHaveLength(3);
-    expect(toolMsgs[2]!.content).toContain("سقف");
+    expect(toolMsgs[2]!.content).toContain("tool call budget exhausted");
   });
 
   test("a run whose wall clock ran out still answers instead of timing out", async () => {
@@ -434,7 +434,7 @@ describe("agent loop — untrusted tool output", () => {
 
     const toolMsg = provider.requests[1]!.messages.find((m) => m.role === "tool")!;
     expect(toolMsg.content.length).toBeLessThan(9_000);
-    expect(toolMsg.content).toContain("کوتاه شد");
+    expect(toolMsg.content).toContain("(truncated)");
   });
 });
 
@@ -604,6 +604,6 @@ describe("buildSystemPrompt", () => {
 
   test("no tools means the model is told to answer from its own knowledge", () => {
     const text = buildSystemPrompt({ tools: [], now, timezone: "UTC" });
-    expect(text).toContain("هیچ ابزاری");
+    expect(text).toContain("No tools available");
   });
 });

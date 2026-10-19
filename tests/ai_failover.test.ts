@@ -339,7 +339,7 @@ describe("failover enabled", () => {
     const h = build();
     h.storage.setFailoverSettings({ enabled: true, maxAttempts: 3 });
     // No active selection and no candidates at all.
-    await expect(h.gateway.complete(REQUEST)).rejects.toThrow(/تنظیم نشده/);
+    await expect(h.gateway.complete(REQUEST)).rejects.toThrow(/No active provider/);
     h.storage.close();
   });
 });
@@ -502,7 +502,7 @@ describe("edit-provider flow", () => {
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_edit", providerId: p.data }));
     // The form was rendered, and the store is unchanged so far.
-    expect(c.sent[0]?.text).toContain("ویرایش پروایدر");
+    expect(c.sent[0]?.text).toContain("Edit provider");
     expect(h.storage.getProvider(p.data)?.label).toBe("قدیمی");
 
     const c2 = owner();
@@ -571,7 +571,7 @@ describe("edit-provider flow", () => {
 
     // Refused, the stored endpoint is unchanged, and the reason is shown.
     expect(h.storage.getProvider(p.data)?.baseUrl).toBe("https://a.invalid/v1");
-    expect(c2.sent[0]?.text).toContain("پروایدر فعال است");
+    expect(c2.sent[0]?.text).toContain("is active");
     h.storage.close();
   });
 

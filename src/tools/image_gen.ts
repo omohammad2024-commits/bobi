@@ -106,13 +106,13 @@ const mediaBytes = new WeakMap<object, string>();
 
 export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, ImageGenOutput> {
   if (!imageGenConfigured(deps.baseUrl)) {
-    throw new ToolError("disabled", "سرویس ساخت تصویر پیکربندی نشده است.");
+    throw new ToolError("disabled", "Image generation is not configured.");
   }
 
   return {
     name: "generate_image",
     description:
-      "ساخت یک تصویر از روی توصیف متنی. وقتی کاربر تصویری می‌خواهد که وجود ندارد، از این ابزار استفاده کن؛ نتیجه را کاربر می‌بیند.",
+      "Generate an image from a text description. Use it when the user wants an image that does not exist; the user sees the result.",
     enabled: true,
     permission: { requires: [GENERATE_IMAGE_PERMISSION] },
     toolset: "media",
@@ -121,13 +121,13 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
         prompt: {
           type: "string",
           required: true,
-          description: "توصیف تصویری که باید ساخته شود.",
+          description: "Description of the image to generate.",
           minLength: 1,
           maxLength: 1000,
         },
         size: {
           type: "enum",
-          description: `ابعاد تصویر (پیش‌فرض ${DEFAULT_SIZE}).`,
+          description: `Image size (default ${DEFAULT_SIZE}).`,
           choices: [...SIZES],
         },
       },
@@ -142,12 +142,12 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
     async run(input: ImageGenInput, ctx: ToolContext): Promise<ImageGenOutput> {
       const prompt = input.prompt.trim();
       if (prompt.length === 0) {
-        throw new ToolError("invalid_input", "توصیف تصویر خالی است.");
+        throw new ToolError("invalid_input", "Image prompt is empty.");
       }
       if (prompt.length > 1000) {
         // Defence in depth: the field spec caps this first; a direct caller
         // bypassing validation still cannot smuggle a longer prompt through.
-        throw new ToolError("invalid_input", "توصیف تصویر بیش از حد طولانی است.");
+        throw new ToolError("invalid_input", "Image prompt is too long.");
       }
       const size: ImageSize = input.size ?? DEFAULT_SIZE;
 
@@ -159,9 +159,9 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
         deps.resolver !== undefined ? { resolver: deps.resolver } : {},
       ).catch((err: unknown) => {
         if (err instanceof AiError) {
-          throw new ToolError("invalid_input", "نشانی سرویس تصویرسازی مجاز نیست.");
+          throw new ToolError("invalid_input", "The image service URL is not allowed.");
         }
-        throw new ToolError("internal", "بررسی نشانی سرویس تصویرسازی ناموفق بود.");
+        throw new ToolError("internal", "Checking the image service URL failed.");
       });
 
       const body = JSON.stringify({
@@ -214,11 +214,11 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
         if (err instanceof AiError) {
           throw new ToolError(mapAiError(err), messageFor(mapAiError(err)));
         }
-        throw new ToolError("internal", "ساخت تصویر ناموفق بود.");
+        throw new ToolError("internal", "Image generation failed.");
       }
 
       if (status >= 300 && status < 400) {
-        throw new ToolError("invalid_result", "سرویس تصویرسازی به آدرس دیگری ارجاع داد.");
+        throw new ToolError("invalid_result", "The image service redirected to another address.");
       }
       if (status < 200 || status >= 300) {
         throw statusToError(status);
@@ -241,23 +241,23 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
 /** Map an HTTP status onto the tool layer's categories. */
 function statusToError(status: number): ToolError {
   if (status === 401 || status === 403) {
-    return new ToolError("not_allowed", "کلید سرویس تصویرسازی معتبر نیست.");
+    return new ToolError("not_allowed", "The image service key is not valid.");
   }
   if (status === 408) {
-    return new ToolError("timeout", "ساخت تصویر طول کشید و لغو شد.");
+    return new ToolError("timeout", "Image generation timed out.");
   }
   if (status === 429) {
     // Back off rather than hammer the service: the agent loop reads
     // "overloaded" as "retry later", not "retry now".
-    return new ToolError("overloaded", "سرویس تصویرسازی شلوغ است؛ کمی بعد دوباره تلاش کن.");
+    return new ToolError("overloaded", "The image service is busy; try again shortly.");
   }
   if (status === 400 || status === 404 || status === 422) {
-    return new ToolError("invalid_input", "درخواست ساخت تصویر نامعتبر بود.");
+    return new ToolError("invalid_input", "The image generation request was invalid.");
   }
   if (status >= 500) {
-    return new ToolError("internal", "سرویس تصویرسازی در دسترس نیست.");
+    return new ToolError("internal", "The image service is unavailable.");
   }
-  return new ToolError("internal", "ساخت تصویر ناموفق بود.");
+  return new ToolError("internal", "Image generation failed.");
 }
 
 /** Map a transport-level AiError onto the tool layer's categories. */
@@ -280,15 +280,15 @@ function mapAiError(err: AiError): ToolError["kind"] {
 function messageFor(kind: ToolError["kind"]): string {
   switch (kind) {
     case "timeout":
-      return "ساخت تصویر طول کشید و لغو شد.";
+      return "Image generation timed out.";
     case "overloaded":
-      return "سرویس تصویرسازی شلوغ است؛ کمی بعد دوباره تلاش کن.";
+      return "The image service is busy; try again shortly.";
     case "invalid_result":
-      return "پاسخ سرویس تصویرسازی قابل خواندن نبود.";
+      return "The image service response could not be read.";
     case "not_allowed":
-      return "کلید سرویس تصویرسازی معتبر نیست.";
+      return "The image service key is not valid.";
     default:
-      return "ساخت تصویر ناموفق بود.";
+      return "Image generation failed.";
   }
 }
 
@@ -303,31 +303,31 @@ function parseGenerationsResponse(rawBody: string): { b64: string; revisedPrompt
   try {
     parsed = JSON.parse(rawBody);
   } catch {
-    throw new ToolError("invalid_result", "پاسخ سرویس تصویرسازی قابل خواندن نبود.");
+    throw new ToolError("invalid_result", "The image service response could not be read.");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new ToolError("invalid_result", "پاسخ سرویس تصویرسازی قابل خواندن نبود.");
+    throw new ToolError("invalid_result", "The image service response could not be read.");
   }
   const data = (parsed as Record<string, unknown>)["data"];
   if (!Array.isArray(data) || data.length === 0) {
-    throw new ToolError("invalid_result", "سرویس تصویرسازی تصویری برنگرداند.");
+    throw new ToolError("invalid_result", "The image service returned no image.");
   }
   const first = data[0];
   if (typeof first !== "object" || first === null || Array.isArray(first)) {
-    throw new ToolError("invalid_result", "پاسخ سرویس تصویرسازی قابل خواندن نبود.");
+    throw new ToolError("invalid_result", "The image service response could not be read.");
   }
   const rec = first as Record<string, unknown>;
   const b64 = rec["b64_json"];
   if (typeof b64 !== "string" || b64.length === 0) {
     throw new ToolError(
       "invalid_result",
-      "سرویس تصویرسازی تصویر را در قالب مورد انتظار برنگرداند.",
+      "The image service did not return the image in the expected format.",
     );
   }
   // Sanity cap: pinnedFetch already bounds the body at 8MB, so this only
   // rejects a response whose data field is implausibly large.
   if (b64.length > 12 * 1024 * 1024) {
-    throw new ToolError("invalid_result", "حجم تصویر برگشتی بیش از حد مجاز است.");
+    throw new ToolError("invalid_result", "The returned image is too large.");
   }
   const revised = rec["revised_prompt"];
   return {

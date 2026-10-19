@@ -154,7 +154,7 @@ export function createToolSearchTool(
   return {
     name: TOOL_SEARCH_TOOL_NAME,
     description:
-      "ابزارها را با کلمه‌کلیدی جستجو کن؛ وقتی ابزاری که لازم داری در فهرست اصلی نیست، نام، توضیح و ورودی‌هایش را پیدا کن و بعد با نامش صدایش بزن.",
+      "Search tools by keyword; when the tool you need is not in the main list, find its name, description and inputs, then call it by name.",
     enabled: true,
     permission: { requires: [TOOL_SEARCH_PERMISSION] },
     toolset: "system",
@@ -163,14 +163,14 @@ export function createToolSearchTool(
         query: {
           type: "string",
           required: true,
-          description: "کلمه یا عبارت جستجو، مثل «یادآور» یا «عکس».",
+          description: "Search word or phrase, e.g. \"reminder\" or \"image\".",
           minLength: 1,
           maxLength: TOOL_SEARCH_MAX_QUERY,
         },
         limit: {
           type: "integer",
           required: false,
-          description: "حداکثر تعداد نتیجه (پیش‌فرض ۵).",
+          description: "Maximum number of results (default 5).",
           minimum: 1,
           maximum: TOOL_SEARCH_MAX_LIMIT,
         },

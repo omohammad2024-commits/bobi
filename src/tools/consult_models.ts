@@ -1,6 +1,6 @@
 /**
  * consult_models — ask up to three configured models the same question in
- * parallel, then synthesize their answers into one Persian reply with the
+ * parallel, then synthesize their answers into one English reply with the
  * primary model.
  *
  * Pipeline: allowlist the requested models → runMixture fan-out (per-model
@@ -82,7 +82,7 @@ export interface ConsultModelsOutput {
   ok: true;
   /** Models that actually produced an answer, in consultation order. */
   modelsUsed: string[];
-  /** The synthesized Persian answer. */
+  /** The synthesized English answer. */
   answer: string;
 }
 
@@ -101,8 +101,8 @@ export function createConsultModelsTool(
   return {
     name: CONSULT_MODELS_TOOL_NAME,
     description:
-      "مشورت هم‌زمان با حداکثر ۳ مدل پیکربندی‌شده و ترکیب پاسخ‌ها به یک جواب فارسی دقیق. " +
-      "پرسش‌وجو گران است (هر مدل یک فراخوانی کامل + یک ترکیب)؛ برای سؤال‌های مهم که ارزش چند دیدگاه را دارد استفاده کن.",
+      "Consult up to 3 configured models at once and combine their answers into one precise answer. " +
+      "Querying is expensive (one full call per model + one synthesis); use it for important questions worth multiple perspectives.",
     enabled: true,
     permission: { requires: [CONSULT_MODELS_PERMISSION] },
     // Withheld from public actors by the authorization bridge.
@@ -117,14 +117,14 @@ export function createConsultModelsTool(
         question: {
           type: "string",
           required: true,
-          description: "سؤالی که از همهٔ مدل‌ها پرسیده می‌شود.",
+          description: "The question asked of every model.",
           minLength: 1,
           maxLength: 2000,
         },
         models: {
           type: "array",
           description:
-            "شناسهٔ مدل‌ها (حداکثر ۳)؛ فقط مدل‌های پیکربندی‌شده پذیرفته می‌شوند. خالی یعنی سه مدل اول.",
+            "Model ids (max 3); only configured models are accepted. Empty means the first three.",
           maxItems: CONSULT_MODELS_MAX,
         },
       },
@@ -133,13 +133,13 @@ export function createConsultModelsTool(
     async run(input: ConsultModelsInput, ctx: ToolContext): Promise<ConsultModelsOutput> {
       const question = input.question.trim();
       if (question.length === 0) {
-        throw new ToolError("invalid_input", "سؤال خالی است.");
+        throw new ToolError("invalid_input", "The question is empty.");
       }
 
       const configured = deps.listConfiguredModels();
       const requested = input.models ?? configured.slice(0, CONSULT_MODELS_MAX);
       if (requested.length === 0) {
-        throw new ToolError("not_allowed", "هیچ مدلی برای مشورت پیکربندی نشده است.");
+        throw new ToolError("not_allowed", "No models are configured for consultation.");
       }
       // Server-side allowlist: only owner-configured model ids are accepted.
       // Non-strings and unknown names are rejected alike — the model cannot
@@ -148,9 +148,9 @@ export function createConsultModelsTool(
         (m) => typeof m !== "string" || !configured.includes(m),
       );
       if (rejected.length > 0) {
-        throw new ToolError("not_allowed", "یک یا چند نام مدل معتبر نیست.");
+        throw new ToolError("not_allowed", "One or more model names are invalid.");
       }
-      const models = [...new Set(requested)];
+      const models = [...new Set(requested)].slice(0, CONSULT_MODELS_MAX);
 
       // Total budget for the whole tool, independent of input. Both signalled
       // and raced: a provider that ignores its signal still cannot push the
@@ -181,7 +181,7 @@ export function createConsultModelsTool(
           .filter((a) => a.text !== undefined)
           .map((a) => a.model);
         if (modelsUsed.length === 0) {
-          throw new ToolError("internal", "هیچ مدلی پاسخ نداد.");
+          throw new ToolError("internal", "No model answered.");
         }
 
         let answer: string;
@@ -196,21 +196,21 @@ export function createConsultModelsTool(
         } catch (err) {
           if (err instanceof ToolError) throw err;
           if (deadline.timedOut() || err instanceof DeadlineExceeded) {
-            throw new ToolError("timeout", "مشورت با مدل‌ها به سقف زمانی رسید.");
+            throw new ToolError("timeout", "Consulting the models hit the time limit.");
           }
           if (err instanceof AiError && err.kind === "aborted") {
-            throw new ToolError("aborted", "مشورت با مدل‌ها لغو شد.");
+            throw new ToolError("aborted", "Consulting the models was cancelled.");
           }
           throw toToolError(err);
         }
         if (answer.length === 0) {
-          throw new ToolError("invalid_result", "ترکیب پاسخ‌ها خالی بود.");
+          throw new ToolError("invalid_result", "The combined answer was empty.");
         }
         return { ok: true, modelsUsed, answer };
       } catch (err) {
         if (err instanceof ToolError) throw err;
         if (err instanceof DeadlineExceeded || deadline.timedOut()) {
-          throw new ToolError("timeout", "مشورت با مدل‌ها به سقف زمانی رسید.");
+          throw new ToolError("timeout", "Consulting the models hit the time limit.");
         }
         // Never leak provider internals: fixed, user-safe categories only.
         throw toToolError(err);
@@ -228,12 +228,12 @@ export function createConsultModelsTool(
 function buildSynthesisPrompt(question: string, answers: MixtureAnswer[]): string {
   const labelled = answers
     .map((a, i) => {
-      const body = a.text !== undefined ? a.text : `[این مدل پاسخ نداد: ${a.error ?? "نامشخص"}]`;
-      return `--- پاسخ مدل ${i + 1} (${a.model}) ---\n${body}`;
+      const body = a.text !== undefined ? a.text : `[this model did not answer: ${a.error ?? "unknown"}]`;
+      return `--- answer from model ${i + 1} (${a.model}) ---\n${body}`;
     })
     .join("\n\n");
   return (
-    `این پاسخ‌های ${answers.length} مدل به یک سؤال است. بهترین ترکیب را به فارسی، دقیق و بدون حشو بده.\n\n` +
-    `سؤال: ${question}\n\n${labelled}`
+    `These are answers from ${answers.length} models to one question. Give the best synthesis: precise, in English, no fluff.\n\n` +
+    `Question: ${question}\n\n${labelled}`
   );
 }

@@ -195,7 +195,7 @@ describe("failover administration", () => {
     activate(h, seed(h, "a"));
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_menu" }));
-    expect(c.sent[0]?.text).toContain("غیرفعال");
+    expect(c.sent[0]?.text).toContain("Disabled");
     h.storage.close();
   });
 
@@ -221,7 +221,7 @@ describe("failover administration", () => {
     activate(h, seed(h, "a"));
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_toggle" }));
-    expect(c.sent[0]?.text).toContain("جایگزین");
+    expect(c.sent[0]?.text).toContain("failover");
     expect(h.storage.getFailoverSettings().enabled).toBe(false);
     h.storage.close();
   });
@@ -269,7 +269,7 @@ describe("failover administration", () => {
 
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_add_confirm", providerId: b.providerId, modelId: b.modelId }));
-    expect(c.sent[0]?.text).toContain("از قبل");
+    expect(c.sent[0]?.text).toContain("already listed");
     expect(h.storage.listFailoverCandidates().length).toBe(1);
     h.storage.close();
   });
@@ -283,7 +283,7 @@ describe("failover administration", () => {
 
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_add_confirm", providerId: b.providerId, modelId: b.modelId }));
-    expect(c.sent[0]?.text).toContain("پروایدر در دسترس نیست");
+    expect(c.sent[0]?.text).toContain("Provider unavailable.");
     expect(h.storage.listFailoverCandidates().length).toBe(0);
     h.storage.close();
   });
@@ -300,7 +300,7 @@ describe("failover administration", () => {
       c.ctx,
       encode({ kind: "fo_add_confirm", providerId: b.providerId, modelId: a.modelId }),
     );
-    expect(c.sent[0]?.text).toContain("مدل در دسترس نیست");
+    expect(c.sent[0]?.text).toContain("Model unavailable.");
     h.storage.close();
   });
 
@@ -327,7 +327,7 @@ describe("failover administration", () => {
     // An index that was valid for a longer, older list.
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_remove", index: 5 }));
-    expect(c.sent[0]?.text).toContain("دیگر در فهرست نیست");
+    expect(c.sent[0]?.text).toContain("no longer listed");
     // The real row survives.
     expect(h.storage.listFailoverCandidates().length).toBe(1);
     h.storage.close();
@@ -367,11 +367,11 @@ describe("failover administration", () => {
 
     const upTop = owner();
     await h.ai.handleCallback(upTop.ctx, encode({ kind: "fo_move_up", index: 0 }));
-    expect(upTop.sent[0]?.text).toContain("نامعتبر");
+    expect(upTop.sent[0]?.text).toContain("Invalid move.");
 
     const downEnd = owner();
     await h.ai.handleCallback(downEnd.ctx, encode({ kind: "fo_move_down", index: 0 }));
-    expect(downEnd.sent[0]?.text).toContain("نامعتبر");
+    expect(downEnd.sent[0]?.text).toContain("Invalid move.");
     // The order is unchanged.
     expect(h.storage.listFailoverCandidates()[0]?.providerId).toBe(b.providerId);
     h.storage.close();
@@ -495,7 +495,7 @@ describe("failover authorization", () => {
     activate(h, a);
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_add_confirm", providerId: 4242, modelId: 4242 }));
-    expect(c.sent[0]?.text).toContain("پروایدر در دسترس نیست");
+    expect(c.sent[0]?.text).toContain("Provider unavailable.");
     h.storage.close();
   });
 });
@@ -517,7 +517,7 @@ describe("local-target policy", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_local_menu", providerId: a.providerId }));
     const text = c.sent[0]?.text ?? "";
     expect(text).toContain("127.0.0.0/8");
-    expect(text).toContain("نصب محلی");
+    expect(text).toContain("Allow local access");
     h.storage.close();
   });
 
@@ -528,7 +528,7 @@ describe("local-target policy", () => {
     const open = owner();
     await h.ai.handleCallback(open.ctx, encode({ kind: "fo_local_confirm", providerId: a.providerId }));
     expect(h.providers.view(a.providerId)?.allowLocal).toBe(true);
-    expect(open.sent[0]?.text).toContain("باز شد");
+    expect(open.sent[0]?.text).toContain("Local access opened");
 
     const close = owner();
     await h.ai.handleCallback(close.ctx, encode({ kind: "fo_local_confirm", providerId: a.providerId }));
@@ -625,7 +625,7 @@ describe("target validation", () => {
       baseUrl: `http://127.0.0.1:${port}/v1`,
       apiKey: "k",
     });
-    await expect(refused.complete(REQUEST)).rejects.toThrow(/داخلی یا خصوصی/);
+    await expect(refused.complete(REQUEST)).rejects.toThrow(/private/);
     server.close();
   });
 
@@ -657,7 +657,7 @@ describe("target validation", () => {
       apiKey: "k",
       allowLocalTargets: true,
     });
-    await expect(adapter.complete(REQUEST)).rejects.toThrow(/ارجاع داد/);
+    await expect(adapter.complete(REQUEST)).rejects.toThrow(/redirected/);
 
     target.close();
     redirector.close();
@@ -684,7 +684,7 @@ describe("operational status", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_status" }));
     const text = c.sent[0]?.text ?? "";
     expect(text).toContain("a");
-    expect(text).toContain("جایگزین");
+    expect(text).toContain("Failover");
     h.storage.close();
   });
 
@@ -705,7 +705,7 @@ describe("operational status", () => {
     const c = owner();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_status" }));
     const text = c.sent[0]?.text ?? "";
-    expect(text).toContain("تنظیم‌نشده");
+    expect(text).toContain("Not set");
     h.storage.close();
   });
 });

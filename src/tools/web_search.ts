@@ -10,7 +10,7 @@
  * output, which the system prompt declares to be data rather than a command.
  */
 import { ToolError } from "./errors";
-import { SearchError, userMessageForSearch } from "../search/provider";
+import { SearchError } from "../search/provider";
 import type { SearchProvider, SearchResult } from "../search/provider";
 import type { Tool, ToolContext } from "./types";
 
@@ -56,7 +56,7 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
   return {
     name: "web_search",
     description:
-      "جستجوی وب. برای پیدا کردن اطلاعات تازه یا منابع بیرون از دانش مدل استفاده کن.",
+      "Web search. Use it to find fresh information or sources beyond the model's knowledge.",
     enabled: true,
     permission: { requires: [WEB_SEARCH_PERMISSION] },
     toolset: "web",
@@ -65,13 +65,13 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
         query: {
           type: "string",
           required: true,
-          description: "عبارت جستجو.",
+          description: "Search query.",
           minLength: 2,
           maxLength: 400,
         },
         limit: {
           type: "integer",
-          description: `تعداد نتایج (۱ تا ${MAX_LIMIT}، پیش‌فرض ${DEFAULT_LIMIT}).`,
+          description: `Number of results (1 to ${MAX_LIMIT}, default ${DEFAULT_LIMIT}).`,
           minimum: 1,
           maximum: MAX_LIMIT,
         },
@@ -81,7 +81,7 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
     async run(input: WebSearchInput, ctx: ToolContext): Promise<WebSearchOutput> {
       const query = input.query.trim();
       if (query.length === 0) {
-        throw new ToolError("invalid_input", "عبارت جستجو خالی است.");
+        throw new ToolError("invalid_input", "Search query is empty.");
       }
 
       const provider = deps.resolve();
@@ -98,7 +98,7 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
         if (results.length === 0) {
           // An honest empty result, distinct from a failure: the model should
           // say nothing was found rather than retry the same query.
-          throw new ToolError("invalid_result", "نتیجه‌ای برای این جستجو پیدا نشد.");
+          throw new ToolError("invalid_result", "No results found for this search.");
         }
 
         // Re-checked here rather than trusted from the provider: only http(s)
@@ -110,17 +110,17 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
         // tell those apart, and would present an empty result as an answer.
         const usable = results.slice(0, limit).filter((r) => isHttpUrl(r.url));
         if (usable.length === 0) {
-          throw new ToolError("invalid_result", "نتیجهٔ قابل استفاده‌ای پیدا نشد.");
+          throw new ToolError("invalid_result", "No usable results found.");
         }
 
         return { query, provider: provider.label, results: usable };
       } catch (err) {
         if (err instanceof ToolError) throw err;
         if (err instanceof SearchError) {
-          throw new ToolError(searchKindToTool(err), userMessageForSearch(err.kind));
+          throw new ToolError(searchKindToTool(err), searchUserMessage(err.kind));
         }
         // An unexpected throw is reported without its internals.
-        throw new ToolError("internal", "جستجو ناموفق بود.");
+        throw new ToolError("internal", "Search failed.");
       }
     },
   };
@@ -147,6 +147,30 @@ function searchKindToTool(err: SearchError): "invalid_input" | "not_allowed" | "
     case "network":
     case "rate_limited":
       return "internal";
+  }
+}
+
+/**
+ * English, user-safe message for a search failure kind.
+ *
+ * Deliberately local (not `userMessageForSearch` from the search layer): the
+ * tool layer is English-only, and the search layer's copy is another
+ * package's contract to change.
+ */
+function searchUserMessage(kind: SearchError["kind"]): string {
+  switch (kind) {
+    case "config":
+      return "Search is not configured.";
+    case "auth":
+      return "The search service key was rejected.";
+    case "network":
+      return "Could not reach the search service.";
+    case "timeout":
+      return "Search timed out.";
+    case "rate_limited":
+      return "The search service is temporarily rate-limited; try again shortly.";
+    case "parse":
+      return "The search result could not be read.";
   }
 }
 
