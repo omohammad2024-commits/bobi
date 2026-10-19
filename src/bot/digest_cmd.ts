@@ -38,6 +38,7 @@ import { type Bot, type Context } from "grammy";
 import { t, type Lang } from "../i18n";
 import { gateGroup, gateUser, senderLang, type BotDeps } from "./bot";
 import { isOwnerCtx, requireOwnerTier } from "./access";
+import { blockquoteToEntities } from "./expandable_quote";
 import {
   buildDigestData,
   type DigestDeps,
@@ -477,7 +478,15 @@ async function runTaskNow(
         if (out === "timeout") return { toast: failed };
         for (const chunk of out.chunks) {
           try {
-            await ctx.api.sendMessage(action.chatId, chunk);
+            // Same expandable-quote contract as the chat reply paths: the
+            // model may wrap detail in '> ' blocks, and the entities must
+            // ride along or the markers leak into the message as raw text.
+            const { text, entities } = blockquoteToEntities(chunk);
+            await ctx.api.sendMessage(
+              action.chatId,
+              text,
+              entities.length > 0 ? { entities } : undefined,
+            );
           } catch {
             // One failed chunk must not fail the run.
           }

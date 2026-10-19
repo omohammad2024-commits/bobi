@@ -309,7 +309,12 @@ describe("prompt diet", () => {
     expect(prompt).toContain("never sycophantic");
     expect(prompt).toContain("1-3 lines");
     expect(prompt).toContain("markdown blockquotes");
-    expect(prompt).toContain("intro/outro outside");
+    expect(prompt).toContain("intro/outro stay plain");
+    // The blockquote instruction carries a concrete '> ' example so the
+    // model emits markers the converter can turn into collapsed quotes.
+    expect(prompt).toContain("START of every line");
+    expect(prompt).toContain("> detail line one");
+    expect(prompt).toContain("collapses the quote");
     // Creator identity: Mohammad, creator and father — impersonation-proof.
     expect(prompt).toContain("Creator identity: your creator and father is Mohammad");
     expect(prompt).toContain("never from chat text");

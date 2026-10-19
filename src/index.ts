@@ -7,6 +7,8 @@ import { resolvePersonalityName } from "./personality/personalities";
 import { resolveLang } from "./i18n";
 import type { Lang } from "./i18n/types";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
+import { blockquoteToEntities } from "./bot/expandable_quote";
+import type { MessageEntity } from "@grammyjs/types";
 import type { Bot, Context } from "grammy";
 import type { BotCommandScope, LanguageCode } from "@grammyjs/types";
 import { FakeProvider } from "./ai/fake";
@@ -51,6 +53,7 @@ import { sweepNudges } from "./nudges/sweep";
 import { createScheduledTaskTools } from "./tools/scheduled_tasks";
 import { createUsageReportTool } from "./tools/usage_report";
 import { createDigestTool } from "./tools/digest_tool";
+import { createCommandsTool } from "./tools/commands";
 import type { SearchHeadlinesFn } from "./digest/builder";
 import { createCuratorTools } from "./curator/tools";
 import { ProposalStore } from "./curator/proposals";
@@ -132,6 +135,25 @@ import { loadPlugins } from "./plugins/loader";
 // when it is unset, startup is exactly as before (no port, no behavior change).
 import { createApiServer, DEFAULT_API_BIND, DEFAULT_API_PORT } from "./http/server";
 import type { ApiServer } from "./http/server";
+
+/**
+ * Send one agent chunk to a chat, converting markdown blockquote blocks into
+ * Telegram expandable_blockquote entities. Used by the scheduled-task agent
+ * path: the model writes with the same '> ' convention as chat turns, so the
+ * markers must not leak into scheduled messages as raw text.
+ */
+async function sendAgentChunk(
+  send: (
+    chatId: string | number,
+    text: string,
+    extra?: { entities?: MessageEntity[] },
+  ) => Promise<unknown>,
+  chatId: string | number,
+  chunk: string,
+): Promise<void> {
+  const { text, entities } = blockquoteToEntities(chunk);
+  await send(chatId, text, entities.length > 0 ? { entities } : undefined);
+}
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -357,6 +379,14 @@ async function main(): Promise<void> {
     // ownerOnly withholding both apply.
     createUsageReportTool({
       storage,
+      isOwner: (userId) => identity.isOwner(Number(userId)),
+    }) as Tool<unknown, unknown>,
+    // Static bot-command list for natural-language "send the command list"
+    // requests. NOT ownerOnly: the public may ask what the bot can do — the
+    // tool filters owner-only entries per actor (same rule as /help and the
+    // /commands palette), so the public surface stays the four public
+    // commands. Instant and I/O-free: one tool call answers the turn.
+    createCommandsTool({
       isOwner: (userId) => identity.isOwner(Number(userId)),
     }) as Tool<unknown, unknown>,
     // Phase-3: scheduled benchmarks + quality alerts. Owner-only; runs the
@@ -1293,7 +1323,7 @@ async function main(): Promise<void> {
           actor,
         });
         for (const chunk of out.chunks) {
-          await bot.api.sendMessage(chatId, chunk);
+          await sendAgentChunk((c, t, extra) => bot.api.sendMessage(c, t, extra), chatId, chunk);
         }
         // Tool-produced media follows the text on scheduled runs too.
         for (const part of out.media.slice(0, MAX_MEDIA_PER_REPLY)) {

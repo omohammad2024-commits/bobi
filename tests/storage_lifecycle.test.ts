@@ -320,7 +320,7 @@ describe("defaults and migration semantics", () => {
       expect(fo.maxAttempts).toBeGreaterThanOrEqual(1);
       expect(fo.maxAttempts).toBeLessThanOrEqual(4);
       expect(fo.timeoutMs).toBeGreaterThanOrEqual(1000);
-      expect(fo.timeoutMs).toBeLessThanOrEqual(60000);
+      expect(fo.timeoutMs).toBeLessThanOrEqual(600_000);
       s.close();
     } finally {
       cleanup(path);
@@ -339,7 +339,7 @@ describe("defaults and migration semantics", () => {
       s.setFailoverSettings({ maxAttempts: -5, timeoutMs: 10_000_000 });
       const fo2 = s.getFailoverSettings();
       expect(fo2.maxAttempts).toBeGreaterThanOrEqual(1);
-      expect(fo2.timeoutMs).toBeLessThanOrEqual(60000);
+      expect(fo2.timeoutMs).toBeLessThanOrEqual(600_000);
       s.close();
     } finally {
       cleanup(path);

@@ -291,7 +291,7 @@ export class AiGateway implements AiProvider {
       if (usedAttempts(plan.candidates, candidate) >= maxAttempts) break;
 
       try {
-        const res = await this.send(candidate, req, plan.timeoutMs);
+        const res = await this.send(candidate, req, this.attemptTimeout(req, plan));
         // Report the model that actually answered, as the engine expects.
         return { text: res.text, model: res.model };
       } catch (err) {
@@ -346,7 +346,7 @@ export class AiGateway implements AiProvider {
 
       let yielded = false;
       try {
-        for await (const ev of this.sendStream(candidate, req, plan.timeoutMs)) {
+        for await (const ev of this.sendStream(candidate, req, this.attemptTimeout(req, plan))) {
           yielded = true;
           yield ev;
         }
@@ -390,6 +390,23 @@ export class AiGateway implements AiProvider {
     }
     const res = await this.send(candidate, req, req.timeoutMs);
     return { text: res.text, model: res.model };
+  }
+
+  /**
+   * Per-attempt timeout for one candidate.
+   *
+   * The caller's per-request budget always wins when it is tighter: the agent
+   * loop shrinks it as the run's wall clock burns down, and the adapter must
+   * not outwait the loop — a socket held past the loop's deadline is wasted
+   * work behind a confusing double timeout. The failover per-candidate
+   * timeout still caps each attempt, so a hanging candidate yields to the
+   * next one on time.
+   */
+  private attemptTimeout(
+    req: CompletionRequest,
+    plan: { timeoutMs: number },
+  ): number {
+    return Math.max(1, Math.min(req.timeoutMs, plan.timeoutMs));
   }
 
   /**

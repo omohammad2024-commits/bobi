@@ -56,6 +56,7 @@ import type { UserPrefStore } from "./bot";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import { gateGroup, gateUser, isOwnerSender, senderLang } from "./bot";
 import { requireOwnerTier } from "./access";
+import { blockquoteToEntities } from "./expandable_quote";
 import { hasConfirmFlag } from "./cmd_session";
 import { progressMessage, truncateLabel, withTyping } from "./ux";
 import { tr, type AutoLang } from "./cmd_auto_strings";
@@ -1693,7 +1694,17 @@ export function registerAutoCommands(bot: Bot, deps: HermesCommandDeps): void {
         await replyLong(ctx, tr(lang, "cmd_auto.bg.help"));
       } else {
         // Delivery goes through the live bot API; a dead chat drops + logs.
-        const deliver: BgDeliver = (chatId, text) => bot.api.sendMessage(chatId, text);
+        // Blockquote conversion lives here so every background delivery —
+        // completion and failure notes alike — honours the expandable-quote
+        // contract; BgDeliver keeps its plain signature.
+        const deliver: BgDeliver = (chatId, text) => {
+          const { text: clean, entities } = blockquoteToEntities(text);
+          return bot.api.sendMessage(
+            chatId,
+            clean,
+            entities.length > 0 ? { entities } : undefined,
+          );
+        };
         await replyLong(ctx, await handleBgStart(d, sender, arg, deliver, lang));
       }
     } catch {

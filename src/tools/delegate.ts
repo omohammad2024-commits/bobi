@@ -129,6 +129,11 @@ export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, 
     // Withheld from public actors by the authorization bridge.
     ownerOnly: true,
     toolset: "agents",
+    // Slow by design (the child loop is budgeted DELEGATE_TOTAL_TIMEOUT_MS):
+    // without this the executor's 10s default kills every delegation that a
+    // slow provider stretches past ten seconds, while the orphaned child keeps
+    // burning tokens in the background. Same pattern as consult_models.
+    timeoutMs: DELEGATE_TOTAL_TIMEOUT_MS,
     input: {
       fields: {
         task: {

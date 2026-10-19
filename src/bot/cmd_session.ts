@@ -17,6 +17,8 @@ import {
   SESSION_CALLBACK_PREFIX,
   formatCount,
 } from "./ux";
+import { replyExpandable } from "./expandable_quote";
+import type { MessageEntity } from "@grammyjs/types";
 import type { Storage, StoredMessage } from "../storage/storage";
 import {
   EngineError,
@@ -98,12 +100,13 @@ export interface SessionCtx {
   message?: { text?: string } | undefined;
   /**
    * The optional `extra` carries reply_markup for tap-to-resume buttons
-   * (/sessions). Callers that only need plain text ignore it; test stubs
-   * taking a single argument stay assignable.
+   * (/sessions) and entities for expandable quotes (/retry model output).
+   * Callers that only need plain text ignore it; test stubs taking a single
+   * argument stay assignable.
    */
   reply(
     text: string,
-    extra?: { reply_markup?: InlineKeyboard },
+    extra?: { reply_markup?: InlineKeyboard; entities?: MessageEntity[] },
   ): Promise<unknown>;
   replyWithDocument?(doc: InputFile, opts?: { caption?: string }): Promise<unknown>;
 }
@@ -554,7 +557,12 @@ export async function handleRetryCommand(
     return;
   }
   for (const chunk of out.chunks) {
-    await safeReply(ctx, chunk);
+    try {
+      // Model output — same expandable-quote contract as chat turns.
+      await replyExpandable(ctx, chunk);
+    } catch {
+      // A deleted chat is not an error worth propagating.
+    }
   }
 }
 

@@ -108,8 +108,9 @@ describe("failover defaults off", () => {
     h.storage.setFailoverCandidates([{ providerId: b.providerId, modelId: b.modelId }]);
 
     await expect(h.gateway.complete(REQUEST)).rejects.toThrow(AiError);
-    // Exactly one attempt: the primary, never the backup.
-    expect(h.log).toEqual(["model-primary@15000"]);
+    // Exactly one attempt: the primary, never the backup. The adapter gets
+    // the caller's per-request budget (min of request and failover timeout).
+    expect(h.log).toEqual(["model-primary@1000"]);
     h.storage.close();
   });
 
@@ -161,10 +162,26 @@ describe("failover enabled", () => {
 
     const res = await gateway.complete(REQUEST);
     expect(res.text).toBe("ok");
-    // The scripted adapter records the resolved model, with the failover
-    // timeout applied to each candidate.
-    expect(log).toEqual(["model-a@15000", "model-b@15000"]);
+    // The scripted adapter records the resolved model. Each candidate gets
+    // min(request timeout, failover timeout) — here the request's 1000ms.
+    expect(log).toEqual(["model-a@1000", "model-b@1000"]);
     storage.close();
+  });
+
+  test("a tighter failover timeout caps each candidate below the request budget", async () => {
+    const h = build();
+    const a = seedProvider(h.storage, h.providers, h.models, "a");
+    activate(h.storage, a);
+    h.storage.setFailoverSettings({ enabled: false, timeoutMs: 2000 });
+
+    await h.gateway.complete({
+      ...REQUEST,
+      // A generous caller budget: the tighter failover per-candidate
+      // timeout (2000) must still bound the attempt.
+      timeoutMs: 5000,
+    });
+    expect(h.log).toEqual(["model-a@2000"]);
+    h.storage.close();
   });
 
   test("a non-retryable failure is never retried through another provider", async () => {
@@ -391,12 +408,12 @@ describe("snapshot consistency", () => {
     activate(h.storage, a);
 
     await h.gateway.complete(REQUEST);
-    expect(h.log).toEqual(["model-a@15000"]);
+    expect(h.log).toEqual(["model-a@1000"]);
 
     // The next request sees the new selection immediately, no restart.
     activate(h.storage, b);
     await h.gateway.complete(REQUEST);
-    expect(h.log[1]).toBe("model-b@15000");
+    expect(h.log[1]).toBe("model-b@1000");
     h.storage.close();
   });
 

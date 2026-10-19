@@ -319,7 +319,7 @@ export interface AiFailoverSettings {
   enabled: boolean;
   /** Total tries per request, including the first. Bounded 1..4. */
   maxAttempts: number;
-  /** Per-candidate timeout, ms. Bounded 1000..60000. */
+  /** Per-candidate timeout, ms. Bounded 1000..600000 (up to 10min). */
   timeoutMs: number;
 }
 

@@ -13,6 +13,7 @@ import {
   createDelegateTool,
   DELEGATE_SUMMARY_MAX_CHARS,
   DELEGATE_TOOL_NAME,
+  DELEGATE_TOTAL_TIMEOUT_MS,
 } from "../src/tools/delegate";
 
 // ---------- helpers ----------
@@ -225,5 +226,17 @@ describe("delegate tool", () => {
     await expect(tool.run({ task: "   " }, ctxFor())).rejects.toMatchObject({
       name: "ToolError",
     });
+  });
+
+  test("the tool declares the child loop's full budget so the executor does not kill it at the 10s default", async () => {
+    const tool = createDelegateTool({
+      tools: new ToolService(),
+      provider: new ScriptedProvider([answer("x")]),
+      model: "m",
+    });
+    // The child AgentLoop is budgeted DELEGATE_TOTAL_TIMEOUT_MS; without this
+    // declaration the executor's 10s default aborts every delegation a slow
+    // provider stretches past ten seconds (and orphans the child run).
+    expect(tool.timeoutMs).toBe(DELEGATE_TOTAL_TIMEOUT_MS);
   });
 });
