@@ -281,7 +281,9 @@ function addFromPreset(
   if (!preset) {
     throw new ProviderApiError(400, "این سرویس شناخته نشده است.");
   }
-  if (labelTaken(deps, preset.label)) {
+  // The owner may rename the provider; fall back to the preset label.
+  const label = asNonEmptyString(params["label"], 64) ?? preset.label;
+  if (labelTaken(deps, label)) {
     throw new ProviderApiError(400, "پروایدری با این نام قبلاً ثبت شده است.");
   }
   if (
@@ -297,7 +299,7 @@ function addFromPreset(
 
   const key = asNonEmptyString(params["key"], 1024);
   const created = deps.providerSvc.create({
-    label: preset.label,
+    label,
     adapter: "openai_compatible",
     baseUrl,
     ...(key !== undefined ? { apiKey: key } : {}),

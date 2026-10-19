@@ -1,15 +1,30 @@
 /* BOBI Mini App — Users section.
- * List with ban state; tap → detail (ban/unban with confirm).
- * The backend decides which fields exist: list rows render name, username,
- * ban state and the backend's note if provided.
+ * List with ban state and search; tap → detail (ban/unban with confirm).
  *
  * Backend endpoints used (POST /miniapp/api/<endpoint>, {initData, ...}):
- *   users.list   {} -> { users: [{ id, name, username, banned, note? }] }
- *   users.ban    { id } -> {}
+ *   users.list   { q? } -> { users: [{ id, state, isBanned, username?, firstName? }], total }
+ *   users.ban    { id, confirm:true } -> {}
  *   users.unban  { id } -> {}
  */
 (function () {
   "use strict";
+
+  function RS(fa, en) {
+    if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
+      window.__registerSectionStrings(fa, en);
+    }
+  }
+
+  RS(
+    {
+      "users.search": "جستجو در کاربران…",
+      "users.notBanned": "فعال",
+    },
+    {
+      "users.search": "Search users…",
+      "users.notBanned": "Active",
+    }
+  );
 
   function render(el, ctx) {
     const st = ctx.state;
@@ -37,7 +52,7 @@
       el.innerHTML = skeleton(4);
       let users = [];
       try {
-        const res = await ctx.api("users.list", {});
+        const res = await ctx.api("users.list", st.q ? { q: st.q } : {});
         users = (res && res.users) || [];
       } catch (e) {
         el.innerHTML =
@@ -47,6 +62,27 @@
         return;
       }
       el.innerHTML = "";
+
+      const searchWrap = document.createElement("div");
+      searchWrap.className = "field";
+      searchWrap.innerHTML =
+        '<input id="userSearch" type="search" placeholder="' + ctx.esc(ctx.t("users.search")) + '" value="' + ctx.esc(st.q || "") + '" dir="auto">';
+      el.appendChild(searchWrap);
+      let debounce = null;
+      searchWrap.querySelector("#userSearch").addEventListener("input", function (ev) {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(function () {
+          st.q = ev.target.value.trim();
+          viewList().then(function () {
+            const s = document.getElementById("userSearch");
+            if (s) {
+              s.focus();
+              try { s.setSelectionRange(s.value.length, s.value.length); } catch (ignore) {}
+            }
+          });
+        }, 450);
+      });
+
       if (!users.length) {
         const d = document.createElement("div");
         d.className = "empty-state";
@@ -58,9 +94,9 @@
         const b = document.createElement("button");
         b.type = "button";
         b.className = "list-row";
-        const name = u.name || u.username || String(u.id);
+        const name = u.firstName || u.username || String(u.id);
         const handle = u.username ? "@" + u.username : "#" + u.id;
-        const banBadge = u.banned
+        const banBadge = u.isBanned
           ? '<span class="badge nokey">' + ctx.esc(ctx.t("users.banned")) + "</span>"
           : "";
         b.innerHTML =
@@ -108,12 +144,12 @@
       const card = document.createElement("div");
       card.className = "card";
       card.innerHTML =
-        '<div class="list-title" style="font-size:18px">' + ctx.esc(u.name || u.username || String(u.id)) + "</div>" +
+        '<div class="list-title" style="font-size:18px">' + ctx.esc(u.firstName || u.username || String(u.id)) + "</div>" +
         '<div class="list-sub" dir="ltr" style="margin:4px 0 10px">' +
         (u.username ? "@" + ctx.esc(u.username) + " · " : "") + "#" + ctx.esc(String(u.id)) + "</div>" +
-        (u.banned
+        (u.isBanned
           ? '<span class="badge nokey">' + ctx.esc(ctx.t("users.banned")) + "</span>"
-          : '<span class="badge key">' + ctx.esc(ctx.t("prov.enabled")) + "</span>") +
+          : '<span class="badge key">' + ctx.esc(ctx.t("users.notBanned")) + "</span>") +
         (u.note
           ? '<div style="margin-top:10px"><div class="list-sub">' + ctx.esc(ctx.t("users.note")) + "</div>" +
             "<div>" + ctx.esc(u.note) + "</div></div>"
@@ -122,16 +158,16 @@
 
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "btn btn-block " + (u.banned ? "btn-primary" : "btn-danger");
-      btn.textContent = u.banned ? ctx.t("users.unban") : ctx.t("users.ban");
+      btn.className = "btn btn-block " + (u.isBanned ? "btn-primary" : "btn-danger");
+      btn.textContent = u.isBanned ? ctx.t("users.unban") : ctx.t("users.ban");
       btn.addEventListener("click", async function () {
         const ok = await ctx.confirmDialog(
           ctx.t("dialog.confirmTitle"),
-          u.banned ? ctx.t("users.unbanConfirm") : ctx.t("users.banConfirm")
+          u.isBanned ? ctx.t("users.unbanConfirm") : ctx.t("users.banConfirm")
         );
         if (!ok) return;
         try {
-          await ctx.api(u.banned ? "users.unban" : "users.ban", { id: u.id });
+          await ctx.api(u.isBanned ? "users.unban" : "users.ban", u.isBanned ? { id: u.id } : { id: u.id, confirm: true });
           ctx.toast(ctx.t("toast.saved"));
           setView({ name: "list" });
         } catch (e) {

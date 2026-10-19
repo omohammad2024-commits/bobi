@@ -73,7 +73,7 @@
       setSending(true);
       try {
         const res = await ctx.api("turn", { conversationId: CONVERSATION_ID, text: text });
-        const reply = res && (res.text !== undefined ? String(res.text) : "");
+        const reply = res && (res.reply !== undefined ? String(res.reply) : "");
         st.messages.push({ role: "bot", text: reply });
       } catch (e) {
         ctx.toast(ctx.t("chat.failed"));

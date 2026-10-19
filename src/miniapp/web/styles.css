@@ -335,6 +335,24 @@ body {
   border-color: transparent;
 }
 
+/* Standalone input for use outside .field (e.g. search bars). */
+.input {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 15px;
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: 2px solid var(--link);
+  border-color: transparent;
+}
+
 .field .error {
   color: var(--danger);
   font-size: 12px;

@@ -28,7 +28,9 @@
       "mem.kind.anniversary": "سالگرد",
       "mem.kind.monthly": "ماهانه",
       "mem.kind.once": "یک‌باره",
-      "mem.pending": "در انتظار بررسی"
+      "mem.pending": "در انتظار بررسی",
+      "mem.today": "امروز 🎉",
+      "mem.daysLeft": "{n} روز مانده"
     },
     {
       "mem.tab.search": "Search",
@@ -47,7 +49,9 @@
       "mem.kind.anniversary": "Anniversary",
       "mem.kind.monthly": "Monthly",
       "mem.kind.once": "One-time",
-      "mem.pending": "Pending review"
+      "mem.pending": "Pending review",
+      "mem.today": "Today 🎉",
+      "mem.daysLeft": "{n} days left"
     }
   );
 
@@ -106,7 +110,7 @@
     return (
       '<div class="card mx-center"><div>⚠️ ' + esc(t("state.error")) + "</div>" +
       (err && err.message ? '<div class="mx-kv">' + esc(err.message) + "</div>" : "") +
-      '<div style="margin-top:12px"><button class="btn" data-retry style="min-height:44px;min-width:120px">' +
+      '<div style="margin-top:12px"><button class="btn btn-primary" data-retry style="min-height:44px;min-width:120px">' +
       esc(t("action.retry")) + "</button></div></div>"
     );
   }
@@ -134,7 +138,7 @@
     body.innerHTML =
       '<form class="mx-searchrow" data-form>' +
       '<input class="input" data-q placeholder="' + esc(t("mem.search.ph")) + '" enterkeyhint="search" />' +
-      '<button class="btn" type="submit" style="min-height:44px">' + esc(t("mem.search.btn")) + "</button>" +
+      '<button class="btn btn-primary" type="submit" style="min-height:44px">' + esc(t("mem.search.btn")) + "</button>" +
       "</form>" +
       '<p class="mx-hint">' + esc(t("mem.search.hint")) + "</p>" +
       '<div data-results></div>';
@@ -148,7 +152,7 @@
       results.innerHTML = loadingHtml(t);
       try {
         var r = await ctx.api("memory.search", { q: q, limit: 30 });
-        var items = r.items || r.results || r.memories || [];
+        var items = r.mems || [];
         if (!items.length) {
           results.innerHTML = emptyHtml(t);
           return;
@@ -166,7 +170,7 @@
     body.innerHTML = loadingHtml(t);
     try {
       var r = await ctx.api("memory.list", { limit: 100 });
-      var items = r.items || r.memories || [];
+      var items = r.mems || [];
       if (!items.length) {
         body.innerHTML = emptyHtml(t);
         return;
@@ -194,12 +198,11 @@
             return (
               '<div class="card" data-p="' + i + '">' +
               '<div class="mx-kv">' + esc(t("mem.pending")) +
-              (p.kind ? " · " + esc(p.kind) : "") + "</div>" +
-              '<div class="mx-pre">' + esc(p.text || p.summary || p.content || "") + "</div>" +
-              (p.reason ? '<div class="mx-kv">' + esc(t("mem.reason")) + ": " + esc(p.reason) + "</div>" : "") +
+              (p.kindFa ? ' · <span class="badge">' + esc(p.kindFa) + "</span>" : "") + "</div>" +
+              '<div class="mx-pre">' + esc(p.summaryFa || "") + "</div>" +
               '<div class="mx-actions">' +
-              '<button class="btn" data-approve>' + esc(t("mem.approve")) + "</button>" +
-              '<button class="btn" data-reject>' + esc(t("mem.reject")) + "</button>" +
+              '<button class="btn btn-primary" data-approve>' + esc(t("mem.approve")) + "</button>" +
+              '<button class="btn btn-ghost" data-reject>' + esc(t("mem.reject")) + "</button>" +
               "</div></div>"
             );
           })
@@ -245,12 +248,23 @@
         .map(function (ev) {
           var kindKey = "mem.kind." + (ev.kind || "");
           var kindLabel = t(kindKey) === kindKey ? ev.kind || "" : t(kindKey);
+          var d = ev.daysUntil === undefined || ev.daysUntil === null ? null : Number(ev.daysUntil);
+          var daysLabel = "";
+          if (d !== null && !isNaN(d)) {
+            if (d === 0) daysLabel = t("mem.today");
+            else {
+              var ds = String(d);
+              if (lang() === "fa") ds = ds.replace(/\d/g, function (x) { return "۰۱۲۳۴۵۶۷۸۹"[x]; });
+              daysLabel = t("mem.daysLeft").replace("{n}", ds);
+            }
+          }
           return (
             '<div class="card">' +
             '<div><strong>' + esc(ev.name || "") + "</strong>" +
             (ev.labelFa ? ' · <span class="badge">' + esc(ev.labelFa) + "</span>" : "") +
             (kindLabel ? ' <span class="badge">' + esc(kindLabel) + "</span>" : "") +
             "</div>" +
+            (daysLabel ? '<div class="mx-kv" style="margin-top:4px">📅 ' + esc(daysLabel) + "</div>" : "") +
             (ev.note ? '<div class="mx-pre">' + esc(ev.note) + "</div>" : "") +
             "</div>"
           );
