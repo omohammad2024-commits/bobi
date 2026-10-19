@@ -554,34 +554,44 @@ async function main(): Promise<void> {
     toolCalls: { limit: config.rateLimitToolCallsPerHour, windowMs: 60 * 60_000 },
   });
 
-  // The engine talks to the gateway, never to a specific service. FakeProvider
-  // is only used when no real provider is selected, so local development and
-  // the test suite stay offline.
+  // The engine talks to the gateway, never to a specific service. The provider
+  // is resolved PER TURN (not once at startup) so adding or switching a
+  // provider from /ai or the Mini App takes effect immediately — no restart
+  // needed. Falls back to FakeProvider when nothing is selected yet, so local
+  // development and the test suite stay offline.
+  const fakeFallback = new FakeProvider();
+  const currentProvider = (): AiProvider =>
+    gateway.currentSelection() !== undefined ? gateway : fakeFallback;
+  const provider: AiProvider = {
+    name: "bobi",
+    complete: (req) => currentProvider().complete(req),
+    supportsAudioInput: () => currentProvider().supportsAudioInput?.() ?? false,
+    supportsDocumentInput: () => currentProvider().supportsDocumentInput?.() ?? false,
+  };
   const selection = gateway.currentSelection();
-  const provider = selection ? gateway : new FakeProvider();
 
-  // Phase-5: opt-in LLM smart summaries for group discussions. Wired only
-  // when a REAL provider is selected — the /gassistant smart subcommand and
-  // the smart path inside the digest tool both degrade to the deterministic
-  // summary when this stays undefined (FakeProvider = theater, not
-  // intelligence). Runs through gateway.completeForModel() so the stored
-  // selection is re-validated per call; tool-free single-turn completion.
-  const smartSummaryPort: SmartSummaryPort | undefined = selection
-    ? {
-        summarize: async (req) => {
-          const res = await gateway.completeForModel({
-            messages: [
-              { role: "system", content: req.system },
-              { role: "user", content: req.user },
-            ],
-            model: selection.modelId,
-            timeoutMs: req.timeoutMs,
-            signal: AbortSignal.timeout(req.timeoutMs),
-          });
-          return res.text;
-        },
-      }
-    : undefined;
+  // Phase-5: opt-in LLM smart summaries for group discussions. Resolved per
+  // call so it starts working as soon as a real provider is selected — no
+  // restart. Degrades to the deterministic summary while unconfigured
+  // (FakeProvider = theater, not intelligence). Runs through
+  // gateway.completeForModel() so the stored selection is re-validated per
+  // call; tool-free single-turn completion.
+  const smartSummaryPort: SmartSummaryPort = {
+    summarize: async (req) => {
+      const sel = gateway.currentSelection();
+      if (sel === undefined) throw new Error("no provider selected");
+      const res = await gateway.completeForModel({
+        messages: [
+          { role: "system", content: req.system },
+          { role: "user", content: req.user },
+        ],
+        model: sel.modelId,
+        timeoutMs: req.timeoutMs,
+        signal: AbortSignal.timeout(req.timeoutMs),
+      });
+      return res.text;
+    },
+  };
   // groupDigestToolDeps was created before the gateway existed; assign the
   // port now — the tool reads deps.smart at run time.
   if (groupDigestToolDeps !== undefined) {
