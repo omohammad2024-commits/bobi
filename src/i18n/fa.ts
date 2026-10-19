@@ -167,7 +167,7 @@ export const fa: LanguagePack = {
   "help.cmd.loop": "تکرار خودکار",
   "help.cmd.cron": "وظایف زمان‌بندی‌شده",
   "help.cmd.learn": "آموزش مهارت",
-  "progress.thinking": "در حال فکر کردن…",
+  "progress.thinking": "🧠Thinking…",
   "progress.tool_running": "در حال {label}…",
   "progress.tool_done": "{label} انجام شد.",
 

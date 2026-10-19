@@ -48,6 +48,7 @@ export interface ProviderApiDeps {
     | "clearCredential"
     | "credentialFor"
     | "isActive"
+    | "ensureSelection"
   >;
   modelSvc: Pick<
     ModelService,
@@ -151,6 +152,33 @@ function keyHint(deps: ProviderApiDeps, providerId: number): string | null {
   }
   if (key === undefined || key === "") return null;
   return `••••${key.slice(-4)}`;
+}
+
+/**
+ * Auto-select after an add: when no valid provider/model is currently
+ * selected, activate the first usable one (the just-added provider when it
+ * qualifies). Returns what was activated, or undefined when a selection
+ * already existed or nothing usable exists yet. The UI uses this to tell the
+ * owner "you're live" vs "now pick a model".
+ */
+function autoSelectIfNone(
+  deps: ProviderApiDeps,
+): { providerId: number; modelId: number } | undefined {
+  let before: { activeProviderId: number | null; activeModelId: number | null };
+  try {
+    before = deps.storage.getRuntimeSettings();
+  } catch {
+    return undefined;
+  }
+  // A selection already exists and names a real provider+model: don't touch it.
+  // (ensureSelection itself also guards, but this lets us report accurately.)
+  const hadSelection =
+    before.activeProviderId !== null &&
+    before.activeModelId !== null &&
+    deps.storage.getProvider(before.activeProviderId) !== undefined;
+  const sel = deps.providerSvc.ensureSelection();
+  if (sel === undefined || hadSelection) return undefined;
+  return sel;
 }
 
 interface ProbeView {
@@ -321,6 +349,10 @@ function addFromPreset(
     });
     if (added.ok) out["modelId"] = added.data;
   }
+  // Auto-select: when nothing valid is selected yet (fresh setup), the new
+  // provider becomes active immediately — no separate "select" step.
+  const auto = autoSelectIfNone(deps);
+  if (auto !== undefined) out["autoSelected"] = auto;
   return out;
 }
 
@@ -366,6 +398,10 @@ function addCustom(
     const added = deps.modelSvc.add({ providerId, modelId, label: modelId });
     if (added.ok) out["modelId"] = added.data;
   }
+  // Auto-select: when nothing valid is selected yet (fresh setup), the new
+  // provider becomes active immediately — no separate "select" step.
+  const auto = autoSelectIfNone(deps);
+  if (auto !== undefined) out["autoSelected"] = auto;
   return out;
 }
 
@@ -500,7 +536,7 @@ function clearProviderKey(
 function setActiveProvider(
   params: Record<string, unknown>,
   deps: ProviderApiDeps,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const id = asId(params["id"]);
   if (id === undefined) throw new ProviderApiError(400, "شناسهٔ پروایدر نامعتبر است.");
   const view = deps.providerSvc.view(id);
@@ -528,7 +564,29 @@ function setActiveProvider(
   } catch {
     throw new ProviderApiError(500, "فعال‌سازی ناموفق بود.");
   }
-  return { ok: true, providerId: id, modelId: chosen.id, label: chosen.label };
+  const out: Record<string, unknown> = {
+    ok: true,
+    providerId: id,
+    modelId: chosen.id,
+    label: chosen.label,
+  };
+  // Probe on select: warn inline when the fresh selection doesn't answer, so
+  // the owner discovers a dead provider here — not by chatting into the void.
+  // A failed probe never blocks the selection itself.
+  return (async () => {
+    try {
+      const started = Date.now();
+      const result = await deps.health.probe(id);
+      out["probe"] = {
+        ok: result.ok,
+        latencyMs: Date.now() - started,
+        ...(result.message !== undefined ? { message: result.message } : {}),
+      };
+    } catch {
+      out["probe"] = { ok: false, message: "آزمایش اتصال ناموفق بود." };
+    }
+    return out;
+  })();
 }
 
 // --------------------------------------------------------------- models ----
@@ -720,7 +778,10 @@ function importModels(
       skipped += 1;
     }
   }
-  return { imported, skipped };
+  const out: Record<string, unknown> = { imported, skipped };
+  const auto = autoSelectIfNone(deps);
+  if (auto !== undefined) out["autoSelected"] = auto;
+  return out;
 }
 
 function addModel(
@@ -741,7 +802,10 @@ function addModel(
   const label = asNonEmptyString(params["label"], 64) ?? modelId;
   const r = deps.modelSvc.add({ providerId, modelId, label });
   if (!r.ok) throw new ProviderApiError(400, r.message);
-  return { id: r.data };
+  const out: Record<string, unknown> = { id: r.data };
+  const auto = autoSelectIfNone(deps);
+  if (auto !== undefined) out["autoSelected"] = auto;
+  return out;
 }
 
 function toggleModel(
@@ -782,7 +846,7 @@ function deleteModel(
 function setActiveModel(
   params: Record<string, unknown>,
   deps: ProviderApiDeps,
-): Record<string, unknown> {
+): Promise<Record<string, unknown>> {
   const id = asId(params["id"]);
   if (id === undefined) throw new ProviderApiError(400, "شناسهٔ مدل نامعتبر است.");
   const model = deps.modelSvc.get(id);
@@ -798,5 +862,25 @@ function setActiveModel(
   } catch {
     throw new ProviderApiError(500, "فعال‌سازی ناموفق بود.");
   }
-  return { ok: true, providerId: model.providerId, modelId: id, label: model.label };
+  const out: Record<string, unknown> = {
+    ok: true,
+    providerId: model.providerId,
+    modelId: id,
+    label: model.label,
+  };
+  // Probe on select: warn inline when the fresh selection doesn't answer.
+  return (async () => {
+    try {
+      const started = Date.now();
+      const result = await deps.health.probe(model.providerId);
+      out["probe"] = {
+        ok: result.ok,
+        latencyMs: Date.now() - started,
+        ...(result.message !== undefined ? { message: result.message } : {}),
+      };
+    } catch {
+      out["probe"] = { ok: false, message: "آزمایش اتصال ناموفق بود." };
+    }
+    return out;
+  })();
 }

@@ -559,12 +559,41 @@ async function main(): Promise<void> {
   // provider from /ai or the Mini App takes effect immediately — no restart
   // needed. Falls back to FakeProvider when nothing is selected yet, so local
   // development and the test suite stay offline.
+  //
+  // Boot also runs ensureSelection(): a provider that was added while the bot
+  // was down (or whose selection was lost) is picked up automatically, and the
+  // active pair is logged so the owner can see at a glance what the bot runs on.
+  const bootSel = providerSvc.ensureSelection();
+  const bootSelView =
+    bootSel !== undefined
+      ? {
+          providerLabel: storage.getProvider(bootSel.providerId)?.label ?? `#${bootSel.providerId}`,
+          modelLabel: storage.getModel(bootSel.modelId)?.label ?? `#${bootSel.modelId}`,
+        }
+      : undefined;
+  if (bootSelView !== undefined) {
+    log.info("AI provider active", {
+      provider: bootSelView.providerLabel,
+      model: bootSelView.modelLabel,
+    });
+  } else {
+    log.info("AI provider not configured — bot answers in test mode until /ai sets one up");
+  }
   const fakeFallback = new FakeProvider();
   const currentProvider = (): AiProvider =>
     gateway.currentSelection() !== undefined ? gateway : fakeFallback;
   const provider: AiProvider = {
     name: "bobi",
-    complete: (req) => currentProvider().complete(req),
+    complete: async (req) => {
+      if (gateway.currentSelection() !== undefined) return gateway.complete(req);
+      // Defensive: say WHICH provider broke and how to fix it, not just
+      // "not configured". The gateway diagnoses the stored selection.
+      const why = gateway.describeSelectionProblem();
+      return {
+        text: `بابی فعلاً نمی‌تواند جواب بدهد: ${why}`,
+        model: "fake",
+      };
+    },
     supportsAudioInput: () => currentProvider().supportsAudioInput?.() ?? false,
     supportsDocumentInput: () => currentProvider().supportsDocumentInput?.() ?? false,
   };

@@ -187,10 +187,31 @@ export class AiAdminController {
     const lang = this.langFor(ctx);
     const r = await this.admin.runAdmin(
       { actor, operation: "ai.menu", permission: PERM_VIEW },
-      () => ({ text: aiMenuText(lang), keyboard: aiMenuKeyboard(lang) }),
+      () => ({
+        text: aiMenuText(lang, this.activePairForPanel()),
+        keyboard: aiMenuKeyboard(lang),
+      }),
     );
     if (!r.ok) return void (await this.deny(ctx));
     await this.render(ctx, r.data.text, r.data.keyboard);
+  }
+
+  /**
+   * The active provider/model pair for the /ai panel header. Null when
+   * nothing valid is selected — the panel then shows the plain "not
+   * configured" line with its one-tap add path instead of silence.
+   */
+  private activePairForPanel(): { providerLabel: string; modelLabel: string } | null {
+    try {
+      const sel = this.storage.getRuntimeSettings();
+      if (sel.activeProviderId === null || sel.activeModelId === null) return null;
+      const p = this.storage.getProvider(sel.activeProviderId);
+      const m = this.storage.getModel(sel.activeModelId);
+      if (!p || !m || !p.enabled || !m.enabled || m.providerId !== p.id) return null;
+      return { providerLabel: p.label, modelLabel: m.label };
+    } catch {
+      return null;
+    }
   }
 
   // --------------------------------------- onboarding wizard support ----
@@ -1220,13 +1241,27 @@ export class AiAdminController {
         const id = action.modelId;
         const r = await this.admin.runAdmin(
           { actor, operation: "ai.select.model", permission: PERM_MANAGE, targetId: String(id) },
-          () => {
+          async () => {
             const model = this.models.get(id);
             if (!model || !model.enabled) return undefined;
             const provider = this.storage.getProvider(model.providerId);
             if (!provider || !provider.enabled) return undefined;
             this.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
-            return { text: tr(lang, "panel.select.done", { label: model.label }) };
+            // Probe on select: warn inline when the fresh selection doesn't
+            // answer, so the owner discovers a dead provider here — not by
+            // chatting into the void. A failed probe never blocks the selection.
+            let probeNote = "";
+            try {
+              const probe = await this.health.probe(model.providerId);
+              probeNote = probe.ok
+                ? `\n${tr(lang, "panel.provider.test_ok")}`
+                : `\n${tr(lang, "panel.provider.test_fail")}${
+                    probe.message !== undefined ? ` (${probe.message})` : ""
+                  }`;
+            } catch {
+              probeNote = `\n${tr(lang, "panel.provider.test_fail")}`;
+            }
+            return { text: tr(lang, "panel.select.done", { label: model.label }) + probeNote };
           },
         );
         if (!r.ok) return void (await this.deny(ctx));
@@ -1506,7 +1541,10 @@ export class AiAdminController {
       case "search_key":
         return this.searchView(lang);
       default:
-        return { text: aiMenuText(lang), keyboard: aiMenuKeyboard(lang) };
+        return {
+          text: aiMenuText(lang, this.activePairForPanel()),
+          keyboard: aiMenuKeyboard(lang),
+        };
     }
   }
 

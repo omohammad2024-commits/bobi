@@ -43,6 +43,7 @@
       "prov.activeBadge": "فعال ⭐",
       "prov.probeNever": "تست نشده",
       "prov.setActiveProvider": "فعال‌سازی",
+      "prov.autoActive": "پروایدر فعال شد — بات الان با همین جواب می‌دهد.",
       "prov.needKeyFirst": "اول کلید را ثبت کن",
       "prov.keyRequired": "کلید API را وارد کن",
       "prov.nextTitle": "قدم بعدی",
@@ -92,6 +93,7 @@
       "prov.activeBadge": "Active ⭐",
       "prov.probeNever": "Untested",
       "prov.setActiveProvider": "Set active",
+      "prov.autoActive": "Provider activated — the bot now answers with it.",
       "prov.needKeyFirst": "Set the key first",
       "prov.keyRequired": "Enter the API key",
       "prov.nextTitle": "Next step",
@@ -149,7 +151,7 @@
   ];
 
   function urlOk(u) {
-    return /^https:\/\/[^\s/$.?#].[^\s]*$/i.test(String(u || "").trim());
+    return /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(String(u || "").trim());
   }
 
   function render(el, ctx) {
@@ -395,7 +397,12 @@
           activateBtn.disabled = true;
           try {
             const r = await ctx.api("providers.setActive", { id: p.id });
-            ctx.toast(ctx.t("prov.activated") + (r.label ? ": " + r.label : "") + " ✓");
+            let msg = ctx.t("prov.activated") + (r.label ? ": " + r.label : "") + " ✓";
+            // Probe on select: warn inline when the fresh selection doesn't answer.
+            if (r.probe && !r.probe.ok) {
+              msg += "\n⚠️ " + ctx.t("prov.probeFailLine") + (r.probe.message ? ": " + r.probe.message : "");
+            }
+            ctx.toast(msg);
           } catch (e) {
             ctx.toast((e && e.message) || ctx.t("toast.failed"));
           }
@@ -892,12 +899,18 @@
           }
           const r = await ctx.api("providers.add", payload);
           const ids = picker.selectedIds();
+          let autoSelected = r.autoSelected;
           if (ids.length) {
             try {
-              await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+              const im = await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+              if (im.autoSelected) autoSelected = im.autoSelected;
             } catch (e) { /* provider is saved; models can be added later */ }
           }
-          ctx.toast(ctx.t("prov.justAdded"));
+          // Auto-select: tell the owner they're live, no extra steps needed.
+          ctx.toast(
+            ctx.t("prov.justAdded") +
+              (autoSelected ? "\n✅ " + ctx.t("prov.autoActive") : "")
+          );
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {
           ctx.toast((e && e.message) || ctx.t("toast.failed"));

@@ -248,6 +248,14 @@ export const PANEL_STRINGS: Record<string, Record<PanelLang, string>> = {
     fa: "پروایدرها، مدل‌ها، جایگزین خودکار و جستجوی وب — کدوم بخش؟",
     en: "Providers, models, automatic failover, and web search — which section?",
   },
+  "panel.ai.active_line": {
+    fa: "✅ فعال: {p} / {m}",
+    en: "✅ Active: {p} / {m}",
+  },
+  "panel.ai.inactive_line": {
+    fa: "⚠️ هیچ پروایدر فعالی انتخاب نشده — بات در حالت آزمایشی جواب می‌دهد.",
+    en: "⚠️ No active provider selected — the bot answers in test mode.",
+  },
   "panel.ai.menu.providers": {
     fa: "پروایدرها",
     en: "Providers",

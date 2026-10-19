@@ -166,7 +166,7 @@ export const en: LanguagePack = {
   "help.cmd.loop": "Repeating task loop",
   "help.cmd.cron": "Scheduled tasks",
   "help.cmd.learn": "Draft a new skill",
-  "progress.thinking": "Thinking…",
+  "progress.thinking": "🧠Thinking…",
   "progress.tool_running": "{label}…",
   "progress.tool_done": "{label} done.",
 

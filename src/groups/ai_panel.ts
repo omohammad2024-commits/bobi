@@ -34,8 +34,15 @@ export function aiMenuKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
     .text(tr(lang, "panel.back"), encode({ kind: "menu" }));
 }
 
-export function aiMenuText(lang: PanelLang = "fa"): string {
-  return [tr(lang, "panel.ai.menu_title"), tr(lang, "panel.ai.menu_hint")].join("\n");
+export function aiMenuText(
+  lang: PanelLang = "fa",
+  active?: { providerLabel: string; modelLabel: string } | null,
+): string {
+  const statusLine =
+    active !== undefined && active !== null
+      ? tr(lang, "panel.ai.active_line", { p: active.providerLabel, m: active.modelLabel })
+      : tr(lang, "panel.ai.inactive_line");
+  return [tr(lang, "panel.ai.menu_title"), statusLine, tr(lang, "panel.ai.menu_hint")].join("\n");
 }
 
 // ---------- failover ----------
