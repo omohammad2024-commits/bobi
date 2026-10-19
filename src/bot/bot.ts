@@ -2,8 +2,6 @@ import { Bot, Context, InlineKeyboard, InputFile } from "grammy";
 import {
   buildMainMenu,
   replyForCallback,
-  buildLangKeyboard,
-  isLangCallback,
   buildVoiceKeyboard,
   isVoiceCallback,
   VOICE_CALLBACKS,
@@ -14,7 +12,6 @@ import {
   helpGroupTitle,
   helpEntryLine,
   CALLBACKS,
-  LANG_CALLBACKS,
   type HelpGroup,
 } from "./menu";
 import { shouldHandleMessage } from "./filter";
@@ -44,7 +41,9 @@ import {
   PERSONALITY_CALLBACK_PREFIX,
   withChatAction,
 } from "./ux";
-import { t, resolveLang, LANG_PREF_KEY, type Lang } from "../i18n";
+import { t, type Lang } from "../i18n";
+import { runWithStreamSink, streamingEnabled, StreamRenderer } from "../agent/stream";
+import type { StreamEventSink } from "../agent/stream";
 import type { ConversationEngine } from "../conversation/engine";
 import { EngineError } from "../conversation/engine";
 import type { AgentStep } from "../agent/transcript";
@@ -52,7 +51,7 @@ import type { ToolService } from "../tools/service";
 import type { ToolActor } from "../tools/types";
 import type { AuthorizationService } from "../auth/service";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
-import { userMessageFor, isToolError } from "../tools/errors";
+import { isToolError } from "../tools/errors";
 import type { GroupAccessService } from "../groups/service";
 import type { PanelController } from "../groups/controller";
 import type { AiAdminController } from "../groups/ai_controller";
@@ -204,19 +203,17 @@ export interface BotDeps {
 const GROUP_NOT_READY_KEY = "gate.group_not_ready";
 
 /**
- * Phase D5: resolve the sender's UI language from user_prefs ("lang").
+ * The sender's UI language. English-only since v1.0: always "en".
  *
- * Falls back to Persian when prefs are absent, the sender is unknown, or the
- * stored value is anything but "en" — see resolveLang. Command handlers take
- * the resolved lang (defaulting to "fa") so they stay unit-testable.
+ * Kept as a function (rather than inlining "en") because dozens of call
+ * sites — including other workers' command modules — take it, and the
+ * signature stays stable while they migrate.
  */
 export function senderLang(
-  ctx: { from?: { id: number | string } | undefined },
-  prefs: UserPrefStore | undefined,
+  _ctx: { from?: { id: number | string } | undefined },
+  _prefs: UserPrefStore | undefined,
 ): Lang {
-  if (ctx.from === undefined || prefs === undefined) return "fa";
-  const userId = String(ctx.from.id);
-  return resolveLang(userId, (uid, key) => prefs.getUserPref(uid, key));
+  return "en";
 }
 
 /**
@@ -250,7 +247,7 @@ function toolActorFor(
 export async function gateGroup(
   ctx: Context,
   groups: GroupAccessService | undefined,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<boolean> {
   // No store configured: nothing to enforce. Groups simply stay ungated.
   if (!groups) return true;
@@ -314,7 +311,7 @@ export async function gateUser(
     `[sol] user blocked: ${userDenialNote({ userId, isOwner, chatType: ctx.chat.type }, decision)}`,
   );
   // A muted user hears nothing at all; a banned user gets one short, polite
-  // line. The denial speaks the sender's language (defaults to Persian).
+  // line. The denial is English (the bot's only UI language since v1.0).
   if (decision.state === "revoked") return false;
   const lang = senderLang(ctx, deps.prefs);
   await safeReply(ctx, t("gate.user_banned", lang));
@@ -349,6 +346,11 @@ function createProgress(ctx: Context, lang: Lang) {
   let sent = false;
 
   return {
+    /** The posted status message, once start() succeeded. */
+    get messageId(): number | undefined {
+      return messageId;
+    },
+
     /** Post the initial "working on it" message. */
     async start(): Promise<void> {
       try {
@@ -389,10 +391,140 @@ function createProgress(ctx: Context, lang: Lang) {
 
 const PROGRESS_THINKING_KEY = "progress.thinking";
 
+/**
+ * Streaming glue for one turn.
+ *
+ * When streaming applies (kill switch on, text reply modality, no
+ * skipped-attachment note to deliver, no voice-unavailable note pending),
+ * owns a StreamRenderer bound to the progress message plus the sink the
+ * agent loop consumes through the ambient scope (see src/agent/stream.ts).
+ *
+ * After the turn, deliver() either completes the answer IN PLACE — the
+ * progress message BECOMES the reply, so the user keeps reading where the
+ * stream left off — or returns false, in which case the caller runs the
+ * classic path (delete the status line, deliverReply). stop() halts the
+ * flush timer and must be called once the turn settles, whichever path ran.
+ */
+interface TurnStreamer {
+  /** The sink to install around engine.respond(), when streaming applies. */
+  readonly sink: StreamEventSink | undefined;
+  /** Stop the flush timer. Always call once the turn settles. */
+  stop(): void;
+  /**
+   * Deliver the final chunks. Returns true when the answer went out in
+   * place (skip progress.finish() + deliverReply), false otherwise.
+   */
+  deliver(chunks: readonly string[]): Promise<boolean>;
+}
+
+/** Max one placeholder edit per second — Telegram's safe cadence for edits. */
+const STREAM_EDIT_INTERVAL_MS = 1000;
+
+function createTurnStreamer(
+  ctx: Context,
+  deps: BotDeps,
+  progress: ReturnType<typeof createProgress>,
+  opts: {
+    lang: Lang;
+    userId: string;
+    inputWasVoice: boolean;
+    chatType: string;
+    /** Attachments that could not be used; named before the answer. */
+    skippedCount: number;
+  },
+): TurnStreamer {
+  const inactive: TurnStreamer = {
+    sink: undefined,
+    stop: () => undefined,
+    deliver: () => Promise.resolve(false),
+  };
+
+  // The kill switch short-circuits everything: no sink, no renderer, the
+  // classic path runs untouched.
+  if (!streamingEnabled()) return inactive;
+
+  // Streaming renders into a text message. Voice replies are synthesised
+  // from the final text instead, and two special notes (skipped attachments,
+  // voice-unavailable) are delivered as separate messages around the answer
+  // — all three would fight an in-place render, so those turns keep the
+  // classic path.
+  let pref: VoicePref = "auto";
+  try {
+    if (deps.prefs !== undefined) {
+      pref = resolveVoicePref(deps.prefs.getUserPref(opts.userId, VOICE_MODE_KEY));
+    }
+  } catch {
+    pref = "auto";
+  }
+  const ttsConfigured = deps.tts !== undefined && deps.tts.baseUrl.trim().length > 0;
+  const textModality =
+    decideReplyModality({
+      pref,
+      inputWasVoice: opts.inputWasVoice,
+      chatType: opts.chatType,
+      ttsConfigured,
+    }) === "text";
+  const voiceNotePending = opts.inputWasVoice && !ttsConfigured && deps.prefs !== undefined;
+  if (!textModality || voiceNotePending || opts.skippedCount > 0) return inactive;
+
+  const renderer = new StreamRenderer((text) => progress.update(text));
+  const sink: StreamEventSink = (ev) => {
+    switch (ev.type) {
+      case "token": {
+        // The first token bypasses the throttle so the time to the first
+        // visible word tracks the network, not the flush interval.
+        const first = !renderer.started;
+        renderer.push(ev.delta);
+        if (first) void renderer.flushNow();
+        break;
+      }
+      case "toolcall":
+      case "restart":
+        // The stream resolved into tool calls, or died and is being
+        // re-answered in one shot: drop the partial text. The tool progress
+        // lines (toolcall) or the thinking line (restart) take over the
+        // message from here via the normal onProgress path.
+        renderer.suspend();
+        if (ev.type === "restart") void progress.update(t(PROGRESS_THINKING_KEY, opts.lang));
+        break;
+      case "error":
+        renderer.stop();
+        break;
+    }
+  };
+  const timer = setInterval(() => {
+    void renderer.flush();
+  }, STREAM_EDIT_INTERVAL_MS);
+
+  return {
+    sink,
+    stop: () => clearInterval(timer),
+    deliver: async (chunks) => {
+      clearInterval(timer);
+      renderer.stop();
+      if (!renderer.started || chunks.length === 0) return false;
+      const messageId = progress.messageId;
+      let edited = false;
+      if (messageId !== undefined && ctx.chat !== undefined) {
+        try {
+          await ctx.api.editMessageText(ctx.chat.id, messageId, chunks[0]!);
+          edited = true;
+        } catch {
+          // The edit was refused (deleted message, rate limit): fall
+          // through and send everything as new messages instead.
+          edited = false;
+        }
+      }
+      for (const c of edited ? chunks.slice(1) : chunks) await ctx.reply(c);
+      return true;
+    },
+  };
+}
+
 /** The progress line for one step, in the sender's language. */
 function progressText(step: AgentStep, lang: Lang): string | undefined {
   if (step.kind !== "tool") return undefined;
-  const label = toolProgressLabel(lang, step.name);
+  const label = toolProgressLabel(step.name);
   return step.status === "ok"
     ? t("progress.tool_running", lang, { label })
     : t("progress.tool_done", lang, { label });
@@ -502,7 +634,7 @@ export const MAX_TRANSCRIBED_AUDIO_PARTS = 2;
 
 /** The label that replaces a transcribed voice message. Exported for tests. */
 export function transcriptLabel(transcript: string): string {
-  return `[متن پیام صوتی]: ${transcript}`;
+  return `[voice message transcript]: ${transcript}`;
 }
 
 /** One transcription call, injected so tests can stub it. */
@@ -566,8 +698,8 @@ export async function transcribeAudioParts(
 }
 
 /** Bilingual notes for voice-reply delivery. Exported for tests. */
-export const VOICE_FAILED_NOTE = t("voice.tts_failed", "fa");
-export const VOICE_TRUNCATED_NOTE = t("voice.truncated", "fa");
+export const VOICE_FAILED_NOTE = t("voice.tts_failed");
+export const VOICE_TRUNCATED_NOTE = t("voice.truncated");
 
 /** The context deliverReply needs: sending plus, optionally, chat actions. */
 export interface DeliverCtx {
@@ -614,18 +746,16 @@ export async function deliverReply(
   const prefs = env.prefs;
   const ttsConfigured = tts !== undefined && tts.baseUrl.trim().length > 0;
   let pref: VoicePref = "auto";
-  let lang: Lang = "fa";
+  const lang: Lang = "en";
   try {
-    // The sender's UI language, for the delivery notes below. Resolved from
-    // the same validated pref store — never from message text.
+    // The sender's voice-mode preference, resolved from the validated pref
+    // store — never from message text. UI language is English-only (v1.0).
     if (prefs !== undefined) {
       pref = resolveVoicePref(prefs.getUserPref(userId, VOICE_MODE_KEY));
-      lang = resolveLang(userId, prefs.getUserPref.bind(prefs));
     }
   } catch {
     // A preference read failure is not a reason to break the reply: text.
     pref = "auto";
-    lang = "fa";
   }
 
   const inputWasVoice = opts.inputWasVoice === true;
@@ -726,7 +856,7 @@ export function voiceValueForCallback(data: string): VoicePref | undefined {
 /**
  * /voice: show or set the sender's voice-mode preference (auto/always/never).
  *
- * - `/voice` — the current mode plus tap-to-pick buttons (the /lang pattern).
+ * - `/voice` — the current mode plus tap-to-pick buttons.
  * - `/voice auto|always|never` — set it directly.
  *
  * Public under the two-tier model (voice is conversation): gated by the
@@ -740,7 +870,7 @@ export async function handleVoiceCommand(
     reply(text: string, extra?: { reply_markup: InlineKeyboard }): Promise<unknown>;
   },
   env: VoiceCommandEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
   arg?: string,
 ): Promise<void> {
   if (ctx.from === undefined) return;
@@ -834,7 +964,7 @@ export async function handleVoiceCallback(
   },
   env: VoiceCommandEnv,
   data: string,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   try {
     await ctx.answerCallbackQuery();
@@ -858,8 +988,8 @@ export async function handleVoiceCallback(
 /**
  * Phase G1 — user commands.
  *
- * All user-facing replies go through t() (Persian default, English when the
- * sender's user_prefs "lang" is "en"); all comments are English. Handlers are
+ * All user-facing replies go through t() (English-only since v1.0); all
+ * comments are English. Handlers are
  * exported with minimal context shapes (the handleVoiceCommand pattern) so
  * they are unit-testable without Telegram. Gates (group/user) stay in the
  * command registrations inside createBot, not in the handlers.
@@ -873,107 +1003,105 @@ export type { HelpGroup };
 /** One row of the /help listing. */
 export interface CommandHelpEntry {
   name: string;
-  descriptionFa: string;
+  /** English one-line description (mirrors the `help.cmd.<name>` pack entry). */
+  description: string;
   /** Owner-only entries are hidden from everyone else. */
   ownerOnly: boolean;
   /** /help section this command is listed under. */
   group: HelpGroup;
-  /** Example argument, rendered after the command (Persian). */
-  exampleFa?: string;
-  /** Example argument, rendered after the command (English). */
-  exampleEn?: string;
+  /** Example argument, rendered after the command. */
+  example?: string;
 }
 
 /**
- * Every command the bot registers, with a one-line Persian description,
+ * Every command the bot registers, with a one-line English description,
  * its /help section, and an example argument where one is genuinely useful.
  *
- * descriptionFa must stay byte-identical to the central `help.cmd.<name>`
- * pack value (asserted in tests/i18n.test.ts).
+ * `description` is sourced from the central `help.cmd.<name>` pack value, so
+ * the two can never drift apart.
  */
 export const COMMAND_HELP: readonly CommandHelpEntry[] = [
   // ---- general ----
-  // Two-tier access: the public surface is exactly start/help/commands/lang/voice.
+  // Two-tier access: the public surface is exactly start/help/commands/voice.
   // Every other command is owner-only (ownerOnly: true) — invisible to the
   // public in menus, /help and the palette, and refused by the tier gate.
-  { name: "start", descriptionFa: "شروع و نمایش منوی اصلی", ownerOnly: false, group: "general" },
-  { name: "help", descriptionFa: "راهنمای دستورها", ownerOnly: false, group: "general" },
-  { name: "commands", descriptionFa: "مرورگر دستورها", ownerOnly: false, group: "general" },
-  { name: "voice", descriptionFa: "انتخاب حالت پاسخ صوتی (خودکار/همیشه/هرگز)", ownerOnly: false, group: "general" },
-  { name: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", ownerOnly: true, group: "general" },
-  { name: "stop", descriptionFa: "توقف پاسخ در حال اجرا", ownerOnly: true, group: "general" },
-  { name: "lang", descriptionFa: "تغییر زبان رابط کاربری", ownerOnly: false, group: "general" },
-  { name: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", ownerOnly: true, group: "general" },
-  { name: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", ownerOnly: true, group: "general" },
+  { name: "start", description: t("help.cmd.start"), ownerOnly: false, group: "general" },
+  { name: "help", description: t("help.cmd.help"), ownerOnly: false, group: "general" },
+  { name: "commands", description: t("help.cmd.commands"), ownerOnly: false, group: "general" },
+  { name: "voice", description: t("help.cmd.voice"), ownerOnly: false, group: "general" },
+  { name: "reset", description: t("help.cmd.reset"), ownerOnly: true, group: "general" },
+  { name: "stop", description: t("help.cmd.stop"), ownerOnly: true, group: "general" },
+  { name: "personality", description: t("help.cmd.personality"), ownerOnly: true, group: "general" },
+  { name: "compress", description: t("help.cmd.compress"), ownerOnly: true, group: "general" },
   // ---- session ----
-  { name: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "20", exampleEn: "20" },
-  { name: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", ownerOnly: true, group: "session", exampleFa: "json", exampleEn: "json" },
-  { name: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", ownerOnly: true, group: "session" },
-  { name: "undo", descriptionFa: "بازگشت و بازنویسی", ownerOnly: true, group: "session", exampleFa: "2", exampleEn: "2" },
-  { name: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "resume", descriptionFa: "ازسرگیری نشست", ownerOnly: true, group: "session", exampleFa: "ایده‌ها", exampleEn: "ideas" },
-  { name: "sessions", descriptionFa: "نشست‌های قبلی", ownerOnly: true, group: "session" },
-  { name: "status", descriptionFa: "وضعیت", ownerOnly: true, group: "session" },
-  { name: "context", descriptionFa: "وضعیت حافظهٔ زمینه", ownerOnly: true, group: "session" },
-  { name: "busy", descriptionFa: "رفتار هنگام مشغولی", ownerOnly: true, group: "session", exampleFa: "queue", exampleEn: "queue" },
-  { name: "whoami", descriptionFa: "نقش من", ownerOnly: true, group: "session" },
-  { name: "footer", descriptionFa: "پانویس فنی", ownerOnly: true, group: "session", exampleFa: "on", exampleEn: "on" },
-  { name: "version", descriptionFa: "نسخهٔ بابی", ownerOnly: true, group: "session" },
-  { name: "new", descriptionFa: "شروع نشست تازه", ownerOnly: true, group: "session" },
+  { name: "history", description: t("help.cmd.history"), ownerOnly: true, group: "session", example: "20" },
+  { name: "save", description: t("help.cmd.save"), ownerOnly: true, group: "session", example: "json" },
+  { name: "retry", description: t("help.cmd.retry"), ownerOnly: true, group: "session" },
+  { name: "undo", description: t("help.cmd.undo"), ownerOnly: true, group: "session", example: "2" },
+  { name: "title", description: t("help.cmd.title"), ownerOnly: true, group: "session", example: "ideas" },
+  { name: "branch", description: t("help.cmd.branch"), ownerOnly: true, group: "session", example: "ideas" },
+  { name: "resume", description: t("help.cmd.resume"), ownerOnly: true, group: "session", example: "ideas" },
+  { name: "sessions", description: t("help.cmd.sessions"), ownerOnly: true, group: "session" },
+  { name: "status", description: t("help.cmd.status"), ownerOnly: true, group: "session" },
+  { name: "context", description: t("help.cmd.context"), ownerOnly: true, group: "session" },
+  { name: "busy", description: t("help.cmd.busy"), ownerOnly: true, group: "session", example: "queue" },
+  { name: "whoami", description: t("help.cmd.whoami"), ownerOnly: true, group: "session" },
+  { name: "footer", description: t("help.cmd.footer"), ownerOnly: true, group: "session", example: "on" },
+  { name: "version", description: t("help.cmd.version"), ownerOnly: true, group: "session" },
+  { name: "new", description: t("help.cmd.new"), ownerOnly: true, group: "session" },
   // ---- automation ----
-  { name: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", ownerOnly: true, group: "automation", exampleFa: "خلاصهٔ اخبار", exampleEn: "news summary" },
-  { name: "btw", descriptionFa: "پرسش جانبی", ownerOnly: true, group: "automation", exampleFa: "این چیه؟", exampleEn: "what is this?" },
-  { name: "queue", descriptionFa: "صف‌بندی پیام", ownerOnly: true, group: "automation", exampleFa: "متن پیام", exampleEn: "message text" },
-  { name: "steer", descriptionFa: "تزریق راهنمایی", ownerOnly: true, group: "automation", exampleFa: "کوتاه جواب بده", exampleEn: "keep it short" },
-  { name: "agents", descriptionFa: "ایجنت‌های فعال", ownerOnly: true, group: "automation" },
-  { name: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", ownerOnly: true, group: "automation" },
-  { name: "blueprint", descriptionFa: "اتوماسیون از قالب", ownerOnly: true, group: "automation" },
-  { name: "refine", descriptionFa: "استخراج درس از گفت‌وگو", ownerOnly: true, group: "automation" },
-  { name: "review", descriptionFa: "بازبینی مستقل", ownerOnly: true, group: "automation" },
-  { name: "plan", descriptionFa: "طرح اجرایی", ownerOnly: true, group: "automation", exampleFa: "کمپین تابستانه", exampleEn: "summer campaign" },
-  { name: "moa", descriptionFa: "اجرای چندمدلی", ownerOnly: true, group: "automation", exampleFa: "کدوم گوشی؟", exampleEn: "which phone?" },
-  { name: "memory", descriptionFa: "مدیریت حافظه", ownerOnly: true, group: "automation" },
-  { name: "bundles", descriptionFa: "بسته‌های مهارت", ownerOnly: true, group: "automation" },
-  { name: "digest", descriptionFa: "خلاصهٔ تعاملی امروز", ownerOnly: true, group: "automation" },
+  { name: "bg", description: t("help.cmd.bg"), ownerOnly: true, group: "automation", example: "news summary" },
+  { name: "btw", description: t("help.cmd.btw"), ownerOnly: true, group: "automation", example: "what is this?" },
+  { name: "queue", description: t("help.cmd.queue"), ownerOnly: true, group: "automation", example: "message text" },
+  { name: "steer", description: t("help.cmd.steer"), ownerOnly: true, group: "automation", example: "keep it short" },
+  { name: "agents", description: t("help.cmd.agents"), ownerOnly: true, group: "automation" },
+  { name: "suggestions", description: t("help.cmd.suggestions"), ownerOnly: true, group: "automation" },
+  { name: "blueprint", description: t("help.cmd.blueprint"), ownerOnly: true, group: "automation" },
+  { name: "refine", description: t("help.cmd.refine"), ownerOnly: true, group: "automation" },
+  { name: "review", description: t("help.cmd.review"), ownerOnly: true, group: "automation" },
+  { name: "plan", description: t("help.cmd.plan"), ownerOnly: true, group: "automation", example: "summer campaign" },
+  { name: "moa", description: t("help.cmd.moa"), ownerOnly: true, group: "automation", example: "which phone?" },
+  { name: "memory", description: t("help.cmd.memory"), ownerOnly: true, group: "automation" },
+  { name: "bundles", description: t("help.cmd.bundles"), ownerOnly: true, group: "automation" },
+  { name: "digest", description: t("help.cmd.digest"), ownerOnly: true, group: "automation" },
   // ---- owner ----
-  { name: "admin", descriptionFa: "پنل مدیریت ربات", ownerOnly: true, group: "owner" },
-  { name: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", ownerOnly: true, group: "owner" },
-  { name: "snapshot", descriptionFa: "پشتیبان‌گیری از وضعیت", ownerOnly: true, group: "owner" },
-  { name: "restart", descriptionFa: "راه‌اندازی مجدد ربات", ownerOnly: true, group: "owner" },
-  { name: "update", descriptionFa: "به‌روزرسانی بابی", ownerOnly: true, group: "owner" },
-  { name: "debug", descriptionFa: "گزارش اشکال‌زدایی", ownerOnly: true, group: "owner" },
-  { name: "usage", descriptionFa: "مصرف توکن", ownerOnly: true, group: "owner" },
-  { name: "insights", descriptionFa: "تحلیل مصرف", ownerOnly: true, group: "owner" },
-  { name: "model", descriptionFa: "تغییر مدل", ownerOnly: true, group: "owner" },
-  { name: "reasoning", descriptionFa: "سطح استدلال", ownerOnly: true, group: "owner", exampleFa: "low", exampleEn: "low" },
-  { name: "autoprune", descriptionFa: "حذف خودکار نشست‌ها", ownerOnly: true, group: "owner" },
-  { name: "tools", descriptionFa: "مدیریت ابزارها", ownerOnly: true, group: "owner" },
-  { name: "skills", descriptionFa: "مدیریت مهارت‌ها", ownerOnly: true, group: "owner" },
-  { name: "curator", descriptionFa: "نگهداری حافظه", ownerOnly: true, group: "owner" },
-  { name: "plugins", descriptionFa: "افزونه‌ها", ownerOnly: true, group: "owner" },
-  { name: "reload_mcp", descriptionFa: "بارگذاری مجدد MCP", ownerOnly: true, group: "owner" },
-  { name: "reload_skills", descriptionFa: "اسکن مجدد مهارت‌ها", ownerOnly: true, group: "owner" },
-  { name: "approve", descriptionFa: "تأیید درخواست", ownerOnly: true, group: "owner" },
-  { name: "deny", descriptionFa: "رد درخواست", ownerOnly: true, group: "owner" },
-  { name: "sethome", descriptionFa: "کانال اصلی", ownerOnly: true, group: "owner" },
-  { name: "pause", descriptionFa: "توقف اضطراری", ownerOnly: true, group: "owner" },
-  { name: "goal", descriptionFa: "هدف ماندگار", ownerOnly: true, group: "owner", exampleFa: "ورزش روزانه", exampleEn: "daily exercise" },
-  { name: "subgoal", descriptionFa: "زیراهداف", ownerOnly: true, group: "owner", exampleFa: "پیاده‌روی", exampleEn: "a walk" },
-  { name: "heartbeat", descriptionFa: "یادآور دوره‌ای", ownerOnly: true, group: "owner" },
-  { name: "loop", descriptionFa: "تکرار خودکار", ownerOnly: true, group: "owner" },
-  { name: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", ownerOnly: true, group: "owner" },
-  { name: "learn", descriptionFa: "آموزش مهارت", ownerOnly: true, group: "owner" },
-  { name: "ban", descriptionFa: "مسدود کردن کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
-  { name: "unban", descriptionFa: "رفع مسدودیت کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
-  { name: "mute", descriptionFa: "نادیده گرفتن پیام‌های کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
-  { name: "unmute", descriptionFa: "رفع نادیده گرفتن کاربر", ownerOnly: true, group: "owner", exampleFa: "123456", exampleEn: "123456" },
+  { name: "admin", description: t("help.cmd.admin"), ownerOnly: true, group: "owner" },
+  { name: "ai", description: t("help.cmd.ai"), ownerOnly: true, group: "owner" },
+  { name: "snapshot", description: t("help.cmd.snapshot"), ownerOnly: true, group: "owner" },
+  { name: "restart", description: t("help.cmd.restart"), ownerOnly: true, group: "owner" },
+  { name: "update", description: t("help.cmd.update"), ownerOnly: true, group: "owner" },
+  { name: "debug", description: t("help.cmd.debug"), ownerOnly: true, group: "owner" },
+  { name: "usage", description: t("help.cmd.usage"), ownerOnly: true, group: "owner" },
+  { name: "insights", description: t("help.cmd.insights"), ownerOnly: true, group: "owner" },
+  { name: "model", description: t("help.cmd.model"), ownerOnly: true, group: "owner" },
+  { name: "reasoning", description: t("help.cmd.reasoning"), ownerOnly: true, group: "owner", example: "low" },
+  { name: "autoprune", description: t("help.cmd.autoprune"), ownerOnly: true, group: "owner" },
+  { name: "tools", description: t("help.cmd.tools"), ownerOnly: true, group: "owner" },
+  { name: "skills", description: t("help.cmd.skills"), ownerOnly: true, group: "owner" },
+  { name: "curator", description: t("help.cmd.curator"), ownerOnly: true, group: "owner" },
+  { name: "plugins", description: t("help.cmd.plugins"), ownerOnly: true, group: "owner" },
+  { name: "reload_mcp", description: t("help.cmd.reload_mcp"), ownerOnly: true, group: "owner" },
+  { name: "reload_skills", description: t("help.cmd.reload_skills"), ownerOnly: true, group: "owner" },
+  { name: "approve", description: t("help.cmd.approve"), ownerOnly: true, group: "owner" },
+  { name: "deny", description: t("help.cmd.deny"), ownerOnly: true, group: "owner" },
+  { name: "sethome", description: t("help.cmd.sethome"), ownerOnly: true, group: "owner" },
+  { name: "pause", description: t("help.cmd.pause"), ownerOnly: true, group: "owner" },
+  { name: "goal", description: t("help.cmd.goal"), ownerOnly: true, group: "owner", example: "daily exercise" },
+  { name: "subgoal", description: t("help.cmd.subgoal"), ownerOnly: true, group: "owner", example: "a walk" },
+  { name: "heartbeat", description: t("help.cmd.heartbeat"), ownerOnly: true, group: "owner" },
+  { name: "loop", description: t("help.cmd.loop"), ownerOnly: true, group: "owner" },
+  { name: "cron", description: t("help.cmd.cron"), ownerOnly: true, group: "owner" },
+  { name: "learn", description: t("help.cmd.learn"), ownerOnly: true, group: "owner" },
+  { name: "ban", description: t("help.cmd.ban"), ownerOnly: true, group: "owner", example: "123456" },
+  { name: "unban", description: t("help.cmd.unban"), ownerOnly: true, group: "owner", example: "123456" },
+  { name: "mute", description: t("help.cmd.mute"), ownerOnly: true, group: "owner", example: "123456" },
+  { name: "unmute", description: t("help.cmd.unmute"), ownerOnly: true, group: "owner", example: "123456" },
   // ---- phase-3 ----
-  { name: "skill", descriptionFa: "نصب و مدیریت مهارت‌ها", ownerOnly: true, group: "owner" },
-  { name: "bench", descriptionFa: "بنچ‌مارک و روند کیفیت", ownerOnly: true, group: "owner" },
-  { name: "gassistant", descriptionFa: "حالت دستیار گروه", ownerOnly: true, group: "owner" },
-  { name: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", ownerOnly: true, group: "owner" },
-  { name: "gpoll", descriptionFa: "نظرسنجی در گروه", ownerOnly: true, group: "owner" },
+  { name: "skill", description: t("help.cmd.skill"), ownerOnly: true, group: "owner" },
+  { name: "bench", description: t("help.cmd.bench"), ownerOnly: true, group: "owner" },
+  { name: "gassistant", description: t("help.cmd.gassistant"), ownerOnly: true, group: "owner" },
+  { name: "gsummary", description: t("help.cmd.gsummary"), ownerOnly: true, group: "owner" },
+  { name: "gpoll", description: t("help.cmd.gpoll"), ownerOnly: true, group: "owner" },
 ];
 
 /**
@@ -988,7 +1116,7 @@ export function visibleCommandHelp(isOwner: boolean): readonly CommandHelpEntry[
 /** Render the /help text, grouped by category with usage examples. Pure, for tests. */
 export function formatCommandHelp(
   entries: readonly CommandHelpEntry[],
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): string {
   const order: HelpGroup[] = ["general", "session", "automation", "owner"];
   const parts: string[] = [helpTitle(lang)];
@@ -997,9 +1125,8 @@ export function formatCommandHelp(
     if (inGroup.length === 0) continue;
     parts.push("", helpGroupTitle(group, lang));
     for (const c of inGroup) {
-      const example = lang === "fa" ? c.exampleFa : c.exampleEn;
       parts.push(
-        helpEntryLine(c.name, t(`help.cmd.${c.name}`, lang), example, lang),
+        helpEntryLine(c.name, t(`help.cmd.${c.name}`, lang), c.example, lang),
       );
     }
   }
@@ -1055,7 +1182,7 @@ function onboardingEnv(ctx: Context, deps: BotDeps): OnboardingEnv | undefined {
 export async function handleHelpCommand(
   ctx: { reply(text: string): Promise<unknown> },
   isOwner: boolean,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   await safeReply(ctx, formatCommandHelp(visibleCommandHelp(isOwner), lang));
 }
@@ -1091,7 +1218,7 @@ export async function handleResetCommand(
     reply(text: string): Promise<unknown>;
   },
   env: ResetEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.chat === undefined || ctx.from === undefined) return;
   const userId = String(ctx.from.id);
@@ -1154,7 +1281,7 @@ export async function handlePersonalityCommand(
     reply(text: string, extra?: Record<string, unknown>): Promise<unknown>;
   },
   env: PersonalityCommandEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.from === undefined) return;
   if (env.prefs === undefined) {
@@ -1181,15 +1308,15 @@ export async function handlePersonalityCommand(
       const mark = skin.name === currentName ? t("personality.current_mark", lang) : "";
       return t("personality.list_item", lang, {
         name: skin.name,
-        label: lang === "en" ? skin.labelEn : skin.labelFa,
-        description: lang === "en" ? skin.descriptionEn : skin.descriptionFa,
+        label: skin.labelEn,
+        description: skin.descriptionEn,
         mark,
       });
     });
     const keyboard = buildPersonalityKeyboard(
       skins.map((s) => ({
         name: s.name,
-        label: lang === "en" ? s.labelEn : s.labelFa,
+        label: s.labelEn,
       })),
       currentName,
       lang,
@@ -1210,7 +1337,7 @@ export async function handlePersonalityCommand(
       ctx,
       t("personality.unknown", lang, {
         name: rawArg.trim(),
-        options: personalityNames().join("، "),
+        options: personalityNames().join(", "),
       }),
     );
     return;
@@ -1222,108 +1349,8 @@ export async function handlePersonalityCommand(
     return;
   }
   const skin = getPersonality(name);
-  const label = lang === "en" ? skin?.labelEn ?? name : skin?.labelFa ?? name;
+  const label = skin?.labelEn ?? name;
   await safeReply(ctx, t("personality.changed", lang, { label }));
-}
-
-// ---------------------------------------------------------------- /lang ----
-
-/** The environment /lang needs: the per-user preference store. */
-export type LangCommandEnv = Pick<BotDeps, "prefs">;
-
-/**
- * Map lang-picker callback data to the canonical language value.
- *
- * Anything but the two known callbacks (forged "lang:de", truncated data)
- * maps to undefined and is rejected by handleLangCallback.
- * Pure, for tests.
- */
-export function langValueForCallback(data: string): Lang | undefined {
-  if (data === LANG_CALLBACKS.fa) return "fa";
-  if (data === LANG_CALLBACKS.en) return "en";
-  return undefined;
-}
-
-/**
- * /lang: show the language picker (فارسی / English buttons).
- *
- * The write itself happens in handleLangCallback, which only ever stores the
- * two canonical values — raw callback data is never persisted. Gated by the
- * caller (same group/user gates as the message path). Never throws.
- */
-export async function handleLangCommand(
-  ctx: {
-    from?: { id: number | string } | undefined;
-    reply(
-      text: string,
-      extra?: { reply_markup: InlineKeyboard },
-    ): Promise<unknown>;
-  },
-  env: LangCommandEnv,
-  lang: Lang = "fa",
-): Promise<void> {
-  if (ctx.from === undefined) return;
-  if (env.prefs === undefined) {
-    await safeReply(ctx, t("lang.unavailable", lang));
-    return;
-  }
-  try {
-    await ctx.reply(t("lang.prompt", lang), {
-      reply_markup: buildLangKeyboard(lang),
-    });
-  } catch {
-    // Best effort: the user cannot be reached.
-  }
-}
-
-/**
- * /lang button click: persist the sender's chosen language.
- *
- * SECURITY: only the two canonical values are ever written to user_prefs;
- * junk callback data is rejected without touching the store. Raw callback
- * text never reaches t() as a language (the pack is indexed by `value`,
- * which is exactly "fa" | "en" here). The confirmation is sent in the NEW
- * language so the switch is immediately visible to the sender.
- *
- * Gated by the caller; never throws.
- */
-export async function handleLangCallback(
-  ctx: {
-    from?: { id: number | string } | undefined;
-    answerCallbackQuery(text?: string): Promise<unknown>;
-    reply(text: string): Promise<unknown>;
-  },
-  env: LangCommandEnv,
-  data: string,
-  lang: Lang = "fa",
-): Promise<void> {
-  try {
-    await ctx.answerCallbackQuery();
-  } catch {
-    // Best effort: Telegram shows the loading indicator briefly.
-  }
-  if (ctx.from === undefined) return;
-  const value = langValueForCallback(data);
-  if (value === undefined) {
-    // Junk picker data — reject, don't persist.
-    await safeReply(ctx, t("lang.unknown", lang));
-    return;
-  }
-  if (env.prefs === undefined) {
-    await safeReply(ctx, t("lang.unavailable", lang));
-    return;
-  }
-  const userId = String(ctx.from.id);
-  try {
-    env.prefs.setUserPref(userId, LANG_PREF_KEY, value);
-  } catch {
-    await safeReply(ctx, t("prefs.save_failed", lang));
-    return;
-  }
-  await safeReply(
-    ctx,
-    t("lang.changed", value, { label: t(`lang.label.${value}`, value) }),
-  );
 }
 
 // ------------------------------------------------------------ /compress ----
@@ -1339,12 +1366,12 @@ const COMPRESS_KEYS: Readonly<Record<CompressResult, string>> = {
   unavailable: "compress.unavailable",
 };
 
-/** Persian reply per compressNow outcome. Exported for tests. */
+/** English reply per compressNow outcome. Exported for tests. */
 export const COMPRESS_REPLIES: Readonly<Record<CompressResult, string>> = {
-  compressed: t("compress.compressed", "fa"),
-  nothing_to_compress: t("compress.nothing", "fa"),
-  failed: t("compress.failed", "fa"),
-  unavailable: t("compress.unavailable", "fa"),
+  compressed: t("compress.compressed"),
+  nothing_to_compress: t("compress.nothing"),
+  failed: t("compress.failed"),
+  unavailable: t("compress.unavailable"),
 };
 
 /**
@@ -1362,7 +1389,7 @@ export async function handleCompressCommand(
     reply(text: string): Promise<unknown>;
   },
   env: CompressEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.chat === undefined || ctx.from === undefined) return;
   let result: CompressResult;
@@ -1433,7 +1460,7 @@ export async function handleStopCommand(
     reply(text: string): Promise<unknown>;
   },
   env: StopEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.chat === undefined) return;
   const conversationId = String(ctx.chat.id);
@@ -1615,38 +1642,68 @@ async function runTurnInner(
       return;
     }
 
-    const out = await engine.respond({
-      conversationId,
-      userId,
-      userText: text,
-      // Bilingual agent output: the sender's UI language reaches the agent's
-      // own system prompt, so its replies follow /lang (fa default).
+    // Streaming: when every precondition holds, the answer renders into the
+    // progress message as the tokens arrive (throttled to ~1 edit/sec);
+    // otherwise the streamer is inactive and the classic path below runs
+    // untouched.
+    const inputWasVoice = ctx.message?.voice !== undefined || ctx.message?.audio !== undefined;
+    const streamer = createTurnStreamer(ctx, deps, progress, {
       lang,
-      ...(actor !== undefined ? { actor } : {}),
-      ...(finalParts.length > 0 ? { parts: finalParts } : {}),
-      onProgress: (step) => {
-        const line = progressText(step, lang);
-        if (line !== undefined) void progress.update(line);
-      },
-    });
-
-    // Remove the status line before the answer, so the chat shows only the
-    // reply once it exists.
-    await progress.finish();
-
-    // An attachment that could not be used is named before the answer, so the
-    // model's reply is not read as a comment on something it never received.
-    const note = describeSkipped(media.skipped, lang);
-    if (note.length > 0) await ctx.reply(note);
-
-    // Phase-2 item 5 (voice-first): the reply modality mirrors the input —
-    // a voice note gets a voice answer automatically in private chats (the
-    // sender can override with /voice). Text in → text out, unchanged.
-    // Failures fall back to text inside.
-    await deliverReply(ctx, deps, userId, out.chunks, synthesizeSpeech, {
-      inputWasVoice: ctx.message?.voice !== undefined || ctx.message?.audio !== undefined,
+      userId,
+      inputWasVoice,
       chatType: ctx.chat?.type ?? "private",
+      skippedCount: media.skipped.length,
     });
+
+    const respond = () =>
+      engine.respond({
+        conversationId,
+        userId,
+        userText: text,
+        // English-only agent output (v1.0): the turn's language is always
+        // English, so the agent's replies are English.
+        lang,
+        ...(actor !== undefined ? { actor } : {}),
+        ...(finalParts.length > 0 ? { parts: finalParts } : {}),
+        onProgress: (step) => {
+          const line = progressText(step, lang);
+          if (line !== undefined) void progress.update(line);
+        },
+      });
+    let out: Awaited<ReturnType<typeof respond>>;
+    try {
+      out =
+        streamer.sink !== undefined
+          ? await runWithStreamSink(streamer.sink, respond)
+          : await respond();
+    } finally {
+      streamer.stop();
+    }
+
+    // A streamed answer is delivered in place: the progress message became
+    // the reply, so there is nothing left to do. Otherwise remove the status
+    // line and deliver classically. (Turns that need the skipped-attachment
+    // or voice-unavailable notes keep the streamer inactive, so those notes
+    // still land exactly where the classic path puts them.)
+    if (!(await streamer.deliver(out.chunks))) {
+      // Remove the status line before the answer, so the chat shows only the
+      // reply once it exists.
+      await progress.finish();
+
+      // An attachment that could not be used is named before the answer, so the
+      // model's reply is not read as a comment on something it never received.
+      const note = describeSkipped(media.skipped, lang);
+      if (note.length > 0) await ctx.reply(note);
+
+      // Phase-2 item 5 (voice-first): the reply modality mirrors the input —
+      // a voice note gets a voice answer automatically in private chats (the
+      // sender can override with /voice). Text in → text out, unchanged.
+      // Failures fall back to text inside.
+      await deliverReply(ctx, deps, userId, out.chunks, synthesizeSpeech, {
+        inputWasVoice,
+        chatType: ctx.chat?.type ?? "private",
+      });
+    }
     // Media a tool produced for the user (a generated image, say) follows the
     // text. It never entered the prompt or history — this is its only trip.
     for (const part of out.media.slice(0, MAX_MEDIA_PER_REPLY)) {
@@ -1838,15 +1895,6 @@ export function createBot(token: string, deps: BotDeps): Bot {
     await handlePersonalityCommand(ctx, deps, lang);
   });
 
-  // ---- /lang — language picker for the sender ----
-  // Same gates as the message path; the preference is per-user. The picker
-  // buttons are handled in the callback_query:data handler below.
-  bot.command("lang", async (ctx) => {
-    const lang = senderLang(ctx, deps.prefs);
-    if (!(await gateGroup(ctx, groups, lang))) return;
-    if (!(await gateUser(ctx, deps))) return;
-    await handleLangCommand(ctx, deps, lang);
-  });
 
   // ---- /compress — immediate summary compression of this conversation ----
   // Owner-only (two-tier model). The reply is a confirmation only, never
@@ -1935,16 +1983,6 @@ export function createBot(token: string, deps: BotDeps): Bot {
       const handled = await userPanel.handleCallback(ctx, data);
       if (handled) return;
     }
-    // The /lang picker is its own namespace. Clicks re-run the same
-    // group/user gates as the /lang command; junk picker data is rejected
-    // by handleLangCallback rather than falling through to the menu.
-    if (isLangCallback(data)) {
-      const lang = senderLang(ctx, deps.prefs);
-      if (!(await gateGroup(ctx, groups, lang))) return;
-      if (!(await gateUser(ctx, deps))) return;
-      await handleLangCallback(ctx, deps, data, lang);
-      return;
-    }
     // The /voice picker (voice:) — its own namespace, like the lang: picker.
     // Public under the two-tier model (voice is conversation): clicks re-run
     // the same group/user gates as the /voice command, junk picker data is
@@ -1979,7 +2017,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
         return;
       }
       const skin = getPersonality(name);
-      const label = lang === "en" ? skin?.labelEn ?? name : skin?.labelFa ?? name;
+      const label = skin?.labelEn ?? name;
       await safeReply(ctx, t("personality.changed", lang, { label }));
       return;
     }
@@ -2241,7 +2279,7 @@ export function userFacingMessage(err: unknown, lang: Lang): string {
       default: return t("error.unknown", lang);
     }
   }
-  if (isToolError(err)) return userMessageFor(err.kind);
+  if (isToolError(err)) return t(`error.tool.${err.kind}`, lang);
   return t("error.unexpected", lang);
 }
 

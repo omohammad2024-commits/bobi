@@ -38,7 +38,7 @@ export interface AdminBoundaryOptions {
 }
 
 /** A short, safe message shown to a denied user. */
-export const DENIED_MESSAGE = "این عملیات در دسترس شما نیست.";
+export const DENIED_MESSAGE = "This operation is not available to you.";
 
 export class AdminBoundary {
   private readonly auth: AuthorizationService;
@@ -86,7 +86,7 @@ export class AdminBoundary {
       return {
         ok: false as const,
         reason: "error",
-        message: "عملیات ناموفق بود؛ دوباره تلاش کنید.",
+        message: "The operation failed; try again.",
       };
     });
   }
@@ -111,7 +111,7 @@ export class AdminBoundary {
       return { ok: true, data };
     } catch {
       this.audit?.admin(req.operation, actorId, "error", req.permission, req.targetId);
-      return { ok: false, reason: "error", message: "عملیات ناموفق بود؛ دوباره تلاش کنید." };
+      return { ok: false, reason: "error", message: "The operation failed; try again." };
     }
   }
 }

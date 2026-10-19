@@ -35,7 +35,6 @@ import {
   parseModelSwitchCallback,
   withTyping,
   formatCount,
-  faDigits,
 } from "./ux";
 import {
   copyFileSync,
@@ -71,29 +70,29 @@ import type { GroupAccessService } from "../groups/service";
 // ---------------------------------------------------------------- defs ----
 
 export const COMMAND_DEFS: HermesCommandDef[] = [
-  { command: "snapshot", descriptionFa: "پشتیبان‌گیری از وضعیت", descriptionEn: "Backup / restore bot state", ownerOnly: true },
-  { command: "restart", descriptionFa: "راه‌اندازی مجدد ربات", descriptionEn: "Restart the bot", ownerOnly: true },
-  { command: "update", descriptionFa: "به‌روزرسانی بابی", descriptionEn: "Update BOBI from git", ownerOnly: true },
-  { command: "debug", descriptionFa: "گزارش اشکال‌زدایی", descriptionEn: "Debug report", ownerOnly: true },
-  { command: "usage", descriptionFa: "مصرف توکن", descriptionEn: "Token usage", ownerOnly: true },
-  { command: "insights", descriptionFa: "تحلیل مصرف", descriptionEn: "Usage insights", ownerOnly: true },
-  { command: "model", descriptionFa: "تغییر مدل", descriptionEn: "Switch the active model", ownerOnly: true },
-  { command: "reasoning", descriptionFa: "سطح استدلال", descriptionEn: "Reasoning effort level", ownerOnly: true },
-  { command: "autoprune", descriptionFa: "حذف خودکار نشست‌ها", descriptionEn: "Auto-prune sessions", ownerOnly: true },
-  { command: "tools", descriptionFa: "مدیریت ابزارها", descriptionEn: "Manage tools", ownerOnly: true },
-  { command: "skills", descriptionFa: "مدیریت مهارت‌ها", descriptionEn: "Manage skills", ownerOnly: true },
-  { command: "curator", descriptionFa: "نگهداری حافظه", descriptionEn: "Memory curator", ownerOnly: true },
-  { command: "plugins", descriptionFa: "افزونه‌ها", descriptionEn: "Plugins", ownerOnly: true },
-  { command: "reload_mcp", descriptionFa: "بارگذاری مجدد MCP", descriptionEn: "Reload MCP servers", ownerOnly: true },
-  { command: "reload_skills", descriptionFa: "اسکن مجدد مهارت‌ها", descriptionEn: "Rescan skills", ownerOnly: true },
-  { command: "approve", descriptionFa: "تأیید درخواست", descriptionEn: "Approve a join request", ownerOnly: true },
-  { command: "deny", descriptionFa: "رد درخواست", descriptionEn: "Reject a join request", ownerOnly: true },
-  { command: "sethome", descriptionFa: "کانال اصلی", descriptionEn: "Set the home chat", ownerOnly: true },
-  { command: "pause", descriptionFa: "توقف اضطراری", descriptionEn: "Emergency pause", ownerOnly: true },
-  { command: "ban", descriptionFa: "مسدود کردن کاربر", descriptionEn: "Block a user", ownerOnly: true },
-  { command: "unban", descriptionFa: "رفع مسدودیت کاربر", descriptionEn: "Unblock a user", ownerOnly: true },
-  { command: "mute", descriptionFa: "نادیده گرفتن پیام‌های کاربر", descriptionEn: "Silently ignore a user's messages", ownerOnly: true },
-  { command: "unmute", descriptionFa: "رفع نادیده گرفتن کاربر", descriptionEn: "Stop ignoring a user", ownerOnly: true },
+  { command: "snapshot", descriptionEn: "Backup / restore bot state", ownerOnly: true },
+  { command: "restart", descriptionEn: "Restart the bot", ownerOnly: true },
+  { command: "update", descriptionEn: "Update BOBI from git", ownerOnly: true },
+  { command: "debug", descriptionEn: "Debug report", ownerOnly: true },
+  { command: "usage", descriptionEn: "Token usage", ownerOnly: true },
+  { command: "insights", descriptionEn: "Usage insights", ownerOnly: true },
+  { command: "model", descriptionEn: "Switch the active model", ownerOnly: true },
+  { command: "reasoning", descriptionEn: "Reasoning effort level", ownerOnly: true },
+  { command: "autoprune", descriptionEn: "Auto-prune sessions", ownerOnly: true },
+  { command: "tools", descriptionEn: "Manage tools", ownerOnly: true },
+  { command: "skills", descriptionEn: "Manage skills", ownerOnly: true },
+  { command: "curator", descriptionEn: "Memory curator", ownerOnly: true },
+  { command: "plugins", descriptionEn: "Plugins", ownerOnly: true },
+  { command: "reload_mcp", descriptionEn: "Reload MCP servers", ownerOnly: true },
+  { command: "reload_skills", descriptionEn: "Rescan skills", ownerOnly: true },
+  { command: "approve", descriptionEn: "Approve a join request", ownerOnly: true },
+  { command: "deny", descriptionEn: "Reject a join request", ownerOnly: true },
+  { command: "sethome", descriptionEn: "Set the home chat", ownerOnly: true },
+  { command: "pause", descriptionEn: "Emergency pause", ownerOnly: true },
+  { command: "ban", descriptionEn: "Block a user", ownerOnly: true },
+  { command: "unban", descriptionEn: "Unblock a user", ownerOnly: true },
+  { command: "mute", descriptionEn: "Silently ignore a user's messages", ownerOnly: true },
+  { command: "unmute", descriptionEn: "Stop ignoring a user", ownerOnly: true },
 ];
 
 // -------------------------------------------------------------- options ----
@@ -177,8 +176,8 @@ export interface SystemResult {
 
 // -------------------------------------------------------------- helpers ----
 
-function toSysLang(lang: Lang): SysLang {
-  return lang === "en" ? "en" : "fa";
+function toSysLang(_lang: Lang): SysLang {
+  return "en"; // English-only UI
 }
 
 async function safeReply(
@@ -631,10 +630,9 @@ function formatNum(n: number, lang: SysLang): string {
   return formatCount(n, lang);
 }
 
-/** Decimal cost with the right digits for the language. */
-function formatCostLocal(n: number, lang: SysLang): string {
-  const s = n.toFixed(4);
-  return lang === "en" ? s : faDigits(s).replace(/\./g, "٫");
+/** Decimal cost, always ASCII digits (the UI is English-only). */
+function formatCostLocal(n: number, _lang: SysLang): string {
+  return n.toFixed(4);
 }
 
 export function handleUsage(
@@ -1426,7 +1424,7 @@ export function handleUserRestrict(
     return tr(lang, "cmd_system.restrict.bad_target");
   }
   if (targetId === ownerId) {
-    const what = lang === "fa" ? "مسدود/نادیده" : "block/mute";
+    const what = "block/mute";
     return tr(lang, "cmd_system.restrict.self", { what });
   }
   const result =

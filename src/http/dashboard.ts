@@ -58,7 +58,7 @@
  *  7. All rendering of owner data happens client-side through escapeHtml /
  *     renderSafeMarkdown / buildLineChartSvg (src/http/dashboard_render.ts)
  *     — the server never interpolates owner data into HTML.
- *  8. Error messages are generic Persian strings; they never leak config,
+ *  8. Error messages are generic English strings; they never leak config,
  *     stack traces, or why auth failed.
  *  9. Scheduler mutations (phase 4) validate every value server-side: the
  *     bench cadence must be one of three whitelisted presets (custom crons —
@@ -442,10 +442,14 @@ function takeRateLimit(ip: string): boolean {
 
 // ------------------------------------------------------------------ auth ----
 
+/**
+ * Extracts the token from `Authorization: Bearer <token>`. The scheme match
+ * is case-insensitive (RFC 6750): some HTTP clients send `bearer`.
+ */
 function bearerToken(req: Request): string | undefined {
   const header = req.headers.get("authorization");
   if (header === null) return undefined;
-  const m = /^Bearer\s+(\S+)\s*$/.exec(header);
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(header);
   return m?.[1];
 }
 
@@ -464,6 +468,7 @@ function json(status: number, body: Record<string, unknown>): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
     },
   });
 }
@@ -476,6 +481,14 @@ function html(status: number, page: string): Response {
       "cache-control": "no-store",
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
+      // Clickjacking / injection posture: the pages are same-origin SPA
+      // shells with inline scripts (Bearer auth cannot be sent on
+      // subresource fetches, so inlining is required). The policy keeps
+      // what is enforceable: no framing, no plugins/objects, no base-tag
+      // hijack, and scripts/styles only from inline or self.
+      "content-security-policy":
+        "default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; " +
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'deny'",
     },
   });
 }
@@ -531,14 +544,14 @@ async function route(
 
   // Rate limit BEFORE auth, like the turn endpoint: a 429 never touches the token.
   if (!takeRateLimit(ip)) {
-    return json(429, { error: "تعداد درخواست‌ها بیش از حد مجاز است. کمی صبر کنید." });
+    return json(429, { error: "Rate limit exceeded. Please wait a moment and try again." });
   }
 
   const token = deps.token.trim();
   if (token === "") {
     return isPage
       ? html(503, renderLoginPage())
-      : json(503, { error: "سرویس API در دسترس نیست." });
+      : json(503, { error: "API service is unavailable." });
   }
 
   const presented = bearerToken(req);
@@ -549,12 +562,12 @@ async function route(
   // on navigation, so the login screen is the one deliberate exception to
   // "every route needs the token" — it is a credential-entry form, not data.
   if (isPage) {
-    if (req.method !== "GET") return json(405, { error: "روش مجاز نیست." });
+    if (req.method !== "GET") return json(405, { error: "Method not allowed." });
     return html(200, authed ? renderAppPage() : renderLoginPage());
   }
 
   if (!authed) {
-    return json(401, { error: "احراز هویت نامعتبر است." });
+    return json(401, { error: "Invalid credentials." });
   }
 
   const services = servicesFor(deps.storage, deps.semantic);
@@ -607,15 +620,15 @@ async function route(
       case "/group-digests/set":
         return postJson(req, (body) => handleGroupDigestSet(deps.storage, body));
       default:
-        return json(404, { error: "یافت نشد." });
+        return json(404, { error: "Not found." });
     }
   } catch {
-    return json(500, { error: "خطای داخلی رخ داد." });
+    return json(500, { error: "Internal error." });
   }
 }
 
 function method(req: Request, want: "GET", fn: () => Promise<Response> | Response): Promise<Response> | Response {
-  if (req.method !== want) return json(405, { error: "روش مجاز نیست." });
+  if (req.method !== want) return json(405, { error: "Method not allowed." });
   return fn();
 }
 
@@ -624,21 +637,21 @@ async function postJson(
   req: Request,
   fn: (body: Record<string, unknown>) => Promise<Response> | Response,
 ): Promise<Response> {
-  if (req.method !== "POST") return json(405, { error: "روش مجاز نیست." });
+  if (req.method !== "POST") return json(405, { error: "Method not allowed." });
   const ct = req.headers.get("content-type") ?? "";
   if (!ct.toLowerCase().includes("application/json")) {
-    return json(415, { error: "نوع محتوا باید application/json باشد." });
+    return json(415, { error: "Content-Type must be application/json." });
   }
   const raw = await readCappedBody(req);
-  if (raw === undefined) return json(413, { error: "بدنه درخواست بیش از حد بزرگ است." });
+  if (raw === undefined) return json(413, { error: "Request body too large." });
   let body: unknown;
   try {
     body = JSON.parse(raw);
   } catch {
-    return json(400, { error: "بدنه درخواست JSON معتبر نیست." });
+    return json(400, { error: "Request body is not valid JSON." });
   }
   if (typeof body !== "object" || body === null) {
-    return json(400, { error: "بدنه درخواست نامعتبر است." });
+    return json(400, { error: "Invalid request body." });
   }
   return fn(body as Record<string, unknown>);
 }
@@ -673,7 +686,7 @@ function handleProviderEnable(services: Services, body: Record<string, unknown>)
   const id = asId(body["id"]);
   const enabled = asBool(body["enabled"]);
   if (id === undefined || enabled === undefined) {
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
   const r = services.providers.setEnabled(id, enabled);
   if (!r.ok) return json(400, { error: r.message });
@@ -691,13 +704,13 @@ function handleProviderActivate(
   body: Record<string, unknown>,
 ): Response {
   const id = asId(body["id"]);
-  if (id === undefined) return json(400, { error: "ورودی نامعتبر است." });
+  if (id === undefined) return json(400, { error: "Invalid input." });
   const view = services.providers.view(id);
-  if (!view) return json(404, { error: "پروایدر یافت نشد." });
-  if (!view.enabled) return json(400, { error: "این پروایدر غیرفعال است." });
+  if (!view) return json(404, { error: "Provider not found." });
+  if (!view.enabled) return json(400, { error: "This provider is disabled." });
   const enabled = services.models.enabledModels(id);
   const pick = enabled.find((m) => m.isDefault) ?? enabled[0];
-  if (!pick) return json(400, { error: "این پروایدر هیچ مدل فعالی ندارد." });
+  if (!pick) return json(400, { error: "This provider has no enabled models." });
   storage.setRuntimeSelection({ providerId: id, modelId: pick.id });
   return json(200, { ok: true, providerId: id, modelId: pick.id });
 }
@@ -706,7 +719,7 @@ function handleModelEnable(services: Services, body: Record<string, unknown>): R
   const id = asId(body["id"]);
   const enabled = asBool(body["enabled"]);
   if (id === undefined || enabled === undefined) {
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
   const r = services.models.setEnabled(id, enabled);
   if (!r.ok) return json(400, { error: r.message });
@@ -720,13 +733,13 @@ function handleModelActivate(
   body: Record<string, unknown>,
 ): Response {
   const id = asId(body["id"]);
-  if (id === undefined) return json(400, { error: "ورودی نامعتبر است." });
+  if (id === undefined) return json(400, { error: "Invalid input." });
   const m = services.models.get(id);
-  if (!m) return json(404, { error: "مدل یافت نشد." });
-  if (!m.enabled) return json(400, { error: "این مدل غیرفعال است." });
+  if (!m) return json(404, { error: "Model not found." });
+  if (!m.enabled) return json(400, { error: "This model is disabled." });
   const provider = storage.getProvider(m.providerId);
   if (!provider || !provider.enabled) {
-    return json(400, { error: "پروایدر این مدل غیرفعال است." });
+    return json(400, { error: "This model's provider is disabled." });
   }
   storage.setRuntimeSelection({ providerId: m.providerId, modelId: id });
   return json(200, { ok: true, providerId: m.providerId, modelId: id });
@@ -737,10 +750,10 @@ function handleModelActivate(
 async function handleMemory(url: URL, services: Services): Promise<Response> {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   if (!services.memory) {
-    return json(503, { error: "سرویس حافظه در دسترس نیست." });
+    return json(503, { error: "Memory service is unavailable." });
   }
   const limitParam = url.searchParams.get("limit");
   const rawLimit = limitParam === null || limitParam.trim() === "" ? NaN : Number(limitParam);
@@ -817,18 +830,18 @@ type RestrictAction = "ban" | "unban" | "mute" | "unmute";
 function handleRestrict(services: Services, body: Record<string, unknown>): Response {
   const action = body["action"];
   if (action !== "ban" && action !== "unban" && action !== "mute" && action !== "unmute") {
-    return json(400, { error: "عمل نامعتبر است." });
+    return json(400, { error: "Invalid action." });
   }
   const target = body["userId"];
   if (typeof target !== "string" || !USER_ID_RE.test(target)) {
-    return json(400, { error: "شناسهٔ کاربر نامعتبر است." });
+    return json(400, { error: "Invalid user id." });
   }
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   if (target === oid) {
-    return json(400, { error: "نمی‌توانید خودتان را مسدود یا نادیده بگیرید." });
+    return json(400, { error: "You cannot restrict yourself." });
   }
   const act = action as RestrictAction;
   const r =
@@ -843,10 +856,10 @@ function handleRestrict(services: Services, body: Record<string, unknown>): Resp
     return json(400, {
       error:
         r.reason === "not_found"
-          ? "کاربر یافت نشد."
+          ? "User not found."
           : r.reason === "invalid_transition"
-            ? "تغییر وضعیت مجاز نیست."
-            : "خطای ذخیره‌سازی.",
+            ? "State change not allowed."
+            : "Storage error.",
     });
   }
   const state = act === "ban" ? "rejected" : act === "mute" ? "revoked" : "approved";
@@ -945,30 +958,30 @@ async function handleBenchList(): Promise<Response> {
 async function handleBenchReport(url: URL): Promise<Response> {
   const name = url.searchParams.get("name") ?? "";
   if (!BENCH_NAME_RE.test(name)) {
-    return json(400, { error: "نام گزارش نامعتبر است." });
+    return json(400, { error: "Invalid report name." });
   }
   const dir = benchResultsDir();
   let files: string[];
   try {
     files = await readdir(dir);
   } catch {
-    return json(404, { error: "گزارش یافت نشد." });
+    return json(404, { error: "Report not found." });
   }
   // Allowlist: the name must name a real run in the live listing — a regex
   // match alone is not enough, and user input is never joined into a path
   // without this check.
   if (!files.includes(`${name}.json`)) {
-    return json(404, { error: "گزارش یافت نشد." });
+    return json(404, { error: "Report not found." });
   }
   const mdPath = resolve(dir, `${name}.md`);
   if (!mdPath.startsWith(resolve(dir) + "/")) {
-    return json(400, { error: "نام گزارش نامعتبر است." });
+    return json(400, { error: "Invalid report name." });
   }
   try {
     const markdown = await readFile(mdPath, "utf8");
     return json(200, { name, markdown });
   } catch {
-    return json(404, { error: "گزارش یافت نشد." });
+    return json(404, { error: "Report not found." });
   }
 }
 
@@ -1007,7 +1020,7 @@ function handleBenchTrends(url: URL, deps: DashboardDeps): Response {
     (model !== "" && !MODE_MODEL_RE.test(model)) ||
     (task !== "" && !BENCH_TASK_ID_RE.test(task))
   ) {
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
 
   let pair: { mode: string; model: string } | null = null;
@@ -1159,7 +1172,7 @@ function digestSchedulerView(
 function handleSchedulers(storage: Storage): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   return json(200, {
     schedulers: [benchSchedulerView(storage, oid), digestSchedulerView(storage, oid)],
@@ -1207,24 +1220,26 @@ function nextSlotAfterNow(cron: string): number {
  * with a cadence creates the single "bench: scheduled run" task or updates
  * it in place; disabling flips the enabled flag (the row — and its history
  * — is kept, unlike Telegram's `schedule off` which deletes it).
+ * Enabling an existing task WITHOUT a cadence/cron simply re-enables it on
+ * its current cron (the digest endpoint already behaves this way).
  * Every change is audit-logged.
  */
 function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const enabled = asBool(body["enabled"]);
   if (enabled === undefined) {
     auditScheduler(storage, "bench", oid, "denied", "bad enabled");
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
   const existing = findOwnerTask(storage, oid, BENCH_TASK_NAME);
 
   if (!enabled) {
     if (existing === undefined) {
       auditScheduler(storage, "bench", oid, "denied", "disable missing");
-      return json(400, { error: "زمان‌بندی بنچ‌مارکی وجود ندارد." });
+      return json(400, { error: "No scheduled benchmark exists." });
     }
     if (!existing.enabled) {
       return json(200, { ok: true, id: existing.id, enabled: false });
@@ -1248,8 +1263,8 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
       return json(400, {
         error:
           v.reason === "too_frequent"
-            ? "زمان‌بندی بیش از حد پرتکرار است؛ بنچ‌مارک حداقل هر یک ساعت."
-            : "عبارت کرون نامعتبر است.",
+            ? "Schedule too frequent: benchmarks may run at most once per hour."
+            : "Invalid cron expression.",
       });
     }
     cron = v.source;
@@ -1257,17 +1272,24 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
   } else {
     cadence = typeof body["cadence"] === "string" ? body["cadence"] : "";
     const preset = BENCH_CADENCES[cadence];
-    if (preset === undefined) {
+    if (preset !== undefined) {
+      cron = preset;
+    } else if (cadence === "" && existing !== undefined) {
+      // Re-enabling an existing schedule without touching the cadence
+      // selector: keep its current cron instead of rejecting the toggle.
+      cron = existing.cronExpr;
+      cadence = cadenceOf(existing.cronExpr);
+      custom = cadence === "custom";
+    } else {
       auditScheduler(storage, "bench", oid, "denied", `bad cadence=${cadence.slice(0, 32)}`);
-      return json(400, { error: "دورهٔ زمانی نامعتبر است." });
+      return json(400, { error: "Invalid cadence." });
     }
-    cron = preset;
   }
   const modeRaw = body["mode"];
   const mode = modeRaw === undefined ? undefined : String(modeRaw);
   if (mode !== undefined && mode !== "offline" && mode !== "live") {
     auditScheduler(storage, "bench", oid, "denied", "bad mode");
-    return json(400, { error: "حالت نامعتبر است." });
+    return json(400, { error: "Invalid mode." });
   }
 
   let source: string;
@@ -1277,7 +1299,7 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
     slot = nextSlotAfterNow(cron);
   } catch {
     auditScheduler(storage, "bench", oid, "denied", "bad cron");
-    return json(400, { error: "عبارت کرون نامعتبر است." });
+    return json(400, { error: "Invalid cron expression." });
   }
 
   if (existing !== undefined) {
@@ -1296,7 +1318,7 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
     }
     if (!storage.updateTask(oid, existing.id, patch)) {
       auditScheduler(storage, "bench", oid, "error", `update failed id=${existing.id}`);
-      return json(500, { error: "خطای داخلی رخ داد." });
+      return json(500, { error: "Internal error." });
     }
     const schedDesc = custom ? `cron=${source}` : `cadence=${cadence}`;
     auditScheduler(
@@ -1317,7 +1339,7 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
 
   if (storage.countTasks(oid) >= MAX_TASKS_PER_OWNER) {
     auditScheduler(storage, "bench", oid, "denied", "task cap");
-    return json(400, { error: "تعداد وظایف زمان‌بندی‌شده پر است." });
+    return json(400, { error: "Scheduled task limit reached." });
   }
   const id = storage.createTask({
     name: BENCH_TASK_NAME,
@@ -1366,19 +1388,19 @@ function handleBenchScheduler(storage: Storage, body: Record<string, unknown>): 
 function handleDigestScheduler(storage: Storage, body: Record<string, unknown>): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const enabled = asBool(body["enabled"]);
   if (enabled === undefined) {
     auditScheduler(storage, "digest", oid, "denied", "bad enabled");
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
   const existing = findOwnerTask(storage, oid, DIGEST_TASK_NAME);
 
   if (!enabled) {
     if (existing === undefined) {
       auditScheduler(storage, "digest", oid, "denied", "disable missing");
-      return json(400, { error: "خلاصهٔ صبحگاهی زمان‌بندی‌شده‌ای وجود ندارد." });
+      return json(400, { error: "No scheduled morning digest exists." });
     }
     if (!existing.enabled) {
       return json(200, { ok: true, id: existing.id, enabled: false });
@@ -1402,8 +1424,8 @@ function handleDigestScheduler(storage: Storage, body: Record<string, unknown>):
       return json(400, {
         error:
           v.reason === "too_frequent"
-            ? "زمان‌بندی بیش از حد پرتکرار است؛ خلاصه حداقل هر ۱۵ دقیقه."
-            : "عبارت کرون نامعتبر است.",
+            ? "Schedule too frequent: digests may run at most every 15 minutes."
+            : "Invalid cron expression.",
       });
     }
     cron = v.source;
@@ -1414,11 +1436,11 @@ function handleDigestScheduler(storage: Storage, body: Record<string, unknown>):
       typeof timeRaw === "string" && DIGEST_TIME_RE.test(timeRaw) ? timeRaw : undefined;
     if (timeRaw !== undefined && timeValid === undefined) {
       auditScheduler(storage, "digest", oid, "denied", "bad time");
-      return json(400, { error: "ساعت نامعتبر است (قالب HH:MM)." });
+      return json(400, { error: "Invalid time (expected HH:MM)." });
     }
     if (timeValid === undefined && existing === undefined) {
       auditScheduler(storage, "digest", oid, "denied", "missing time on create");
-      return json(400, { error: "ساعت ارسال را مشخص کنید (قالب HH:MM)." });
+      return json(400, { error: "Specify the delivery time (HH:MM)." });
     }
 
     // Keep the existing cron when only toggling on; otherwise build "M H * * *".
@@ -1434,7 +1456,7 @@ function handleDigestScheduler(storage: Storage, body: Record<string, unknown>):
     slot = nextSlotAfterNow(cron);
   } catch {
     auditScheduler(storage, "digest", oid, "denied", "bad cron");
-    return json(400, { error: "عبارت کرون نامعتبر است." });
+    return json(400, { error: "Invalid cron expression." });
   }
   const timeOut = digestTimeOf(source);
   const timeDesc = custom ? `cron=${source}` : `time=${timeOut ?? DIGEST_DEFAULT_TIME}`;
@@ -1448,7 +1470,7 @@ function handleDigestScheduler(storage: Storage, body: Record<string, unknown>):
       })
     ) {
       auditScheduler(storage, "digest", oid, "error", `update failed id=${existing.id}`);
-      return json(500, { error: "خطای داخلی رخ داد." });
+      return json(500, { error: "Internal error." });
     }
     auditScheduler(
       storage,
@@ -1468,7 +1490,7 @@ function handleDigestScheduler(storage: Storage, body: Record<string, unknown>):
 
   if (storage.countTasks(oid) >= MAX_TASKS_PER_OWNER) {
     auditScheduler(storage, "digest", oid, "denied", "task cap");
-    return json(400, { error: "تعداد وظایف زمان‌بندی‌شده پر است." });
+    return json(400, { error: "Scheduled task limit reached." });
   }
   const id = storage.createTask({
     name: DIGEST_TASK_NAME,
@@ -1528,7 +1550,7 @@ function readDigestAgentAction(
 function handleDigestConfig(storage: Storage): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const task = findOwnerTask(storage, oid, DIGEST_TASK_NAME);
   if (task === undefined) {
@@ -1579,11 +1601,11 @@ function writeDigestPrompt(
     );
   } catch {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "prompt validation failed");
-    return json(400, { error: "پرامپت معتبر نیست." });
+    return json(400, { error: "Invalid prompt." });
   }
   if (!storage.updateTask(oid, task.id, { actionJson })) {
     auditDigest(storage, "dashboard.digest.config", oid, "error", `prompt update failed id=${task.id}`);
-    return json(500, { error: "خطای داخلی رخ داد." });
+    return json(500, { error: "Internal error." });
   }
   auditDigest(
     storage,
@@ -1599,7 +1621,7 @@ function writeDigestPrompt(
 function handleDigestPrompt(storage: Storage, body: Record<string, unknown>): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const prompt = body["prompt"];
   if (
@@ -1608,17 +1630,17 @@ function handleDigestPrompt(storage: Storage, body: Record<string, unknown>): Re
     prompt.length > MAX_DIGEST_PROMPT_CHARS
   ) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "bad prompt");
-    return json(400, { error: "پرامپت باید بین ۱ تا ۴۰۰۰ کاراکتر باشد." });
+    return json(400, { error: "Prompt must be between 1 and 4000 characters." });
   }
   const task = findOwnerTask(storage, oid, DIGEST_TASK_NAME);
   if (task === undefined) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "prompt without task");
-    return json(400, { error: "خلاصهٔ صبحگاهی زمان‌بندی‌شده‌ای وجود ندارد." });
+    return json(400, { error: "No scheduled morning digest exists." });
   }
   const action = readDigestAgentAction(task);
   if (action === null) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "prompt on non-agent action");
-    return json(400, { error: "این تسک اکشن agent ندارد؛ از تلگرام بررسی کنید." });
+    return json(400, { error: "This task has no agent action; check it from Telegram." });
   }
   return writeDigestPrompt(storage, oid, task, action, prompt);
 }
@@ -1627,17 +1649,17 @@ function handleDigestPrompt(storage: Storage, body: Record<string, unknown>): Re
 function handleDigestPromptReset(storage: Storage): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const task = findOwnerTask(storage, oid, DIGEST_TASK_NAME);
   if (task === undefined) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "reset without task");
-    return json(400, { error: "خلاصهٔ صبحگاهی زمان‌بندی‌شده‌ای وجود ندارد." });
+    return json(400, { error: "No scheduled morning digest exists." });
   }
   const action = readDigestAgentAction(task);
   if (action === null) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "reset on non-agent action");
-    return json(400, { error: "این تسک اکشن agent ندارد؛ از تلگرام بررسی کنید." });
+    return json(400, { error: "This task has no agent action; check it from Telegram." });
   }
   if (action.prompt === DIGEST_PROMPT) {
     return json(200, { ok: true, id: task.id, isCustomPrompt: false });
@@ -1649,23 +1671,23 @@ function handleDigestPromptReset(storage: Storage): Response {
 function handleDigestDestination(storage: Storage, body: Record<string, unknown>): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const chatRaw = body["chatId"];
   if (typeof chatRaw !== "string" || !CHAT_ID_RE.test(chatRaw.trim())) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "bad chatId");
-    return json(400, { error: "شناسهٔ چت نامعتبر است." });
+    return json(400, { error: "Invalid chat id." });
   }
   const chatId = chatRaw.trim();
   const task = findOwnerTask(storage, oid, DIGEST_TASK_NAME);
   if (task === undefined) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "destination without task");
-    return json(400, { error: "خلاصهٔ صبحگاهی زمان‌بندی‌شده‌ای وجود ندارد." });
+    return json(400, { error: "No scheduled morning digest exists." });
   }
   const action = readDigestAgentAction(task);
   if (action === null) {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "destination on non-agent action");
-    return json(400, { error: "این تسک اکشن agent ندارد؛ از تلگرام بررسی کنید." });
+    return json(400, { error: "This task has no agent action; check it from Telegram." });
   }
   let actionJson: string;
   try {
@@ -1674,11 +1696,11 @@ function handleDigestDestination(storage: Storage, body: Record<string, unknown>
     );
   } catch {
     auditDigest(storage, "dashboard.digest.config", oid, "denied", "destination validation failed");
-    return json(400, { error: "شناسهٔ چت نامعتبر است." });
+    return json(400, { error: "Invalid chat id." });
   }
   if (!storage.updateTask(oid, task.id, { actionJson })) {
     auditDigest(storage, "dashboard.digest.config", oid, "error", `destination update failed id=${task.id}`);
-    return json(500, { error: "خطای داخلی رخ داد." });
+    return json(500, { error: "Internal error." });
   }
   auditDigest(
     storage,
@@ -1738,7 +1760,7 @@ function digestTaskCalls(storage: Storage, ownerId: string): DigestTaskCalls {
 function handleGroupDigests(storage: Storage): Response {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const tasks = storage.listTasks(oid, 200);
   const groups: Array<Record<string, unknown>> = [];
@@ -1782,25 +1804,25 @@ async function handleGroupDigestSet(
 ): Promise<Response> {
   const oid = ownerId();
   if (oid === undefined) {
-    return json(503, { error: "شناسهٔ مالک تنظیم نشده است." });
+    return json(503, { error: "Owner id is not configured." });
   }
   const chatRaw = body["chatId"];
   if (typeof chatRaw !== "string" || !CHAT_ID_RE.test(chatRaw.trim())) {
     auditDigest(storage, "dashboard.group_digest", oid, "denied", "bad chatId");
-    return json(400, { error: "شناسهٔ گروه نامعتبر است." });
+    return json(400, { error: "Invalid group id." });
   }
   const chatId = chatRaw.trim();
   const enabled = asBool(body["digestEnabled"]);
   if (enabled === undefined) {
     auditDigest(storage, "dashboard.group_digest", oid, "denied", "bad digestEnabled");
-    return json(400, { error: "ورودی نامعتبر است." });
+    return json(400, { error: "Invalid input." });
   }
   const timeRaw = body["time"];
   const time =
     timeRaw === undefined ? undefined : validateDigestTime(timeRaw);
   if (time !== undefined && !time.ok) {
     auditDigest(storage, "dashboard.group_digest", oid, "denied", "bad time");
-    return json(400, { error: "ساعت نامعتبر است (قالب HH:MM)." });
+    return json(400, { error: "Invalid time (expected HH:MM)." });
   }
   const cfg = getAssistantConfig(storage, oid, chatId);
   const calls = digestTaskCalls(storage, oid);
@@ -1809,7 +1831,7 @@ async function handleGroupDigestSet(
     const res = setAssistantConfig(storage, oid, chatId, { digestEnabled: false });
     if (!res.ok) {
       auditDigest(storage, "dashboard.group_digest", oid, "error", `off config failed chat=${chatId}`);
-      return json(400, { error: "ورودی نامعتبر است." });
+      return json(400, { error: "Invalid input." });
     }
     await cancelGroupDigestTask(calls, chatId);
     auditDigest(storage, "dashboard.group_digest", oid, "success", `off chat=${chatId}`);
@@ -1819,7 +1841,7 @@ async function handleGroupDigestSet(
   if (!cfg.enabled) {
     auditDigest(storage, "dashboard.group_digest", oid, "denied", `on without mode chat=${chatId}`);
     return json(400, {
-      error: "اول حالت دستیار گروه را روشن کنید (از تلگرام در گروه: /gassistant on).",
+      error: "Enable group assistant mode from Telegram first (/gassistant on in the group).",
     });
   }
   let finalTime = cfg.digestTime;
@@ -1827,7 +1849,7 @@ async function handleGroupDigestSet(
     const res = setAssistantConfig(storage, oid, chatId, { digestTime: time.time });
     if (!res.ok) {
       auditDigest(storage, "dashboard.group_digest", oid, "error", `time config failed chat=${chatId}`);
-      return json(400, { error: "ورودی نامعتبر است." });
+      return json(400, { error: "Invalid input." });
     }
     finalTime = res.config.digestTime;
   }
@@ -1841,7 +1863,7 @@ async function handleGroupDigestSet(
   }
   if (id === undefined) {
     auditDigest(storage, "dashboard.group_digest", oid, "error", `schedule failed chat=${chatId}`);
-    return json(500, { error: "ساخت زمان‌بندی ناموفق بود." });
+    return json(500, { error: "Failed to create the schedule." });
   }
   if (!cfg.digestEnabled) {
     const res = setAssistantConfig(storage, oid, chatId, { digestEnabled: true });
@@ -1850,7 +1872,7 @@ async function handleGroupDigestSet(
       // stay consistent (the tool would no-op anyway, reading the config).
       await cancelGroupDigestTask(calls, chatId);
       auditDigest(storage, "dashboard.group_digest", oid, "error", `on config failed chat=${chatId}`);
-      return json(500, { error: "خطای داخلی رخ داد." });
+      return json(500, { error: "Internal error." });
     }
   }
   auditDigest(
@@ -1886,7 +1908,7 @@ async function handleGroupDigestSet(
 export function handleBenchLiveStream(req: Request, deps: DashboardDeps): Response {
   const worker = deps.benchWorker;
   if (worker === undefined) {
-    return json(503, { error: "پخش زندهٔ بنچ‌مارک در این نمونه فعال نیست." });
+    return json(503, { error: "Benchmark live streaming is not enabled on this instance." });
   }
   let unsubscribe: (() => void) | undefined;
   let heartbeat: ReturnType<typeof setInterval> | undefined;

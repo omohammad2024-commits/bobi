@@ -36,7 +36,7 @@
 import { createHash } from "node:crypto";
 import type { MemoryProvider, StoredMemory } from "./provider";
 import { normalizeFa } from "../nudges/time_fa";
-import { t, type Lang } from "../i18n";
+import { t } from "../i18n";
 
 /** Reserved memory-key prefix for structured events. The summarizer and the
  *  digest's memory-highlights section both skip these keys. */
@@ -515,26 +515,18 @@ export function parsePersianDate(
 // Proactive reminders ahead of events
 // ---------------------------------------------------------------------------
 
-/** Persian "in N days" phrasing for an upcoming event. */
-export function eventWhenFa(daysUntil: number): string {
-  if (daysUntil <= 0) return t("events.when.today", "fa");
-  if (daysUntil === 1) return t("events.when.tomorrow", "fa");
-  const faCount = String(daysUntil).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!);
-  return t("events.when.days", "fa", { count: faCount });
+/**
+ * English "in N days" phrasing for an upcoming event (English-only UI
+ * since v1.0; the event's own label stays in the owner's Persian).
+ */
+export function eventWhen(daysUntil: number): string {
+  if (daysUntil <= 0) return t("events.when.today", "en");
+  if (daysUntil === 1) return t("events.when.tomorrow", "en");
+  return t("events.when.days", "en", { count: String(daysUntil) });
 }
 
-function eventWhen(daysUntil: number, lang: Lang): string {
-  if (daysUntil <= 0) return t("events.when.today", lang);
-  if (daysUntil === 1) return t("events.when.tomorrow", lang);
-  const count =
-    lang === "fa"
-      ? String(daysUntil).replace(/[0-9]/g, (d) => "۰۱۲۳۴۵۶۷۸۹"[Number(d)]!)
-      : String(daysUntil);
-  return t("events.when.days", lang, { count });
-}
-
-export function eventKindLabel(kind: EventKind, lang: Lang): string {
-  return t(`events.kind.${kind}`, lang);
+export function eventKindLabel(kind: EventKind): string {
+  return t(`events.kind.${kind}`, "en");
 }
 
 /**
@@ -542,14 +534,10 @@ export function eventKindLabel(kind: EventKind, lang: Lang): string {
  * DATA inside the template — never interpreted — so prompt-injection-shaped
  * event text («ignore instructions…») is just a quoted string.
  */
-export function formatEventReminder(
-  event: MemoryEvent,
-  daysUntil: number,
-  lang: Lang = "fa",
-): string {
-  return t("events.remind.body", lang, {
-    when: eventWhen(daysUntil, lang),
-    kind: eventKindLabel(event.kind, lang),
+export function formatEventReminder(event: MemoryEvent, daysUntil: number): string {
+  return t("events.remind.body", "en", {
+    when: eventWhen(daysUntil),
+    kind: eventKindLabel(event.kind),
     name: event.name.replace(/\s+/g, " ").trim(),
     label: event.labelFa,
   });

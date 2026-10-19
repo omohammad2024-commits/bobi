@@ -57,10 +57,10 @@ export async function transcribeAudio(
   signal: AbortSignal,
 ): Promise<string> {
   if (audio.byteLength === 0) {
-    throw new AiError("invalid_response", "فایل صوتی خالی است.");
+    throw new AiError("invalid_response", "Audio file is empty.");
   }
   if (audio.byteLength > MAX_TRANSCRIBE_AUDIO_BYTES) {
-    throw new AiError("invalid_response", "فایل صوتی بیش از حد بزرگ است.");
+    throw new AiError("invalid_response", "Audio file is too large.");
   }
 
   // Lexical policy + DNS resolution + address approval, per request — the same
@@ -92,11 +92,11 @@ export async function transcribeAudio(
   }).catch((err: unknown) => {
     // pinnedFetch already throws AiError with the right category.
     if (err instanceof AiError) throw err;
-    throw new AiError("network", "ارتباط با سرویس رونویسی برقرار نشد.");
+    throw new AiError("network", "Could not reach the transcription service.");
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new AiError("invalid_response", "سرویس به آدرس دیگری ارجاع داد.");
+    throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
     throw statusToAiError(res.status);
@@ -117,16 +117,16 @@ export function parseTranscriptionText(raw: string): string {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new AiError("invalid_response", "پاسخ سرویس رونویسی قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Transcription service response was unreadable.");
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new AiError("invalid_response", "پاسخ سرویس رونویسی قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Transcription service response was unreadable.");
   }
   const text = (parsed as Record<string, unknown>)["text"];
   // An empty string is a legitimate transcript (silence); a missing or
   // non-string `text` means the body is not the success shape.
   if (typeof text !== "string") {
-    throw new AiError("invalid_response", "پاسخ سرویس رونویسی قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Transcription service response was unreadable.");
   }
   return text;
 }

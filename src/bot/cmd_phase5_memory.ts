@@ -59,7 +59,6 @@ import { tr, type Ph5MemLang } from "./cmd_phase5_memory_strings";
 export const COMMAND_DEFS: HermesCommandDef[] = [
   {
     command: "memory",
-    descriptionFa: "حافظه: استخراج خودکار رویدادها و اشتراک‌گذاری",
     descriptionEn: "Memory: auto-extract events and sharing",
     ownerOnly: true,
   },
@@ -88,8 +87,8 @@ export interface Phase5MemoryOpts {
 
 // --------------------------------------------------------------- helpers ----
 
-function toLang(lang: Lang): Ph5MemLang {
-  return lang === "en" ? "en" : "fa";
+function toLang(_lang: Lang): Ph5MemLang {
+  return "en"; // English-only UI
 }
 
 async function safeReply(

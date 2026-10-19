@@ -51,13 +51,10 @@ export interface ConversationInput {
   /** Raw text the user sent. */
   userText: string;
   /**
-   * Reply language for this turn, resolved server-side by the caller.
-   *
-   * The bot layer passes the sender's UI pref (`senderLang`); background
-   * paths pass whatever `lang` they already carry. When absent, the engine
-   * falls back to the constructor's `langFor` resolver for the turn's user,
-   * then to Persian — the pre-bilingual behaviour. The value never comes
-   * from chat text, so a user cannot set it by asking.
+   * Reply language for this turn. English-only since v1.0: the field is
+   * kept for call-site compatibility but no longer selects anything.
+   * The value never comes from chat text, so a user cannot set it by
+   * asking.
    */
   lang?: Lang;
   /** Optional per-request timeout override. */
@@ -142,13 +139,8 @@ export interface EngineOptions {  provider: AiProvider;
    */
   personalityFor?: (userId: string) => string | undefined;
   /**
-   * Bilingual agent output: resolve the turn's user's reply language.
-   *
-   * Called with the turn's user id when `ConversationInput.lang` is absent;
-   * an explicit `lang` on the input always wins. The resolver must read the
-   * server-side `/lang` pref (see `resolveLang`) and return only "fa"|"en" —
-   * a throwing resolver falls back to Persian, like a missing pref. Absent
-   * means every turn is Persian, exactly the pre-bilingual behaviour.
+   * Legacy reply-language resolver. English-only since v1.0: accepted for
+   * API compatibility but ignored — every turn answers in English.
    */
   langFor?: (userId: string) => Lang | undefined;
   /** Injectable clock, for deterministic tests. */
@@ -282,7 +274,6 @@ export class ConversationEngine {
   private readonly contextFiles: ContextFileCache | undefined;
   private readonly hooks: HookRunnerLike | undefined;
   private readonly personalityFor: ((userId: string) => string | undefined) | undefined;
-  private readonly langFor: ((userId: string) => Lang | undefined) | undefined;
 
   // in-memory fallback (conversationId -> turns)
   private readonly histories = new Map<string, ChatMessage[]>();
@@ -313,7 +304,9 @@ export class ConversationEngine {
     this.contextFiles = opts.contextFiles;
     this.hooks = opts.hooks;
     this.personalityFor = opts.personalityFor;
-    this.langFor = opts.langFor;
+    // langFor is accepted for API compatibility but ignored: v1.0 is
+    // English-only, so the turn language is a constant "en".
+    void opts.langFor;
   }
 
   /**
@@ -374,7 +367,7 @@ export class ConversationEngine {
     // A caption-less photo is a complete turn, so emptiness is judged on the
     // message as a whole rather than on its text alone.
     if (userText.length === 0 && !hasParts) {
-      throw new EngineError("empty_input", "پیام خالی است.");
+      throw new EngineError("empty_input", "Message is empty.");
     }
 
     // A newer message supersedes an in-flight run in the same conversation: the
@@ -454,25 +447,15 @@ export class ConversationEngine {
   }
 
   /**
-   * Bilingual agent output: the reply language for this turn's user.
+   * The reply language for this turn. English-only since v1.0: always "en".
    *
-   * Precedence: explicit `ConversationInput.lang` (the bot layer passes the
-   * sender's resolved UI pref) > the constructor's `langFor` resolver >
-   * Persian. A throwing or misbehaving resolver cannot break the turn — it
-   * falls back to Persian, the same fail-closed shape as `resolveLang`.
+   * Kept as a method (and `ConversationInput.lang` / the `langFor` option
+   * kept on the public surface) so existing call sites keep compiling; the
+   * value no longer selects anything — the system prompt's hard English
+   * rule is unconditional.
    */
-  private resolveTurnLang(input: ConversationInput): Lang {
-    if (input.lang === "en" || input.lang === "fa") return input.lang;
-    const userId = input.userId ?? input.conversationId;
-    if (this.langFor !== undefined) {
-      try {
-        const resolved = this.langFor(userId);
-        if (resolved === "en" || resolved === "fa") return resolved;
-      } catch {
-        // fall through to the Persian default
-      }
-    }
-    return "fa";
+  private resolveTurnLang(_input: ConversationInput): Lang {
+    return "en";
   }
 
   private async runOnce(
@@ -775,7 +758,7 @@ export class ConversationEngine {
       };
     } catch (err) {
       if (err instanceof AgentCancelled) {
-        throw new EngineError("superseded", "درخواست با پیام تازه‌تری جایگزین شد.");
+        throw new EngineError("superseded", "Request superseded by a newer message.");
       }
       throw toEngineError(err, signal.aborted);
     }
@@ -787,35 +770,54 @@ export class ConversationEngine {
     messages: ChatMessage[],
     signal: AbortSignal,
   ): Promise<RunOutcome> {
+    // Already superseded: don't start a provider call just to abandon it.
+    if (signal.aborted) {
+      throw new EngineError("superseded", "Request superseded by a newer message.");
+    }
     const timeout = input.timeoutMs ?? this.defaultTimeoutMs;
     const deadline = withDeadline(signal, timeout);
+    // Race the caller's abort explicitly: withDeadline's `expired` only
+    // rejects when the TIMER fires, never when the caller aborts. A
+    // provider that ignores the abort signal would otherwise hang the
+    // race below forever and hold the semaphore slot for the lifetime
+    // of the process (same bug as loop.ts call() — fixed there first).
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new EngineError("superseded", "Request superseded by a newer message."));
+      if (signal.aborted) onAbort();
+      else signal.addEventListener("abort", onAbort, { once: true });
+    });
     let res;
     try {
       // Raced as well as signalled: a provider that never settles must not be
       // able to hold a semaphore slot for the lifetime of the process.
-      res = await raceDeadline(
-        this.provider.complete({
-          messages,
-          model: this.model,
-          timeoutMs: timeout,
-          signal: deadline.signal,
-        }),
-        deadline,
-      );
+      res = await Promise.race([
+        raceDeadline(
+          this.provider.complete({
+            messages,
+            model: this.model,
+            timeoutMs: timeout,
+            signal: deadline.signal,
+          }),
+          deadline,
+        ),
+        aborted,
+      ]);
     } catch (err) {
       // Distinguish the caller replacing this turn from a real deadline: a
       // superseded run must stay silent, while a genuine timeout is reported.
       if (signal.aborted) {
-        throw new EngineError("superseded", "درخواست با پیام تازه‌تری جایگزین شد.");
+        throw new EngineError("superseded", "Request superseded by a newer message.");
       }
       throw toEngineError(err, deadline.signal.aborted);
     } finally {
+      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
       deadline.dispose();
     }
 
     const text = res.text.trim();
     if (text.length === 0) {
-      throw new EngineError("empty_response", "پاسخ مدل خالی بود.");
+      throw new EngineError("empty_response", "The model returned an empty response.");
     }
     // Per-run usage accounting (diagnostic; never breaks the turn).
     this.emitRunUsage(input.actor?.userId ?? "unknown", input.conversationId, res.model, {
@@ -1089,8 +1091,8 @@ export function splitForTelegram(text: string): string[] {
 function toEngineError(err: unknown, aborted: boolean): EngineError {
   if (err instanceof EngineError) return err;
   if (err instanceof AiError) return new EngineError(err.kind, err.message);
-  if (aborted) return new EngineError("timeout", "درخواست لغو شد یا به timeout رسید.");
-  return new EngineError("unknown", "خطای ناشناخته در پردازش درخواست.");
+  if (aborted) return new EngineError("timeout", "Request was cancelled or timed out.");
+  return new EngineError("unknown", "Unknown error while processing the request.");
 }
 
 /**

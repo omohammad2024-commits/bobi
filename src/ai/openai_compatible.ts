@@ -18,6 +18,7 @@ import type {
   CompletionRequest,
   CompletionResponse,
   ContentPart,
+  StreamEvent,
   TokenUsage,
   ToolCall,
 } from "./provider";
@@ -31,7 +32,7 @@ import {
 } from "./adapter";
 import type { AdapterTarget } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
-import { pinnedFetch } from "./pinned_transport";
+import { pinnedFetch, pinnedStream } from "./pinned_transport";
 import { dataUrl, partDropNote, selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
@@ -51,9 +52,11 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     listModels: true,
     // Phase 4: POST {baseUrl}/embeddings, the standard OpenAI wire shape.
     embeddings: true,
-    notes: "POST {baseUrl}/chat/completions، GET {baseUrl}/models و POST {baseUrl}/embeddings",
+    // Streaming: POST {baseUrl}/chat/completions with stream:true (SSE).
+    streaming: true,
+    notes: "POST {baseUrl}/chat/completions, GET {baseUrl}/models and POST {baseUrl}/embeddings",
   };
-  readonly label = "سفارشی / سازگار با OpenAI";
+  readonly label = "Custom / OpenAI-compatible";
 
   private readonly target: OpenAITarget;
 
@@ -82,6 +85,114 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     return parseResponse(res, req.model);
   }
 
+  /**
+   * Stream a completion as Server-Sent Events.
+   *
+   * Wire: the same body as complete() plus `stream: true`, and
+   * `stream_options: { include_usage: true }` so token counts arrive in a
+   * final usage chunk. The transport is the same pinned, SSRF-guarded one —
+   * only the body reading changes (chunks as they arrive instead of one
+   * buffered read).
+   *
+   * Yields `text` for every content delta, `usage` when the service reports
+   * it, and exactly one terminal `end`. Tool-call deltas (fragmented across
+   * chunks, keyed by index) are accumulated and delivered once, on `end`.
+   *
+   * Throws only AiError. A non-2xx status is mapped exactly like complete();
+   * a malformed event is invalid_response, matching the non-streaming parse.
+   */
+  async *completeStream(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined> {
+    // Same policy as complete(): lexical policy + DNS resolution + address
+    // approval, per request. Streaming changes nothing about WHERE the
+    // socket may go.
+    const target = await resolveTarget(this.target, {
+      ...(this.target.allowLocalTargets !== undefined
+        ? { allowLocalTargets: this.target.allowLocalTargets }
+        : {}),
+    });
+
+    const body = {
+      ...buildRequestBody(this.target, req),
+      stream: true,
+      // Ask for the usage chunk: without it a streamed reply reports no
+      // token counts and usage accounting goes blind.
+      stream_options: { include_usage: true },
+    };
+
+    const stream = await pinnedStream({
+      url: `${target.baseUrl}/chat/completions`,
+      method: "POST",
+      headers: { ...headers(this.target.apiKey), accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      timeoutMs: req.timeoutMs,
+      signal: req.signal,
+      addresses: target.addresses,
+      allowLocalTargets: target.allowLocalTargets,
+    });
+
+    // The status is known before any chunk is read: map it exactly like the
+    // non-streaming path, then close the stream we will not consume.
+    if (stream.status >= 300 && stream.status < 400) {
+      await stream.chunks.return(undefined);
+      throw new AiError("invalid_response", "The service redirected to another address.");
+    }
+    if (stream.status < 200 || stream.status >= 300) {
+      await stream.chunks.return(undefined);
+      throw statusToError(stream.status);
+    }
+
+    const parser = new SseParser();
+    const toolDeltas = new Map<number, { id: string; name: string; args: string }>();
+    let text = "";
+    let usage: TokenUsage | undefined;
+
+    // One event → zero or more stream events. A nested generator (not a
+    // closure returning values) so `text`/`usage` stay single-sourced.
+    function* handleEvent(event: Record<string, unknown>): Generator<StreamEvent, void, undefined> {
+      const delta = choiceDelta(event);
+
+      const content = delta !== undefined ? delta["content"] : undefined;
+      if (typeof content === "string" && content.length > 0) {
+        text += content;
+        yield { type: "text", delta: content };
+      }
+
+      const calls = delta !== undefined ? delta["tool_calls"] : undefined;
+      if (Array.isArray(calls)) accumulateToolCallDeltas(toolDeltas, calls);
+
+      const parsed = parseStreamUsage(event["usage"]);
+      if (parsed !== undefined) {
+        usage = parsed;
+        yield { type: "usage", usage: parsed };
+      }
+    }
+
+    try {
+      for await (const chunk of stream.chunks) {
+        for (const event of parser.push(chunk.toString("utf8"))) {
+          yield* handleEvent(event);
+        }
+      }
+      // A stream that ends without a trailing blank line still has its final
+      // event processed rather than dropped.
+      for (const event of parser.flush()) {
+        yield* handleEvent(event);
+      }
+    } finally {
+      // Idempotent: closes the socket if the consumer broke out early, and
+      // is a no-op once the stream already ended.
+      await stream.chunks.return(undefined);
+    }
+
+    yield {
+      type: "end",
+      text,
+      model: req.model,
+      toolCalls: buildStreamedToolCalls(toolDeltas),
+      ...(usage !== undefined ? { usage } : {}),
+    };
+  }
+
   async listModels(req: ListModelsRequest): Promise<readonly RemoteModel[]> {
     // Same policy as complete(): the local exception, if the owner set it,
     // applies to discovery too rather than being silently dropped.
@@ -100,7 +211,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
 
     const data = res["data"];
     if (!Array.isArray(data)) {
-      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+      throw new AiError("invalid_response", "Service response was unreadable.");
     }
     const out: RemoteModel[] = [];
     for (const entry of data) {
@@ -165,12 +276,12 @@ export function parseEmbedResponse(
 ): { embeddings: number[][]; model?: string } {
   const data = res["data"];
   if (!Array.isArray(data) || data.length === 0) {
-    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Service response was unreadable.");
   }
   const vectors: Array<{ index: number; embedding: number[] }> = [];
   for (const entry of data) {
     if (!isRecord(entry)) {
-      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+      throw new AiError("invalid_response", "Service response was unreadable.");
     }
     const embedding = entry["embedding"];
     if (
@@ -178,7 +289,7 @@ export function parseEmbedResponse(
       embedding.length === 0 ||
       !embedding.every((v) => typeof v === "number" && Number.isFinite(v))
     ) {
-      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+      throw new AiError("invalid_response", "Service response was unreadable.");
     }
     const index = entry["index"];
     vectors.push({
@@ -189,7 +300,7 @@ export function parseEmbedResponse(
   vectors.sort((a, b) => a.index - b.index);
   const embeddings = vectors.map((v) => v.embedding);
   if (embeddings.length !== expectedCount) {
-    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Service response was unreadable.");
   }
   const model = res["model"];
   return {
@@ -327,7 +438,7 @@ const MAX_INLINE_TEXT_DOC_BYTES = 50 * 1024;
 
 /** A text/* document decoded for inlining as one labeled text block. */
 interface InlineTextDoc {
-  /** The label, e.g. "[سند متنی notes.txt]: ". */
+  /** The label, e.g. "[Text document notes.txt]: ". */
   label: string;
   /** The decoded text, possibly truncated (the truncation is named). */
   text: string;
@@ -386,7 +497,7 @@ function splitInlineTextDocuments(message: ChatMessage): {
  * the whole file.
  */
 function decodeTextDocument(part: TextDocumentPart, mediaType: string): InlineTextDoc {
-  const label = `[سند متنی ${part.name ?? mediaType}]: `;
+  const label = `[Text document ${part.name ?? mediaType}]: `;
   const decoded = Buffer.from(part.base64, "base64").toString("utf8");
   if (Buffer.byteLength(decoded, "utf8") <= MAX_INLINE_TEXT_DOC_BYTES) {
     return { label, text: decoded };
@@ -403,7 +514,7 @@ function decodeTextDocument(part: TextDocumentPart, mediaType: string): InlineTe
   }
   return {
     label,
-    text: `${decoded.slice(0, end)}… [ادامه‌ی متن به دلیل حجم زیاد حذف شد]`,
+    text: `${decoded.slice(0, end)}... [rest of text omitted due to size]`,
   };
 }
 
@@ -440,7 +551,7 @@ function contentArray(
     } else {
       // Named rather than sent: this adapter has no wire form for audio or a
       // (binary) document, and a fabricated one would be rejected by the endpoint.
-      out.push({ type: "text", text: `[پیوست ${part.type}: ${part.mediaType} ارسال نشد]` });
+      out.push({ type: "text", text: `[${part.type} attachment: ${part.mediaType} not sent]` });
     }
   }
   return out;
@@ -464,6 +575,177 @@ export function parseResponse(res: unknown, requestedModel: string): CompletionR
     text: extractContent(res),
     model: extractModel(res, requestedModel),
     ...responseExtras(res),
+  };
+}
+
+/**
+ * Incremental Server-Sent Events parser for the streaming path.
+ *
+ * Chunks arrive as arbitrary byte slices: a line — or a whole JSON payload —
+ * can be split across two pushes, so the parser buffers until it has complete
+ * lines. Events are dispatched on blank lines (the SSE framing); a `data:`
+ * line holds one JSON payload, `: ...` comment lines (heartbeats) are
+ * ignored, and `data: [DONE]` ends the event flow.
+ *
+ * Exported so the wire format is assertable without a network, like the
+ * other parse helpers in this module.
+ */
+export class SseParser {
+  private buffer = "";
+  private dataLines: string[] = [];
+  private done = false;
+
+  /**
+   * Feed one text chunk; returns the complete events parsed from it.
+   * A malformed `data:` payload throws AiError("invalid_response"), matching
+   * the strictness of the non-streaming parse — a service that speaks broken
+   * SSE is a response fault, not something to silently skip.
+   */
+  push(text: string): Record<string, unknown>[] {
+    if (this.done) return [];
+    this.buffer += text;
+    const events: Record<string, unknown>[] = [];
+
+    for (;;) {
+      const nl = this.buffer.indexOf("\n");
+      if (nl === -1) break;
+      const line = this.buffer.slice(0, nl).replace(/\r$/, "");
+      this.buffer = this.buffer.slice(nl + 1);
+
+      if (line === "") {
+        const event = this.dispatch();
+        if (event !== undefined) events.push(event);
+        continue;
+      }
+      if (line.startsWith(":")) continue; // comment / heartbeat
+      if (line.startsWith("data:")) {
+        // Per SSE, one optional leading space is stripped.
+        const value = line.slice(5).startsWith(" ") ? line.slice(6) : line.slice(5);
+        if (value === "[DONE]") {
+          this.done = true;
+          this.dataLines = [];
+          continue;
+        }
+        this.dataLines.push(value);
+        continue;
+      }
+      // Unknown SSE fields (event:, id:, retry:) carry no payload here.
+    }
+
+    return events;
+  }
+
+  /**
+   * Flush any event still buffered when the byte stream ends without a
+   * trailing blank line. completeStream calls this after its read loop so a
+   * final event is never silently dropped.
+   */
+  flush(): Record<string, unknown>[] {
+    if (this.done) return [];
+    // A dangling partial line plus a blank line: the normal framing takes
+    // over, so a half-buffered final event is parsed, not dropped.
+    return [...this.push("\n"), ...this.push("\n")];
+  }
+
+  private dispatch(): Record<string, unknown> | undefined {
+    const lines = this.dataLines;
+    this.dataLines = [];
+    if (lines.length === 0) return undefined;
+    const raw = lines.join("\n");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      throw new AiError("invalid_response", "Service response was unreadable.");
+    }
+    if (!isRecord(parsed)) {
+      throw new AiError("invalid_response", "Service response was unreadable.");
+    }
+    return parsed;
+  }
+}
+
+/** The `choices[0].delta` object of one streamed event, when present. */
+function choiceDelta(event: Record<string, unknown>): Record<string, unknown> | undefined {
+  const choices = event["choices"];
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const first = choices[0];
+  if (!isRecord(first)) return undefined;
+  const delta = first["delta"];
+  return isRecord(delta) ? delta : undefined;
+}
+
+/**
+ * Accumulate fragmented tool-call deltas.
+ *
+ * OpenAI streams one tool call across many chunks: the first carries
+ * `index`, `id` and `function.name`, later ones append to
+ * `function.arguments`. Fragments are keyed by `index`; a fragment without
+ * one is appended to the most recent call.
+ */
+function accumulateToolCallDeltas(
+  acc: Map<number, { id: string; name: string; args: string }>,
+  deltas: unknown[],
+): void {
+  for (const d of deltas) {
+    if (!isRecord(d)) continue;
+    const rawIndex = d["index"];
+    const index =
+      typeof rawIndex === "number" && Number.isInteger(rawIndex) && rawIndex >= 0
+        ? rawIndex
+        : acc.size;
+    const fn = isRecord(d["function"]) ? d["function"] : undefined;
+
+    let entry = acc.get(index);
+    if (entry === undefined) {
+      entry = { id: "", name: "", args: "" };
+      acc.set(index, entry);
+    }
+    const id = d["id"];
+    if (typeof id === "string" && id.length > 0) entry.id = id;
+    if (fn !== undefined) {
+      const name = fn["name"];
+      if (typeof name === "string" && name.length > 0) entry.name = name;
+      const args = fn["arguments"];
+      if (typeof args === "string") entry.args += args;
+    }
+  }
+}
+
+/**
+ * Build the neutral ToolCall[] from accumulated fragments, in index order.
+ *
+ * Entries without a name are dropped (a nameless call cannot be executed);
+ * the id falls back to `call_<index>` like the non-streaming path, and
+ * malformed argument JSON yields `{}` rather than failing the turn — the
+ * same leniency parseResponse applies.
+ */
+function buildStreamedToolCalls(
+  acc: Map<number, { id: string; name: string; args: string }>,
+): ToolCall[] {
+  const out: ToolCall[] = [];
+  const indexes = [...acc.keys()].sort((a, b) => a - b);
+  for (const index of indexes) {
+    const entry = acc.get(index);
+    if (entry === undefined || entry.name.length === 0) continue;
+    out.push({
+      id: entry.id.length > 0 ? entry.id : `call_${out.length}`,
+      name: entry.name,
+      arguments: parseArguments(entry.args),
+    });
+  }
+  return out;
+}
+
+/** Token counts from a streamed `usage` payload, when well-formed. */
+function parseStreamUsage(raw: unknown): TokenUsage | undefined {
+  if (!isRecord(raw)) return undefined;
+  const input = numberOrUndefined(raw["prompt_tokens"]);
+  const output = numberOrUndefined(raw["completion_tokens"]);
+  if (input === undefined && output === undefined) return undefined;
+  return {
+    ...(input !== undefined ? { inputTokens: input } : {}),
+    ...(output !== undefined ? { outputTokens: output } : {}),
   };
 }
 
@@ -537,19 +819,19 @@ function responseExtras(res: unknown): { toolCalls?: ToolCall[]; usage?: TokenUs
 /** The first choice's message object, or a response-fault error. */
 function extractMessage(res: unknown): Record<string, unknown> {
   if (!isRecord(res)) {
-    throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+    throw new AiError("invalid_response", "Service response was empty.");
   }
   const choices = res["choices"];
   if (!Array.isArray(choices) || choices.length === 0) {
-    throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+    throw new AiError("invalid_response", "Service response was empty.");
   }
   const first = choices[0];
   if (!isRecord(first)) {
-    throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+    throw new AiError("invalid_response", "Service response was empty.");
   }
   const message = first["message"];
   if (!isRecord(message)) {
-    throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+    throw new AiError("invalid_response", "Service response was empty.");
   }
   return message;
 }
@@ -614,10 +896,10 @@ function readJson(raw: string): Record<string, unknown> {
   try {
     parsed = JSON.parse(raw);
   } catch {
-    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Service response was unreadable.");
   }
   if (!isRecord(parsed)) {
-    throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+    throw new AiError("invalid_response", "Service response was empty.");
   }
   return parsed;
 }
@@ -646,11 +928,11 @@ async function fetchJson(
   }).catch((err: unknown) => {
     // pinnedFetch already throws AiError with the right category.
     if (err instanceof AiError) throw err;
-    throw new AiError("network", "ارتباط با سرویس برقرار نشد.");
+    throw new AiError("network", "Could not reach the service.");
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new AiError("invalid_response", "سرویس به آدرس دیگری ارجاع داد.");
+    throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
     throw statusToError(res.status);
@@ -662,22 +944,22 @@ async function fetchJson(
 /** Map an HTTP status onto the engine's categories. */
 function statusToError(status: number): AiError {
   if (status === 401 || status === 403) {
-    return new AiError("auth", "احراز هویت سرویس ناموفق بود.");
+    return new AiError("auth", "Service authentication failed.");
   }
   if (status === 408) {
-    return new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
+    return new AiError("timeout", "The service did not respond in time.");
   }
   if (status === 429) {
-    return new AiError("quota", "محدودیت نرخ سرویس پر شده است.");
+    return new AiError("quota", "Service rate limit exceeded.");
   }
   if (status >= 500) {
-    return new AiError("network", "سرویس در دسترس نیست.");
+    return new AiError("network", "Service is unavailable.");
   }
   if (status === 400 || status === 404 || status === 422) {
     // Request-shaped problems are surfaced as invalid, never as the raw body.
-    return new AiError("invalid_response", "درخواست به سرویس نامعتبر بود.");
+    return new AiError("invalid_response", "The request to the service was invalid.");
   }
-  return new AiError("unknown", "خطای ناشناخته سرویس.");
+  return new AiError("unknown", "Unknown service error.");
 }
 
 

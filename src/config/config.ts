@@ -124,7 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
     logLevel: pick(envVar(env, "LOG_LEVEL"), VALID_LEVELS, "info"),
     botToken: env.TELEGRAM_BOT_TOKEN?.trim() || undefined,
     aiModel: env.AI_MODEL?.trim() || "fake-echo",
-    aiTimeoutMs: pickInt(env.AI_TIMEOUT_MS, 30_000),
+    aiTimeoutMs: clampInt(envVar(env, "AI_TIMEOUT_MS"), 1_000, 600_000, 30_000),
     aiMaxConcurrent: pickInt(env.AI_MAX_CONCURRENT, 4),
     dbPath: envVar(env, "DB_PATH")?.trim() || "data/bobi.db",
     // Trimmed (so stray whitespace cannot masquerade as a value) but not

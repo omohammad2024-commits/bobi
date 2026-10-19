@@ -6,22 +6,22 @@ import { tr } from "./menu_strings";
 import type { HermesCommandDef } from "./cmd_context";
 
 /**
- * Persian labels for the main menu buttons.
+ * English labels for the main menu buttons.
  *
- * Kept as the fa ground truth: buildMainMenu() with the default language must
+ * Kept as the ground truth: buildMainMenu() with the default language must
  * render exactly these strings (asserted in tests). Labels now live in the
  * local menu table (`menu_strings.ts`) — the sibling i18n owner folds them
  * into the central packs later.
  */
 export const MAIN_MENU_LABELS = {
-  chat: tr("fa", "menu.label.chat"),
-  tools: tr("fa", "menu.label.tools"),
-  commands: tr("fa", "menu.label.commands"),
-  settings: tr("fa", "menu.label.settings"),
-  about: tr("fa", "menu.label.about"),
-  help: tr("fa", "menu.label.help"),
-  back: tr("fa", "menu.label.back"),
-  miniapp: tr("fa", "menu.label.miniapp"),
+  chat: tr("en", "menu.label.chat"),
+  tools: tr("en", "menu.label.tools"),
+  commands: tr("en", "menu.label.commands"),
+  settings: tr("en", "menu.label.settings"),
+  about: tr("en", "menu.label.about"),
+  help: tr("en", "menu.label.help"),
+  back: tr("en", "menu.label.back"),
+  miniapp: tr("en", "menu.label.miniapp"),
 } as const;
 
 /**
@@ -46,40 +46,40 @@ export const CALLBACKS = {
  * Kept for compatibility; replyForCallback() is the lang-aware entry point.
  */
 export const MENU_REPLIES: Record<(typeof CALLBACKS)[keyof typeof CALLBACKS], string> = {
-  [CALLBACKS.chat]: tr("fa", "menu.screen.chat"),
-  [CALLBACKS.tools]: tr("fa", "menu.screen.tools_fallback"),
-  [CALLBACKS.about]: tr("fa", "menu.screen.about"),
-  [CALLBACKS.commands]: tr("fa", "menu.screen.commands"),
-  [CALLBACKS.settings]: tr("fa", "menu.screen.settings"),
-  [CALLBACKS.help]: tr("fa", "menu.screen.help"),
-  [CALLBACKS.home]: tr("fa", "menu.start.text"),
+  [CALLBACKS.chat]: tr("en", "menu.screen.chat"),
+  [CALLBACKS.tools]: tr("en", "menu.screen.tools_fallback"),
+  [CALLBACKS.about]: tr("en", "menu.screen.about"),
+  [CALLBACKS.commands]: tr("en", "menu.screen.commands"),
+  [CALLBACKS.settings]: tr("en", "menu.screen.settings"),
+  [CALLBACKS.help]: tr("en", "menu.screen.help"),
+  [CALLBACKS.home]: tr("en", "menu.start.text"),
 };
 
 /**
- * The 10 built-in commands that are NOT part of the Hermes command modules
+ * The 11 built-in commands that are NOT part of the Hermes command modules
  * but must appear in Telegram's command menu: core first (start → compress),
  * then the two owner-only entries.
  *
- * Two-tier access: start/help/commands/lang/voice are public — voice is
+ * Two-tier access: start/help/commands/voice are public — voice is
  * conversation, not administration. The rest are owner-only — invisible in
  * the public menu scope and refused by the tier gate when typed or forged.
+ * (/lang was removed Oct 2026: the UI is English-only.)
  *
  * Descriptions mirror the central `help.cmd.*` pack values so the menu and
- * /help never disagree.
+ * /help never disagree. The bot's UI is English-only.
  */
 export const BUILTIN_COMMAND_DEFS: readonly HermesCommandDef[] = [
-  { command: "start", descriptionFa: "شروع و نمایش منوی اصلی", descriptionEn: "Start and show the main menu", ownerOnly: false },
-  { command: "help", descriptionFa: "راهنمای دستورها", descriptionEn: "Command reference", ownerOnly: false },
-  { command: "commands", descriptionFa: "مرورگر دستورها", descriptionEn: "Browse commands by category", ownerOnly: false },
-  { command: "voice", descriptionFa: "انتخاب حالت پاسخ صوتی (خودکار/همیشه/هرگز)", descriptionEn: "Choose voice-reply mode (auto/always/never)", ownerOnly: false },
-  { command: "reset", descriptionFa: "پاک کردن تاریخچهٔ همین گفت‌وگو", descriptionEn: "Clear this conversation's history", ownerOnly: true },
-  { command: "stop", descriptionFa: "توقف پاسخ در حال اجرا", descriptionEn: "Stop the running reply", ownerOnly: true },
-  { command: "lang", descriptionFa: "تغییر زبان رابط کاربری", descriptionEn: "Change the interface language", ownerOnly: false },
-  { command: "personality", descriptionFa: "نمایش یا تغییر لحن پاسخ‌گویی", descriptionEn: "Show or change the reply tone", ownerOnly: true },
-  { command: "compress", descriptionFa: "خلاصه‌سازی فوری گفت‌وگوهای قدیمی", descriptionEn: "Immediately summarize old conversations", ownerOnly: true },
-  { command: "admin", descriptionFa: "پنل مدیریت ربات", descriptionEn: "Bot admin panel", ownerOnly: true },
-  { command: "ai", descriptionFa: "مدیریت ارائه‌دهندهٔ هوش مصنوعی", descriptionEn: "Manage the AI provider", ownerOnly: true },
-  { command: "digest", descriptionFa: "خلاصهٔ تعاملی امروز", descriptionEn: "Interactive daily digest", ownerOnly: true },
+  { command: "start", descriptionEn: "Start and show the main menu", ownerOnly: false },
+  { command: "help", descriptionEn: "Command reference", ownerOnly: false },
+  { command: "commands", descriptionEn: "Browse commands by category", ownerOnly: false },
+  { command: "voice", descriptionEn: "Choose voice-reply mode (auto/always/never)", ownerOnly: false },
+  { command: "reset", descriptionEn: "Clear this conversation's history", ownerOnly: true },
+  { command: "stop", descriptionEn: "Stop the running reply", ownerOnly: true },
+  { command: "personality", descriptionEn: "Show or change the reply tone", ownerOnly: true },
+  { command: "compress", descriptionEn: "Immediately summarize old conversations", ownerOnly: true },
+  { command: "admin", descriptionEn: "Bot admin panel", ownerOnly: true },
+  { command: "ai", descriptionEn: "Manage the AI provider", ownerOnly: true },
+  { command: "digest", descriptionEn: "Interactive daily digest", ownerOnly: true },
 ];
 
 /**
@@ -110,18 +110,19 @@ export function ownerMenuCommands(
 }
 
 /**
- * Persian display names for the built-in tools.
+ * English display names for the built-in tools.
  *
  * Doubles as the known-tool set: a tool name not listed here is rendered
- * as-is (never as a raw "menu.tool.<name>" key).
+ * as-is (never as a raw "menu.tool.<name>" key). The values themselves are
+ * unused — toolLabel resolves through the central `menu.tool.*` pack.
  */
 const TOOL_LABELS: Readonly<Record<string, string>> = {
-  calculator: "ماشین‌حساب",
-  date_time: "تاریخ و ساعت",
-  text_utilities: "ابزار متن",
-  unit_converter: "تبدیل واحد",
-  fetch_url: "خواندن صفحهٔ وب",
-  web_search: "جستجوی وب",
+  calculator: "Calculator",
+  date_time: "Date & time",
+  text_utilities: "Text utilities",
+  unit_converter: "Unit converter",
+  fetch_url: "Page reader",
+  web_search: "Web search",
 };
 
 /** Display label for a tool: translated when known, the raw name otherwise. */
@@ -129,9 +130,14 @@ function toolLabel(name: string, lang: Lang): string {
   return name in TOOL_LABELS ? t(`menu.tool.${name}`, lang) : name;
 }
 
-/** The /start onboarding screen. Shared by the /start handler and menu:home. */
-export function startScreenText(lang: Lang = "fa"): string {
-  return tr(lang, "menu.start.text");
+/** The /start welcome screen. Shared by the /start handler and menu:home.
+ *
+ * Tier-aware: the owner variant adds /reset and /digest to the command
+ * list; the public variant lists only commands the public can actually
+ * use (two-tier invisibility — no dead commands on the welcome screen).
+ */
+export function startScreenText(lang: Lang = "en", isOwner: boolean = true): string {
+  return tr(lang, isOwner ? "menu.start.text" : "menu.start.text_public");
 }
 
 /**
@@ -158,31 +164,36 @@ export function miniAppUrl(): string | undefined {
 }
 
 /**
- * Main menu: 3 rows × 2 buttons, grouped by area
- * (chat/tools, commands/settings, about/help).
+ * Main menu: a clean 2×2 grid, grouped by area (chat/tools, commands/settings).
  *
  * Owner-only: the full menu. The public gets buildPublicMainMenu instead —
  * owner-only buttons are never rendered for them, not just blocked.
  *
- * A fourth row holds the Mini App web_app button, but ONLY when a public
+ * A third row holds the Mini App web_app button, but ONLY when a public
  * HTTPS URL is configured (miniAppUrl()). No URL → no button, never a dead
  * one. The public menu never includes it.
  */
-export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
+export function buildMainMenu(lang: Lang = "en"): InlineKeyboard {
   const kb = new InlineKeyboard()
     .text(tr(lang, "menu.label.chat"), CALLBACKS.chat)
     .text(tr(lang, "menu.label.tools"), CALLBACKS.tools)
     .row()
     .text(tr(lang, "menu.label.commands"), CALLBACKS.commands)
-    .text(tr(lang, "menu.label.settings"), CALLBACKS.settings)
-    .row()
-    .text(tr(lang, "menu.label.about"), CALLBACKS.about)
-    .text(tr(lang, "menu.label.help"), CALLBACKS.help);
+    .text(tr(lang, "menu.label.settings"), CALLBACKS.settings);
   const miniUrl = miniAppUrl();
   if (miniUrl !== undefined) {
     kb.row().webApp(tr(lang, "menu.label.miniapp"), miniUrl);
   }
   return kb;
+}
+
+/**
+ * The home menu for a tier: the full 2×2 owner menu, or the smaller public
+ * menu for everyone else. Single choke point so every "back home" path
+ * stays tier-correct (two-tier invisibility, not just blocking).
+ */
+export function homeMenuForTier(isOwner: boolean, lang: Lang = "en"): InlineKeyboard {
+  return isOwner ? buildMainMenu(lang) : buildPublicMainMenu(lang);
 }
 
 /**
@@ -193,7 +204,7 @@ export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
  * not hidden behind a tap, just never rendered. A forged tap on either is
  * refused by the callback router's tier gate.
  */
-export function buildPublicMainMenu(lang: Lang = "fa"): InlineKeyboard {
+export function buildPublicMainMenu(lang: Lang = "en"): InlineKeyboard {
   return new InlineKeyboard()
     .text(tr(lang, "menu.label.chat"), CALLBACKS.chat)
     .text(tr(lang, "menu.label.commands"), CALLBACKS.commands)
@@ -203,7 +214,7 @@ export function buildPublicMainMenu(lang: Lang = "fa"): InlineKeyboard {
 }
 
 /** Single «back» button — every sub-screen gets one, so there are no dead ends. */
-export function buildBackKeyboard(lang: Lang = "fa"): InlineKeyboard {
+export function buildBackKeyboard(lang: Lang = "en"): InlineKeyboard {
   return new InlineKeyboard().text(tr(lang, "menu.label.back"), CALLBACKS.home);
 }
 
@@ -212,16 +223,10 @@ export function buildBackKeyboard(lang: Lang = "fa"): InlineKeyboard {
  * button on every sub-screen. The home screen is tier-aware: the public
  * gets the smaller public menu, never the owner buttons.
  */
-export function menuKeyboardFor(data: string, lang: Lang = "fa", isOwner: boolean = true): InlineKeyboard {
+export function menuKeyboardFor(data: string, lang: Lang = "en", isOwner: boolean = true): InlineKeyboard {
   if (data !== CALLBACKS.home) return buildBackKeyboard(lang);
   return isOwner ? buildMainMenu(lang) : buildPublicMainMenu(lang);
 }
-
-/** Callback data for the /lang language picker — stable, machine-readable. */
-export const LANG_CALLBACKS = {
-  fa: "lang:fa",
-  en: "lang:en",
-} as const;
 
 /** Callback data for the /voice mode picker — stable, machine-readable. */
 export const VOICE_CALLBACKS = {
@@ -249,7 +254,7 @@ export function isVoiceCallback(data: string): boolean {
  * the choice. Layout: auto and always side by side, never on its own row —
  * the destructive-ish "never" is deliberately one tap further away.
  */
-export function buildVoiceKeyboard(lang: Lang = "fa"): InlineKeyboard {
+export function buildVoiceKeyboard(lang: Lang = "en"): InlineKeyboard {
   return new InlineKeyboard()
     .text(t("voice.option.auto", lang), VOICE_CALLBACKS.auto)
     .text(t("voice.option.always", lang), VOICE_CALLBACKS.always)
@@ -258,36 +263,12 @@ export function buildVoiceKeyboard(lang: Lang = "fa"): InlineKeyboard {
 }
 
 /**
- * Whether callback data belongs to the language picker.
- *
- * Matches by the "lang:" prefix rather than only the two known values, so
- * forged or junk picker data (e.g. "lang:de") routes to the lang handler,
- * which rejects it — unknown picker data is never mistaken for an ordinary
- * menu button.
- */
-export function isLangCallback(data: string): boolean {
-  return data.startsWith("lang:");
-}
-
-/**
- * Two-button language picker keyboard.
- *
- * Language names are the same in every UI language, so the buttons are
- * language-independent; the prompt line above the keyboard is translated.
- */
-export function buildLangKeyboard(lang: Lang = "fa"): InlineKeyboard {
-  return new InlineKeyboard()
-    .text(t("lang.label.fa", lang), LANG_CALLBACKS.fa)
-    .text(t("lang.label.en", lang), LANG_CALLBACKS.en);
-}
-
-/**
  * Real tools menu text, built from the Registry's active tool list.
  *
  * Listing a tool here is NOT an execution grant — the Executor still checks
  * the caller's permissions at run time.
  */
-export function toolListText(activeTools: readonly string[], lang: Lang = "fa"): string {
+export function toolListText(activeTools: readonly string[], lang: Lang = "en"): string {
   if (activeTools.length === 0) {
     return t("menu.tools.empty", lang);
   }
@@ -315,7 +296,7 @@ const REPLY_KEYS: Readonly<Record<string, string>> = {
 export function replyForCallback(
   data: string,
   activeTools?: readonly string[],
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): string {
   if (data === CALLBACKS.tools && activeTools !== undefined) {
     return toolListText(activeTools, lang);
@@ -331,12 +312,12 @@ export function replyForCallback(
 export type HelpGroup = "general" | "session" | "automation" | "owner";
 
 /** The grouped-/help title (central pack — kept stable for existing tests). */
-export function helpTitle(lang: Lang = "fa"): string {
+export function helpTitle(lang: Lang = "en"): string {
   return t("help.title", lang);
 }
 
 /** Section header for one /help group. */
-export function helpGroupTitle(group: HelpGroup, lang: Lang = "fa"): string {
+export function helpGroupTitle(group: HelpGroup, lang: Lang = "en"): string {
   return tr(lang, `menu.help.group.${group}`);
 }
 
@@ -348,7 +329,7 @@ export function helpEntryLine(
   name: string,
   description: string,
   example: string | undefined,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): string {
   if (example === undefined || example.length === 0) {
     return tr(lang, "menu.help.entry", { name, description });

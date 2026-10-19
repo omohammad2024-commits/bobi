@@ -34,7 +34,7 @@ export interface EncryptedSecret {
 
 /** Shown when the master key is absent; safe to display. */
 export const MISSING_KEY_MESSAGE =
-  "کلید رمزنگاری اعتبارنامه‌ها تنظیم نشده است. آن را در متغیر محیطی BOBI_AI_KEY_MASTER_KEY تنظیم و دوباره تلاش کنید.";
+  "The credential encryption key is not set. Set it in the BOBI_AI_KEY_MASTER_KEY environment variable and try again.";
 
 export class SecretStoreError extends Error {
   constructor(
@@ -71,7 +71,7 @@ export class ProviderSecretStore {
       throw new SecretStoreError("missing_key", MISSING_KEY_MESSAGE);
     }
     if (typeof plaintext !== "string" || plaintext.length === 0) {
-      throw new SecretStoreError("invalid_key", "اعتبارنامه خالی است.");
+      throw new SecretStoreError("invalid_key", "Credential is empty.");
     }
 
     const iv = randomBytes(IV_BYTES);
@@ -101,7 +101,7 @@ export class ProviderSecretStore {
       typeof stored.ciphertext !== "string" ||
       typeof stored.tag !== "string"
     ) {
-      throw new SecretStoreError("decrypt_failed", "اعتبارنامه ذخیره‌شده خوانا نیست.");
+      throw new SecretStoreError("decrypt_failed", "Stored credential is unreadable.");
     }
 
     let iv: Buffer;
@@ -110,11 +110,11 @@ export class ProviderSecretStore {
       iv = Buffer.from(stored.iv, "base64");
       tag = Buffer.from(stored.tag, "base64");
     } catch {
-      throw new SecretStoreError("decrypt_failed", "اعتبارنامه ذخیره‌شده خوانا نیست.");
+      throw new SecretStoreError("decrypt_failed", "Stored credential is unreadable.");
     }
 
     if (iv.length !== IV_BYTES || tag.length !== 16) {
-      throw new SecretStoreError("decrypt_failed", "اعتبارنامه ذخیره‌شده نامعتبر است.");
+      throw new SecretStoreError("decrypt_failed", "Stored credential is invalid.");
     }
 
     const decipher = createDecipheriv("aes-256-gcm", this.key, iv) as DecipherGCM;
@@ -127,7 +127,7 @@ export class ProviderSecretStore {
       return plaintext.toString("utf8");
     } catch {
       // GCM verification failed: the payload was altered or the key is wrong.
-      throw new SecretStoreError("decrypt_failed", "اعتبارنامه قابل رمزگشایی نبود.");
+      throw new SecretStoreError("decrypt_failed", "Credential could not be decrypted.");
     }
   }
 }
@@ -207,7 +207,7 @@ export class CredentialPoolStore {
   loadPoolCredential(id: number): string {
     const row = this.storage.getPoolCredential(id);
     if (!row) {
-      throw new SecretStoreError("decrypt_failed", "کلید پشتیبان یافت نشد.");
+      throw new SecretStoreError("decrypt_failed", "Backup key not found.");
     }
     return this.secrets.decrypt(row);
   }

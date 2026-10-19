@@ -98,7 +98,7 @@ export function registerDigestCommands(bot: Bot, env: DigestEnv): void {
 export async function sendInteractiveDigest(
   ctx: Context,
   env: DigestEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const resolved = resolveDigestEnv(env);
   if (resolved.storage === undefined || ctx.from === undefined) {
@@ -107,7 +107,7 @@ export async function sendInteractiveDigest(
   }
   const data = await buildDigestData(digestDeps(resolved, String(ctx.from.id)));
   const render = renderInteractiveDigest(data, {
-    lang,
+    locale: lang,
     canRunTask: resolved.canRunTask,
   });
   try {
@@ -189,7 +189,7 @@ export async function handleDigestCallback(
   ctx: Context,
   env: DigestEnv,
   data: string,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<boolean> {
   if (!data.startsWith(DIGEST_CALLBACK_PREFIX)) return false;
   const answer = (text?: string): Promise<unknown> =>
@@ -223,7 +223,7 @@ export async function handleDigestCallback(
   ): Promise<void> => {
     const fresh = await buildDigestData(digestDeps(resolved, ownerId));
     const render = renderInteractiveDigest(fresh, {
-      lang,
+      locale: lang,
       ...(confirm !== undefined ? { confirm } : {}),
       canRunTask: resolved.canRunTask,
     });
@@ -241,7 +241,7 @@ export async function handleDigestCallback(
   const swapKeyboard = async (confirm?: DigestDeleteConfirm): Promise<void> => {
     const fresh = await buildDigestData(digestDeps(resolved, ownerId));
     const render = renderInteractiveDigest(fresh, {
-      lang,
+      locale: lang,
       ...(confirm !== undefined ? { confirm } : {}),
       canRunTask: resolved.canRunTask,
     });

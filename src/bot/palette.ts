@@ -8,7 +8,6 @@ import {
   handleVoiceCommand,
   handleResetCommand,
   handleStopCommand,
-  handleLangCommand,
   handlePersonalityCommand,
   handleCompressCommand,
   type BotDeps,
@@ -16,10 +15,10 @@ import {
   type UserPrefStore,
 } from "./bot";
 import {
-  buildMainMenu,
   editMenuMessage,
   helpEntryLine,
   helpGroupTitle,
+  homeMenuForTier,
   startScreenText,
   type HelpGroup,
 } from "./menu";
@@ -218,30 +217,27 @@ function describeEntry(entry: CommandHelpEntry, lang: Lang): string {
 }
 
 /** Category overview text. Pure, for tests. */
-export function paletteCategoriesText(lang: Lang = "fa"): string {
+export function paletteCategoriesText(lang: Lang = "en"): string {
   return [t("pal.title", lang), "", t("pal.subtitle", lang)].join("\n");
 }
 
-/** Category overview keyboard: one button per group with its command count. Pure, for tests. */
+/** Category overview keyboard: one button per non-empty group with its command count. Pure, for tests. */
 export function buildCategoriesKeyboard(
   counts: Record<HelpGroup, number>,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  const button = (group: HelpGroup): { text: string; data: string } => ({
-    text: `${helpGroupTitle(group, lang)} (${formatCount(counts[group], lang)})`,
-    data: `${PALETTE_CALLBACK_PREFIX}cat:${group}:0`,
+  // Groups with zero visible entries render no button at all — a button
+  // that opens an empty page is a dead end (the public, for example, has
+  // no session/automation commands).
+  const visible = PALETTE_GROUPS.filter((g) => counts[g] > 0);
+  visible.forEach((group, i) => {
+    kb.text(
+      `${helpGroupTitle(group, lang)} (${formatCount(counts[group], lang)})`,
+      `${PALETTE_CALLBACK_PREFIX}cat:${group}:0`,
+    );
+    if (i % 2 === 1) kb.row();
   });
-  const general = button("general");
-  const session = button("session");
-  kb.text(general.text, general.data).text(session.text, session.data).row();
-  const automation = button("automation");
-  if (counts.owner > 0) {
-    const owner = button("owner");
-    kb.text(automation.text, automation.data).text(owner.text, owner.data);
-  } else {
-    kb.text(automation.text, automation.data);
-  }
   return kb;
 }
 
@@ -251,7 +247,7 @@ export function buildCategoriesKeyboard(
  */
 export function paletteCategoriesRender(
   isOwner: boolean,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): { text: string; keyboard: InlineKeyboard } {
   const entries = visibleCommandHelp(isOwner);
   return {
@@ -266,15 +262,10 @@ export function paletteCategoryText(
   pageEntries: readonly CommandHelpEntry[],
   page: number,
   totalPages: number,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): string {
   const lines = pageEntries.map((e) =>
-    helpEntryLine(
-      e.name,
-      describeEntry(e, lang),
-      lang === "fa" ? e.exampleFa : e.exampleEn,
-      lang,
-    ),
+    helpEntryLine(e.name, describeEntry(e, lang), e.example, lang),
   );
   return [
     `${t("pal.title", lang)} — ${helpGroupTitle(group, lang)}`,
@@ -293,7 +284,7 @@ export function buildCategoryKeyboard(
   pageEntries: readonly CommandHelpEntry[],
   page: number,
   totalPages: number,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const e of pageEntries) {
@@ -325,9 +316,9 @@ export function buildCategoryKeyboard(
  */
 export function paletteUsageCardText(
   entry: CommandHelpEntry,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): string {
-  const example = lang === "fa" ? entry.exampleFa : entry.exampleEn;
+  const example = entry.example;
   const parts = [
     `/${entry.name} — ${describeEntry(entry, lang)}`,
     "",
@@ -342,7 +333,7 @@ export function paletteUsageCardText(
 /** Usage-card keyboard: a single back button to the command's category. Pure, for tests. */
 export function buildUsageCardKeyboard(
   entry: CommandHelpEntry,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): InlineKeyboard {
   return new InlineKeyboard().text(
     t("pal.back_group", lang),
@@ -380,7 +371,7 @@ export const PALETTE_DIRECT: ReadonlySet<string> = new Set([
   "history", "save", "retry", "undo", "title", "branch", "resume",
   "sessions", "status", "context", "busy", "whoami", "footer", "version", "new",
   // Builtins (10): toggles/pickers/panels; start/help/commands open screens.
-  "start", "help", "commands", "voice", "reset", "stop", "lang",
+  "start", "help", "commands", "voice", "reset", "stop",
   "personality", "compress", "admin", "ai",
   // Automation (3): read-only listings, plus the interactive digest.
   "agents", "suggestions", "digest",
@@ -498,8 +489,16 @@ const RUNNERS: Record<string, Runner> = {
   },
 
   // ---- builtins ----
-  start: async (ctx, _env, lang) => {
-    await editMenuMessage(ctx, startScreenText(lang), buildMainMenu(lang));
+  start: async (ctx, env, lang) => {
+    // Tier-aware home menu AND welcome text: a non-owner tapping "start" in
+    // the palette must get the public menu and the public welcome — never
+    // the owner buttons or owner-only commands (two-tier invisibility).
+    const owner = isOwnerSender(ctx, env.deps);
+    await editMenuMessage(
+      ctx,
+      startScreenText(lang, owner),
+      homeMenuForTier(owner, lang),
+    );
   },
   help: async (ctx, env, lang) => {
     const render = paletteCategoriesRender(isOwnerSender(ctx, env.deps), lang);
@@ -524,13 +523,6 @@ const RUNNERS: Record<string, Runner> = {
   },
   stop: async (ctx, env, lang) => {
     await handleStopCommand(ctx, { engine: env.deps.engine }, lang);
-  },
-  lang: async (ctx, env, lang) => {
-    await handleLangCommand(
-      ctx,
-      env.deps.prefs !== undefined ? { prefs: env.deps.prefs } : {},
-      lang,
-    );
   },
   personality: async (ctx, env, lang) => {
     await handlePersonalityCommand(
@@ -789,7 +781,7 @@ export async function runPaletteCommand(
   name: string,
   ctx: Context,
   env: PaletteEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const entry = COMMAND_HELP.find((e) => e.name === name);
   if (entry === undefined) return;
@@ -814,7 +806,7 @@ export async function handlePaletteCallback(
   ctx: Context,
   env: PaletteEnv,
   data: string,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<boolean> {
   if (!data.startsWith(PALETTE_CALLBACK_PREFIX)) return false;
   const action = parsePaletteCallback(data);
@@ -873,7 +865,7 @@ export async function handlePaletteCallback(
 export async function openPaletteMessage(
   ctx: Pick<Context, "reply">,
   isOwner: boolean,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const render = paletteCategoriesRender(isOwner, lang);
   try {

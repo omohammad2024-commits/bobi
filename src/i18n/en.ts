@@ -38,7 +38,6 @@ export const en: LanguagePack = {
   "help.cmd.help": "Command reference",
   "help.cmd.personality": "Show or change the reply tone",
   "help.cmd.voice": "Choose voice-reply mode (auto/always/never)",
-  "help.cmd.lang": "Change the interface language",
   "help.cmd.compress": "Immediately summarize old conversations",
   "help.cmd.reset": "Clear this conversation's history",
   "help.cmd.stop": "Stop the running reply",
@@ -88,14 +87,6 @@ export const en: LanguagePack = {
   // ---- /stop ----
   "stop.nothing": "Nothing was running.",
   "stop.done": "Stopped ✅",
-
-  // ---- /lang ----
-  "lang.prompt": "Choose your interface language:",
-  "lang.label.fa": "فارسی",
-  "lang.label.en": "English",
-  "lang.changed": "Language changed to «{label}» ✅",
-  "lang.unknown": "Unknown language option.",
-  "lang.unavailable": "Changing the language is unavailable.",
 
   // ---- gates ----
   "gate.group_not_ready":
@@ -187,6 +178,21 @@ export const en: LanguagePack = {
   "error.overloaded": "The system is busy; try again in a moment.",
   "error.unknown": "Temporary error; try again.",
   "error.unexpected": "Unexpected error.",
+
+  // ---- tool errors (short, user-facing; no internals) ----
+  "error.tool.invalid_input": "Invalid input.",
+  "error.tool.not_found": "Tool not found.",
+  "error.tool.disabled": "This tool is disabled.",
+  "error.tool.not_allowed": "You don't have permission to run this tool.",
+  "error.tool.timeout": "The tool run took too long and was cancelled.",
+  "error.tool.aborted": "The tool run was cancelled.",
+  "error.tool.overloaded": "The system is busy; try again in a moment.",
+  "error.tool.invalid_result": "The tool returned an invalid result.",
+  "error.tool.internal": "Internal tool error.",
+
+  // ---- agent loop ----
+  "agent.time_exhausted":
+    "I ran out of time on this answer; ask again with more specifics if you need detail.",
 
   // ---- command palette (pal:) ----
   "help.cmd.commands": "Command browser",

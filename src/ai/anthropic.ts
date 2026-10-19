@@ -118,7 +118,7 @@ export function buildBody(target: AnthropicTarget, req: CompletionRequest): Reco
   const system = systemParts.length > 0 ? systemParts.join("\n\n") : undefined;
 
   if (messages.length === 0) {
-    throw new AiError("invalid_response", "درخواست پیامی نداشت.");
+    throw new AiError("invalid_response", "The request had no messages.");
   }
 
   // Opt-in reasoning: off unless the owner set BOBI_REASONING_EFFORT. The
@@ -241,7 +241,7 @@ function attachmentBlock(part: SendablePart): Record<string, unknown> {
   }
   // Audio has no block form here, so it is named in the text rather than sent
   // as a block the service would reject.
-  return { type: "text", text: `[پیوست صوتی: ${part.mediaType} ارسال نشد]` };
+  return { type: "text", text: `[Audio attachment: ${part.mediaType} not sent]` };
 }
 
 /**
@@ -267,7 +267,7 @@ export function parseResponse(
 function extractText(res: Record<string, unknown>): string {
   const content = res["content"];
   if (!Array.isArray(content)) {
-    throw new AiError("invalid_response", "پاسخ سرویس متن نداشت.");
+    throw new AiError("invalid_response", "Service response had no text.");
   }
   const texts: string[] = [];
   for (const block of content) {
@@ -354,12 +354,12 @@ async function fetchJson(
   }).catch((err: unknown) => {
     // pinnedFetch already categorises timeout/cancel/transport failures.
     if (err instanceof AiError) throw err;
-    if (opts.signal.aborted) throw new AiError("aborted", "درخواست لغو شد.");
-    throw new AiError("network", "ارتباط با سرویس برقرار نشد.");
+    if (opts.signal.aborted) throw new AiError("aborted", "Request was cancelled.");
+    throw new AiError("network", "Could not reach the service.");
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new AiError("invalid_response", "سرویس به آدرس دیگری ارجاع داد.");
+    throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) throw statusToError(res.status);
 
@@ -368,23 +368,23 @@ async function fetchJson(
     parsed = JSON.parse(res.body);
   } catch {
     // A malformed body is a response fault, not a network fault.
-    throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+    throw new AiError("invalid_response", "Service response was unreadable.");
   }
-  if (!isRecord(parsed)) throw new AiError("invalid_response", "پاسخ سرویس خالی بود.");
+  if (!isRecord(parsed)) throw new AiError("invalid_response", "Service response was empty.");
   return parsed;
 }
 
 function statusToError(status: number): AiError {
   if (status === 401 || status === 403) {
-    return new AiError("auth", "احراز هویت سرویس ناموفق بود.");
+    return new AiError("auth", "Service authentication failed.");
   }
-  if (status === 408) return new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
-  if (status === 429) return new AiError("quota", "محدودیت نرخ سرویس پر شده است.");
-  if (status >= 500) return new AiError("network", "سرویس در دسترس نیست.");
+  if (status === 408) return new AiError("timeout", "The service did not respond in time.");
+  if (status === 429) return new AiError("quota", "Service rate limit exceeded.");
+  if (status >= 500) return new AiError("network", "Service is unavailable.");
   if (status === 400 || status === 404 || status === 422) {
-    return new AiError("invalid_response", "درخواست به سرویس نامعتبر بود.");
+    return new AiError("invalid_response", "The request to the service was invalid.");
   }
-  return new AiError("unknown", "خطای ناشناخته سرویس.");
+  return new AiError("unknown", "Unknown service error.");
 }
 
 

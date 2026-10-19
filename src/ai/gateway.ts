@@ -25,7 +25,13 @@
  * real provider, unlike the offline FakeProvider used in tests.
  */
 import { AiError } from "./provider";
-import type { AiProvider, CompletionRequest, CompletionResponse, TokenUsage } from "./provider";
+import type {
+  AiProvider,
+  CompletionRequest,
+  CompletionResponse,
+  StreamEvent,
+  TokenUsage,
+} from "./provider";
 import type { AdapterRegistry } from "./adapter_registry";
 import type { ProviderSecretStore } from "./secret_store";
 import { CredentialPoolStore } from "./secret_store";
@@ -166,22 +172,22 @@ export class AiGateway implements AiProvider {
     try {
       settings = this.storage.getRuntimeSettings();
     } catch {
-      return "خواندن تنظیمات ممکن نشد.";
+      return "Could not read settings.";
     }
     if (settings.activeProviderId === null || settings.activeModelId === null) {
-      return "هنوز هیچ پروایدر و مدلی انتخاب نشده است. از /ai یا مینی‌اپ یک پروایدر اضافه و فعال کن.";
+      return "No provider and model selected yet. Add and activate a provider from /ai or the mini app.";
     }
     let provider;
     try {
       provider = this.storage.getProvider(settings.activeProviderId);
     } catch {
-      return "خواندن پروایدر ممکن نشد.";
+      return "Could not read the provider.";
     }
     if (provider === undefined) {
-      return "پروایدر انتخاب‌شده حذف شده است. از /ai یک پروایدر دیگر انتخاب کن.";
+      return "The selected provider was deleted. Pick another provider from /ai.";
     }
     if (!provider.enabled) {
-      return `پروایدر «${provider.label}» غیرفعال شده است. آن را فعال کن یا از /ai پروایدر دیگری انتخاب کن.`;
+      return `Provider "${provider.label}" is disabled. Enable it or pick another provider from /ai.`;
     }
     let hasCredential = false;
     try {
@@ -190,21 +196,21 @@ export class AiGateway implements AiProvider {
       // Treat as missing below.
     }
     if (!hasCredential) {
-      return `اعتبارنامهٔ پروایدر «${provider.label}» حذف شده است. کلید را دوباره وارد کن یا از /ai پروایدر دیگری انتخاب کن.`;
+      return `The credential for provider "${provider.label}" was removed. Enter the key again or pick another provider from /ai.`;
     }
     let model;
     try {
       model = this.storage.getModel(settings.activeModelId);
     } catch {
-      return "خواندن مدل ممکن نشد.";
+      return "Could not read the model.";
     }
     if (model === undefined || model.providerId !== provider.id) {
-      return `مدل انتخاب‌شده برای «${provider.label}» دیگر وجود ندارد. از /ai یک مدل انتخاب کن.`;
+      return `The selected model for "${provider.label}" no longer exists. Pick a model from /ai.`;
     }
     if (!model.enabled) {
-      return `مدل «${model.label}» غیرفعال شده است. آن را فعال کن یا مدل دیگری انتخاب کن.`;
+      return `Model "${model.label}" is disabled. Enable it or pick another model.`;
     }
-    return "پیکربندی ناقص است. از /ai وضعیت را بررسی کن.";
+    return "Configuration is incomplete. Check the status from /ai.";
   }
 
   /**
@@ -251,7 +257,7 @@ export class AiGateway implements AiProvider {
     const plan = this.plan();
 
     if (plan.candidates.length === 0) {
-      throw new AiError("invalid_response", "پروایدر یا مدل فعالی تنظیم نشده است.");
+      throw new AiError("invalid_response", "No active provider or model is set.");
     }
 
     const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
@@ -267,7 +273,7 @@ export class AiGateway implements AiProvider {
         // Report the model that actually answered, as the engine expects.
         return { text: res.text, model: res.model };
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "خطای ناشناخته سرویس.");
+        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
         lastError = mapped;
         // Only a retryable class advances to the next candidate. An auth,
         // validation, or configuration failure must NOT be retried through
@@ -277,7 +283,62 @@ export class AiGateway implements AiProvider {
       }
     }
 
-    throw lastError ?? new AiError("unknown", "خطای ناشناخته سرویس.");
+    throw lastError ?? new AiError("unknown", "Unknown service error.");
+  }
+
+  /**
+   * Stream a request through the active provider and model.
+   *
+   * The selection snapshot, failover, and credential-pool rotation follow the
+   * same rules as complete(), with one streaming-specific boundary: rotation
+   * and failover only happen BEFORE the first event is yielded. Once the
+   * caller has seen a `text` event, the stream is committed to that
+   * key/candidate — a later failure propagates as-is so the caller can
+   * handle the partial stream (the loop falls back to a fresh single-shot
+   * answer). Retrying another key mid-stream would duplicate text the user
+   * already saw.
+   *
+   * An adapter without its own streaming gets a synthesised stream: the
+   * gateway runs its single-shot complete() and emits one `text` event plus
+   * the terminal `end`, so callers stream uniformly regardless of adapter.
+   *
+   * @throws AiError with a user-safe message, same categories as complete().
+   */
+  async *completeStream(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined> {
+    // Same snapshot discipline as complete(): the selection is fixed once,
+    // up front, so a settings change mid-stream cannot mix configurations.
+    const plan = this.plan();
+
+    if (plan.candidates.length === 0) {
+      throw new AiError("invalid_response", "No active provider or model is set.");
+    }
+
+    const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
+    let lastError: AiError | undefined;
+
+    for (const candidate of plan.candidates) {
+      if (usedAttempts(plan.candidates, candidate) >= maxAttempts) break;
+
+      let yielded = false;
+      try {
+        for await (const ev of this.sendStream(candidate, req, plan.timeoutMs)) {
+          yielded = true;
+          yield ev;
+        }
+        return;
+      } catch (err) {
+        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        lastError = mapped;
+        // Committed: the consumer already saw events, so failing over to
+        // another candidate would DUPLICATE text the user already read.
+        // The partial stream is the caller's to handle.
+        if (yielded) throw mapped;
+        // Same rule as complete(): only a retryable class advances.
+        if (!isRetryable(mapped)) throw mapped;
+      }
+    }
+
+    throw lastError ?? new AiError("unknown", "Unknown service error.");
   }
 
   /**
@@ -297,7 +358,7 @@ export class AiGateway implements AiProvider {
   async completeForModel(req: CompletionRequest): Promise<CompletionResponse> {
     const candidate = this.resolveByModelId(req.model);
     if (!candidate) {
-      throw new AiError("invalid_response", "این مدل پیکربندی نشده یا غیرفعال است.");
+      throw new AiError("invalid_response", "This model is not configured or is disabled.");
     }
     const res = await this.send(candidate, req, req.timeoutMs);
     return { text: res.text, model: res.model };
@@ -417,7 +478,7 @@ export class AiGateway implements AiProvider {
       try {
         return await this.attempt(candidate, req, timeoutMs, key.apiKey);
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "خطای ناشناخته سرویس.");
+        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
         lastError = mapped;
         if (mapped.kind === "auth") {
           this.coolDown(key.id);
@@ -434,7 +495,134 @@ export class AiGateway implements AiProvider {
       }
     }
 
-    throw lastError ?? new AiError("unknown", "خطای ناشناخته سرویس.");
+    throw lastError ?? new AiError("unknown", "Unknown service error.");
+  }
+
+  /**
+   * Stream one request to one candidate, rotating across its credentials.
+   *
+   * Rotation follows send()'s policy, but ONLY before the first event: an
+   * auth failure on a key that has not produced anything cools that key down
+   * and tries the next; network/timeout advances without a cooldown. The
+   * moment one event is yielded the stream is committed — a later error is
+   * rethrown immediately with no rotation and no failover, because the
+   * caller already showed partial text.
+   */
+  private async *sendStream(
+    candidate: GatewaySelection,
+    req: CompletionRequest,
+    timeoutMs: number,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const attempts = this.keyAttempts(candidate.providerId);
+
+    let lastError: AiError | undefined;
+    for (const key of attempts) {
+      let yielded = false;
+      try {
+        for await (const ev of this.attemptStream(candidate, req, timeoutMs, key.apiKey)) {
+          yielded = true;
+          yield ev;
+        }
+        return;
+      } catch (err) {
+        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        lastError = mapped;
+        // Committed: the consumer already saw events, so no key rotation and
+        // no failover — the partial stream is the caller's to handle.
+        if (yielded) throw mapped;
+        if (mapped.kind === "auth") {
+          this.coolDown(key.id);
+          continue;
+        }
+        if (mapped.kind === "network" || mapped.kind === "timeout") {
+          continue;
+        }
+        throw mapped;
+      }
+    }
+
+    throw lastError ?? new AiError("unknown", "Unknown service error.");
+  }
+
+  /**
+   * One streaming attempt with one decrypted key against one candidate.
+   *
+   * Adapters with native streaming are consumed event by event; usage events
+   * are reported to the usage listener exactly like attempt() reports them.
+   * Adapters WITHOUT streaming get a synthesised stream from their
+   * single-shot complete(), so every path through the gateway speaks the
+   * StreamEvent contract.
+   */
+  private async *attemptStream(
+    candidate: GatewaySelection,
+    req: CompletionRequest,
+    timeoutMs: number,
+    apiKey: string,
+  ): AsyncGenerator<StreamEvent, void, undefined> {
+    const adapter = this.adapters.create(candidate.adapterType, {
+      baseUrl: candidate.baseUrl,
+      apiKey,
+      model: candidate.modelId,
+      ...(candidate.allowLocal !== undefined ? { allowLocalTargets: candidate.allowLocal } : {}),
+      ...(this.settings !== undefined ? { settings: this.settings } : {}),
+    });
+
+    const request = {
+      ...req,
+      // The stored model always wins: a request cannot name another model.
+      model: candidate.modelId,
+      timeoutMs,
+    };
+
+    if (typeof adapter.completeStream !== "function") {
+      // No native streaming: one shot, then a synthesised two-event stream.
+      // The text goes out as a single delta so downstream throttling still
+      // applies uniformly.
+      const res = await adapter.complete(request);
+      this.reportUsage(candidate, res.usage);
+      if (res.text.length > 0) yield { type: "text", delta: res.text };
+      yield {
+        type: "end",
+        text: res.text,
+        model: res.model,
+        toolCalls: res.toolCalls ?? [],
+        ...(res.usage !== undefined ? { usage: res.usage } : {}),
+      };
+      return;
+    }
+
+    let sawEnd = false;
+    for await (const ev of adapter.completeStream(request)) {
+      if (ev.type === "usage") this.reportUsage(candidate, ev.usage);
+      if (ev.type === "end") {
+        sawEnd = true;
+        if (ev.usage !== undefined) this.reportUsage(candidate, ev.usage);
+      }
+      yield ev;
+    }
+    if (!sawEnd) {
+      // An adapter that ends its generator without the terminal event is
+      // breaking the contract; synthesise it rather than hanging the caller
+      // on a stream that never terminates.
+      yield { type: "end", text: "", model: candidate.modelId, toolCalls: [] };
+    }
+  }
+
+  /**
+   * Report one attempt's token counts to the usage listener. Never throws:
+   * usage is an observer, never load-bearing (same rule as attempt()).
+   */
+  private reportUsage(candidate: GatewaySelection, usage: TokenUsage | undefined): void {
+    if (usage === undefined || this.onUsage === undefined) return;
+    try {
+      this.onUsage({
+        providerId: candidate.providerId,
+        modelId: candidate.modelId,
+        usage,
+      });
+    } catch {
+      // Swallowed by design: accounting must not fail the user's request.
+    }
   }
 
   /**
@@ -453,13 +641,13 @@ export class AiGateway implements AiProvider {
 
     const stored = this.storage.getCredential(providerId);
     if (!stored) {
-      throw new AiError("auth", "اعتبارنامهٔ این پروایدر تنظیم نشده است.");
+      throw new AiError("auth", "This provider has no credential set.");
     }
     let primaryKey: string;
     try {
       primaryKey = this.secrets.decrypt(stored);
     } catch {
-      throw new AiError("auth", "اعتبارنامهٔ این پروایدر قابل استفاده نبود.");
+      throw new AiError("auth", "This provider’s credential could not be used.");
     }
     const primaryId = `p:${providerId}`;
     if (live(primaryId)) out.push({ id: primaryId, apiKey: primaryKey });
@@ -486,7 +674,7 @@ export class AiGateway implements AiProvider {
       // them would only burn the attempt budget on certain failure.
       throw new AiError(
         "auth",
-        "همهٔ کلیدهای این پروایدر موقتاً کنار گذاشته شده‌اند؛ کمی بعد دوباره تلاش کنید.",
+        "All keys for this provider are temporarily set aside; try again shortly.",
       );
     }
     return out;
@@ -546,19 +734,7 @@ export class AiGateway implements AiProvider {
         model: candidate.modelId,
         timeoutMs,
       });
-      // Usage is metadata the caller asked to observe. A throwing listener
-      // must never break the turn — usage is an observer, never load-bearing.
-      if (res.usage !== undefined && this.onUsage !== undefined) {
-        try {
-          this.onUsage({
-            providerId: candidate.providerId,
-            modelId: candidate.modelId,
-            usage: res.usage,
-          });
-        } catch {
-          // Swallowed by design: accounting must not fail the user's request.
-        }
-      }
+      this.reportUsage(candidate, res.usage);
       return res;
     } finally {
       // Nothing references the key after this call; it goes out of scope here.

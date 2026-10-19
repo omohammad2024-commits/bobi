@@ -86,7 +86,7 @@ export async function runMixture(
       r.status === "fulfilled"
         ? r.value
         : // consultOne never throws; this is defence in depth only.
-          { model: models[i] ?? "نامشخص", error: "خطای داخلی مشورت." },
+          { model: models[i] ?? "unknown", error: "Internal consultation error." },
     ),
   };
 }
@@ -124,7 +124,7 @@ async function consultOne(
 
 /** Fixed, user-safe Persian message for a failed consultation. */
 function mixtureErrorMessage(err: unknown): string {
-  if (err instanceof DeadlineExceeded) return "پاسخ مدل به‌موقع نرسید.";
-  if (err instanceof AiError && err.kind === "aborted") return "درخواست لغو شد.";
-  return "مدل پاسخ نداد.";
+  if (err instanceof DeadlineExceeded) return "The model did not respond in time.";
+  if (err instanceof AiError && err.kind === "aborted") return "Request was cancelled.";
+  return "The model did not respond.";
 }

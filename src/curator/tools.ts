@@ -32,7 +32,7 @@ import { SummarizerService } from "./summarize";
 import type { SummarizerOptions } from "./summarize";
 import {
   EventStore,
-  eventWhenFa,
+  eventWhen,
   nextOccurrence,
   parsePersianDate,
   type EventKind,
@@ -378,7 +378,7 @@ export interface ListEventsOutput {
     kind: EventKind;
     labelFa: string;
     daysUntil: number | null;
-    whenFa: string | null;
+    when: string | null;
   }>;
   count: number;
 }
@@ -407,7 +407,7 @@ export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string,
           kind: event.kind,
           labelFa: event.labelFa,
           daysUntil: occ?.daysUntil ?? null,
-          whenFa: occ ? eventWhenFa(occ.daysUntil) : null,
+          when: occ ? eventWhen(occ.daysUntil) : null,
         };
       });
       return { events, count: events.length };

@@ -13,7 +13,12 @@
  * - `capabilities` is declared, not assumed: an adapter says whether it can
  *   list models, so the panel offers "discover models" only when it is real.
  */
-import type { AiProvider, CompletionRequest, CompletionResponse } from "./provider";
+import type {
+  AiProvider,
+  CompletionRequest,
+  CompletionResponse,
+  StreamEvent,
+} from "./provider";
 
 /** Optional per-provider extras. Absent means "not supported". */
 export interface AdapterCapabilities {
@@ -28,6 +33,13 @@ export interface AdapterCapabilities {
    * Declared, never assumed: only an adapter that implements embed() sets it.
    */
   embeddings?: boolean;
+  /**
+   * The adapter can stream completions (SSE text deltas) via completeStream().
+   * Declared, never assumed: only an adapter that implements completeStream()
+   * sets it. Adapters without it are served a synthesised stream by the
+   * gateway (one text event + the end event), so callers can stream uniformly.
+   */
+  streaming?: boolean;
   /** A short note about what this adapter supports, for the panel. */
   notes?: string;
 }
@@ -95,6 +107,13 @@ export interface AIProviderAdapter extends AiProvider {
 
   /** Send a completion request. Throws only AiError. */
   complete(req: CompletionRequest): Promise<CompletionResponse>;
+
+  /**
+   * Stream a completion as text deltas, when {@link capabilities.streaming}.
+   * Throws only AiError. Follows the StreamEvent contract in provider.ts:
+   * zero or more `text` events, then exactly one `end` event.
+   */
+  completeStream?(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined>;
 
   /**
    * List models offered by the service, when {@link capabilities.listModels}.
@@ -208,7 +227,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1",
     suggestedModel: "@cf/meta/llama-3.1-8b-instruct",
     requiredPlaceholder: "ACCOUNT_ID",
-    note: "آدرس شامل شناسهٔ حساب است؛ آن را جایگزین {ACCOUNT_ID} کن. کلید API از پنل Cloudflare.",
+    note: "The address contains an account ID; replace {ACCOUNT_ID}. API key from the Cloudflare dashboard.",
   },
   {
     id: "openrouter",
@@ -216,42 +235,42 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     baseUrl: "https://openrouter.ai/api/v1",
     // Taken from OpenRouter's own live model list, which is public.
     suggestedModel: "anthropic/claude-haiku-5.5",
-    note: "آدرس و لیست مدل‌ها بررسی شد. مدل‌ها با پیشوند vendor/model انتخاب می‌شوند.",
+    note: "Address and model list verified. Models are picked with a vendor/model prefix.",
   },
   {
     id: "deepseek",
     label: "DeepSeek",
     baseUrl: "https://api.deepseek.com/v1",
     suggestedModel: "deepseek-chat",
-    note: "آدرس بررسی شد (بدون کلید قابل خواندن نیست).",
+    note: "Address verified (not readable without a key).",
   },
   {
     id: "groq",
     label: "Groq",
     baseUrl: "https://api.groq.com/openai/v1",
     suggestedModel: "llama-3.3-70b-versatile",
-    note: "آدرس بررسی شد. سرعت بالا، مدل‌های open-weight.",
+    note: "Address verified. Fast, open-weight models.",
   },
   {
     id: "mistral",
     label: "Mistral",
     baseUrl: "https://api.mistral.ai/v1",
     suggestedModel: "mistral-large-latest",
-    note: "آدرس بررسی شد.",
+    note: "Address verified.",
   },
   {
     id: "xai",
     label: "xAI (Grok)",
     baseUrl: "https://api.x.ai/v1",
     suggestedModel: "grok-4",
-    note: "آدرس بررسی شد.",
+    note: "Address verified.",
   },
   {
     id: "together",
     label: "Together",
     baseUrl: "https://api.together.xyz/v1",
     suggestedModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-    note: "آدرس بررسی شد. مدل‌ها با پیشوند vendor/model.",
+    note: "Address verified. Models with a vendor/model prefix.",
   },
   {
     id: "opencode",
@@ -263,7 +282,7 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     // ling-flash-free, big-pickle, muse-spark-free. Note: the free tier may
     // reject requests from outside the OpenCode client (403 FreeTierError) —
     // a paid key removes that restriction.
-    note: "سازگار با OpenAI. کلید رایگان از opencode.ai/auth (فقط ایمیل، بدون کارت). مدل‌های رایگان: nemotron-3-ultra-free، nemotron-3-lightning-free، mimo-free، ling-flash-free، big-pickle، muse-spark-free. نکته: نسخهٔ رایگان ممکن است از بیرون کلاینت OpenCode خطای 403 بدهد؛ با کلید پولی این محدودیت نیست.",
+    note: "OpenAI-compatible. Free key from opencode.ai/auth (email only, no card). Free models: nemotron-3-ultra-free, nemotron-3-lightning-free, mimo-free, ling-flash-free, big-pickle, muse-spark-free. Note: the free tier may return 403 from outside the OpenCode client; a paid key removes that restriction.",
   },
 ];
 
@@ -280,17 +299,21 @@ export function providerPreset(id: string): ProviderPreset | undefined {
 export const ADAPTER_TEMPLATES: readonly AdapterTemplate[] = [
   {
     type: "openai_compatible",
-    label: "سفارشی / سازگار با OpenAI",
+    label: "Custom / OpenAI-compatible",
     suggestedBaseUrl: "https://api.openai.com/v1",
     prefilled: false,
-    capabilities: { listModels: true, notes: "POST {baseUrl}/chat/completions" },
+    capabilities: {
+      listModels: true,
+      streaming: true,
+      notes: "POST {baseUrl}/chat/completions (streaming via SSE)",
+    },
   },
   {
     type: "nine_router",
     label: "9Router",
     suggestedBaseUrl: "",
     prefilled: false,
-    capabilities: { notes: "نیازمند آدرس و مدل تعیین‌شده توسط مدیر" },
+    capabilities: { notes: "Requires an address and model set by the admin" },
   },
   {
     type: "gemini",

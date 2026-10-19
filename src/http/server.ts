@@ -23,7 +23,7 @@
  *     not be fed unbounded input.
  *  5. Simple per-IP rate limiting (default 30 req/min, in-memory) throttles
  *     token brute-forcing; the limiter runs BEFORE auth on the turn endpoint.
- *  6. Error messages are generic Persian strings that never leak internals
+ *  6. Error messages are generic English strings that never leak internals
  *     (no stack traces, no config values, no reason the auth failed).
  */
 import { createHash, timingSafeEqual } from "node:crypto";
@@ -162,7 +162,7 @@ export function createApiServer(
       if (dashboardRes !== undefined) return dashboardRes;
     }
     // Unknown routes get a bare 404 with no hint about what does exist.
-    return json(404, { error: "یافت نشد." });
+    return json(404, { error: "Not found." });
   };
 
   if (!listen) {
@@ -197,12 +197,13 @@ export function createApiServer(
   }
 
   function handleHealth(req: Request, ver: string): Response {
-    // /health is intentionally unauthenticated: it answers only "alive", the
-    // same minimal promise as the platform health probe in src/core/health.ts.
+    // /health is intentionally unauthenticated: it answers only "alive" plus
+    // the version and process uptime, the same minimal promise as the
+    // platform health probe in src/core/health.ts.
     if (req.method !== "GET") {
-      return json(405, { error: "روش مجاز نیست." });
+      return json(405, { error: "Method not allowed." });
     }
-    return json(200, { ok: true, version: ver });
+    return json(200, { ok: true, version: ver, uptimeMs: processUptimeMs() });
   }
 
   async function handleTurn(
@@ -210,19 +211,19 @@ export function createApiServer(
     ctx: { ip: string },
   ): Promise<Response> {
     if (req.method !== "POST") {
-      return json(405, { error: "روش مجاز نیست." });
+      return json(405, { error: "Method not allowed." });
     }
 
     // Rate limit BEFORE auth: a 429 is returned without ever touching the
     // token, which throttles brute-forcing as well as accidental floods.
     if (!takeRateLimit(ctx.ip)) {
-      return json(429, { error: "تعداد درخواست‌ها بیش از حد مجاز است. کمی صبر کنید." });
+      return json(429, { error: "Rate limit exceeded. Please wait a moment and try again." });
     }
 
     if (token === "") {
       // Missing token config is an operator problem, not a client one: 503
       // says "this endpoint is not available", never why.
-      return json(503, { error: "سرویس API در دسترس نیست." });
+      return json(503, { error: "API service is unavailable." });
     }
 
     // Constant-time comparison so the failure timing does not leak how close
@@ -231,12 +232,12 @@ export function createApiServer(
     // 401, no user enumeration possible — there is no user here anyway).
     const presented = bearerToken(req);
     if (presented === undefined || !safeEqual(presented, token)) {
-      return json(401, { error: "احراز هویت نامعتبر است." });
+      return json(401, { error: "Invalid credentials." });
     }
 
     const raw = await readCappedBody(req);
     if (raw === undefined) {
-      return json(413, { error: "بدنه درخواست بیش از حد بزرگ است." });
+      return json(413, { error: "Request body too large." });
     }
     const parsed = parseTurnBody(raw);
     if (!parsed.ok) {
@@ -258,7 +259,7 @@ export function createApiServer(
       return json(200, { reply: out.chunks.join("\n\n") });
     } catch {
       // Never leak the provider error or stack to the API caller.
-      return json(500, { error: "خطای داخلی رخ داد." });
+      return json(500, { error: "Internal error." });
     }
   }
 
@@ -295,26 +296,26 @@ function parseTurnBody(raw: string): ParseResult {
   try {
     value = JSON.parse(raw);
   } catch {
-    return { ok: false, error: "بدنه درخواست JSON معتبر نیست." };
+    return { ok: false, error: "Request body is not valid JSON." };
   }
   if (typeof value !== "object" || value === null) {
-    return { ok: false, error: "بدنه درخواست نامعتبر است." };
+    return { ok: false, error: "Invalid request body." };
   }
   const v = value as Record<string, unknown>;
   const userId = asBoundedString(v["userId"]);
   const conversationId = asBoundedString(v["conversationId"]);
   const text = asBoundedString(v["text"], MAX_TEXT_CHARS);
   if (userId === undefined || userId.trim() === "") {
-    return { ok: false, error: "فیلد userId الزامی است." };
+    return { ok: false, error: "The userId field is required." };
   }
   if (conversationId === undefined || conversationId.trim() === "") {
-    return { ok: false, error: "فیلد conversationId الزامی است." };
+    return { ok: false, error: "The conversationId field is required." };
   }
   if (text === undefined || text.trim() === "") {
-    return { ok: false, error: "فیلد text الزامی است." };
+    return { ok: false, error: "The text field is required." };
   }
   if (text.length > MAX_TEXT_CHARS) {
-    return { ok: false, error: `متن پیام نباید بیشتر از ${MAX_TEXT_CHARS} کاراکتر باشد.` };
+    return { ok: false, error: `Message text must not exceed ${MAX_TEXT_CHARS} characters.` };
   }
   return { ok: true, body: { userId, conversationId, text } };
 }
@@ -336,12 +337,29 @@ async function readCappedBody(req: Request): Promise<string | undefined> {
   return raw.length <= MAX_BODY_BYTES ? raw : undefined;
 }
 
-/** Extracts the token from `Authorization: Bearer <token>`. */
+/**
+ * Extracts the token from `Authorization: Bearer <token>`. The scheme match
+ * is case-insensitive (RFC 6750): some HTTP clients send `bearer`.
+ */
 function bearerToken(req: Request): string | undefined {
   const header = req.headers.get("authorization");
   if (header === null) return undefined;
-  const m = /^Bearer\s+(\S+)\s*$/.exec(header);
+  const m = /^Bearer\s+(\S+)\s*$/i.exec(header);
   return m?.[1];
+}
+
+/**
+ * Process uptime in milliseconds for /health. Best-effort: if the runtime
+ * does not expose it, the field is omitted rather than faked.
+ */
+function processUptimeMs(): number | undefined {
+  try {
+    const s = (process as { uptime?: () => number }).uptime?.();
+    if (typeof s === "number" && Number.isFinite(s)) return Math.round(s * 1000);
+  } catch {
+    // fall through to undefined
+  }
+  return undefined;
 }
 
 /**
@@ -361,6 +379,7 @@ function json(status: number, body: Record<string, unknown>): Response {
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
     },
   });
 }

@@ -25,7 +25,7 @@ export class FakeProvider implements AiProvider {
     }
 
     return {
-      text: `آزمایشی بابی: پیام شما دریافت شد — «${truncate(input, 200)}». (provider واقعی هنوز پیکربندی نشده)`,
+      text: `BOBI test mode: your message was received — "${truncate(input, 200)}". (No real provider is configured yet)`,
       model: req.model,
     };
   }

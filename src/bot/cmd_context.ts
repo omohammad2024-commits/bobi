@@ -47,9 +47,7 @@ export interface HermesCommandDeps {
 /** One Telegram bot-menu entry. `command` is without the leading slash. */
 export interface HermesCommandDef {
   command: string;
-  /** Persian menu description (default language of the bot). */
-  descriptionFa: string;
-  /** English menu description (set with language_code "en"). */
+  /** English menu description (the bot's UI is English-only). */
   descriptionEn: string;
   ownerOnly: boolean;
 }

@@ -192,10 +192,10 @@ export class ProviderService {
     allowLocal?: boolean;
   }): ServiceResult<number> {
     const label = input.label.trim();
-    if (label.length === 0) return fail("نام نمایشی لازم است.");
-    if (label.length > MAX_LABEL) return fail("نام نمایشی خیلی طولانی است.");
-    if (!isAdapterType(input.adapter)) return fail("نوع اتصال نامعتبر است.");
-    if (input.baseUrl.trim().length === 0) return fail("آدرس سرویس لازم است.");
+    if (label.length === 0) return fail("A display name is required.");
+    if (label.length > MAX_LABEL) return fail("Display name is too long.");
+    if (!isAdapterType(input.adapter)) return fail("Invalid connection type.");
+    if (input.baseUrl.trim().length === 0) return fail("Service address is required.");
 
     let credential: { iv: string; ciphertext: string; tag: string } | undefined;
     if (input.apiKey !== undefined && input.apiKey.trim().length > 0) {
@@ -205,7 +205,7 @@ export class ProviderService {
         if (err instanceof SecretStoreError && err.kind === "missing_key") {
           return fail(err.message, "missing_key");
         }
-        return fail("کلید ارائه‌شده معتبر نبود.");
+        return fail("The provided key was not valid.");
       }
     }
 
@@ -241,7 +241,7 @@ export class ProviderService {
     },
   ): ServiceResult<true> {
     const existing = this.storage.getProvider(id);
-    if (!existing) return fail("پروایدر یافت نشد.", "not_found");
+    if (!existing) return fail("Provider not found.", "not_found");
 
     const active = this.isActive(id);
     const changesEndpoint =
@@ -250,23 +250,23 @@ export class ProviderService {
 
     if (active && changesEndpoint) {
       return fail(
-        "این پروایدر فعال است؛ برای تغییر آدرس یا نوع اتصال، ابتدا پروایدر دیگری را فعال کنید.",
+        "This provider is active; activate another provider first to change its address or connection type.",
         "in_use",
       );
     }
 
     if (patch.label !== undefined) {
       const label = patch.label.trim();
-      if (label.length === 0) return fail("نام نمایشی لازم است.");
-      if (label.length > MAX_LABEL) return fail("نام نمایشی خیلی طولانی است.");
+      if (label.length === 0) return fail("A display name is required.");
+      if (label.length > MAX_LABEL) return fail("Display name is too long.");
       this.storage.updateProvider(id, { label });
     }
     if (patch.adapter !== undefined) {
-      if (!isAdapterType(patch.adapter)) return fail("نوع اتصال نامعتبر است.");
+      if (!isAdapterType(patch.adapter)) return fail("Invalid connection type.");
       this.storage.updateProvider(id, { adapter: patch.adapter });
     }
     if (patch.baseUrl !== undefined) {
-      if (patch.baseUrl.trim().length === 0) return fail("آدرس سرویس لازم است.");
+      if (patch.baseUrl.trim().length === 0) return fail("Service address is required.");
       this.storage.updateProvider(id, { baseUrl: patch.baseUrl.trim() });
     }
     if (patch.apiKey !== undefined && patch.apiKey.trim().length > 0) {
@@ -277,7 +277,7 @@ export class ProviderService {
         if (err instanceof SecretStoreError && err.kind === "missing_key") {
           return fail(err.message, "missing_key");
         }
-        return fail("کلید ارائه‌شده معتبر نبود.");
+        return fail("The provided key was not valid.");
       }
     }
     if (patch.allowLocal !== undefined) {
@@ -294,7 +294,7 @@ export class ProviderService {
    * confirm it explicitly and the audit trail names the operation.
    */
   setAllowLocal(id: number, allow: boolean): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("پروایدر یافت نشد.", "not_found");
+    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
     this.storage.setProviderAllowLocal(id, allow);
     return { ok: true, data: true };
   }
@@ -306,10 +306,10 @@ export class ProviderService {
    * so it is refused until another provider is activated.
    */
   setEnabled(id: number, enabled: boolean): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("پروایدر یافت نشد.", "not_found");
+    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
     if (!enabled && this.isActive(id)) {
       return fail(
-        "این پروایدر فعال است؛ برای غیرفعال‌کردن، ابتدا پروایدر دیگری را فعال کنید.",
+        "This provider is active; activate another provider first to disable it.",
         "in_use",
       );
     }
@@ -319,7 +319,7 @@ export class ProviderService {
 
   /** Remove a stored credential. */
   clearCredential(id: number): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("پروایدر یافت نشد.", "not_found");
+    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
     this.storage.deleteCredential(id);
     return { ok: true, data: true };
   }
@@ -339,11 +339,11 @@ export class ProviderService {
    * Returns the pool entry id.
    */
   addPoolKey(providerId: number, label: string, apiKey: string): ServiceResult<number> {
-    if (!this.storage.getProvider(providerId)) return fail("پروایدر یافت نشد.", "not_found");
+    if (!this.storage.getProvider(providerId)) return fail("Provider not found.", "not_found");
     const cleanLabel = label.trim();
-    if (cleanLabel.length === 0) return fail("نام نمایشی کلید پشتیبان لازم است.");
-    if (cleanLabel.length > MAX_LABEL) return fail("نام نمایشی کلید پشتیبان خیلی طولانی است.");
-    if (apiKey.trim().length === 0) return fail("کلید ارائه‌شده معتبر نبود.");
+    if (cleanLabel.length === 0) return fail("A display name for the backup key is required.");
+    if (cleanLabel.length > MAX_LABEL) return fail("Backup key display name is too long.");
+    if (apiKey.trim().length === 0) return fail("The provided key was not valid.");
     try {
       const id = this.pool.savePoolCredential(providerId, cleanLabel, apiKey.trim());
       return { ok: true, data: id };
@@ -351,7 +351,7 @@ export class ProviderService {
       if (err instanceof SecretStoreError && err.kind === "missing_key") {
         return fail(err.message, "missing_key");
       }
-      return fail("کلید ارائه‌شده معتبر نبود.");
+      return fail("The provided key was not valid.");
     }
   }
 
@@ -366,14 +366,14 @@ export class ProviderService {
 
   /** Remove a pool credential. The containment path for a compromised key. */
   removePoolKey(id: number): ServiceResult<true> {
-    if (!this.pool.removePoolEntry(id)) return fail("کلید پشتیبان یافت نشد.", "not_found");
+    if (!this.pool.removePoolEntry(id)) return fail("Backup key not found.", "not_found");
     return { ok: true, data: true };
   }
 
   /** Enable or disable a pool credential. */
   setPoolKeyEnabled(id: number, enabled: boolean): ServiceResult<true> {
     if (!this.pool.setPoolEntryEnabled(id, enabled)) {
-      return fail("کلید پشتیبان یافت نشد.", "not_found");
+      return fail("Backup key not found.", "not_found");
     }
     return { ok: true, data: true };
   }
@@ -394,10 +394,10 @@ export class ProviderService {
    * Refuses the active provider so a live selection is never orphaned.
    */
   remove(id: number): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("پروایدر یافت نشد.", "not_found");
+    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
     if (!this.storage.deleteProvider(id)) {
       return fail(
-        "این پروایدر در حال استفاده است؛ ابتدا پروایدر فعال را عوض کنید.",
+        "This provider is in use; switch the active provider first.",
         "in_use",
       );
     }
@@ -459,28 +459,28 @@ export class ModelService {
   add(input: { providerId: number; modelId: string; label: string }): ServiceResult<number> {
     const modelId = input.modelId.trim();
     const label = input.label.trim();
-    if (modelId.length === 0) return fail("شناسهٔ مدل لازم است.");
-    if (modelId.length > MAX_MODEL_ID) return fail("شناسهٔ مدل خیلی طولانی است.");
-    if (label.length === 0) return fail("نام نمایشی مدل لازم است.");
-    if (label.length > MAX_LABEL) return fail("نام نمایشی مدل خیلی طولانی است.");
+    if (modelId.length === 0) return fail("Model ID is required.");
+    if (modelId.length > MAX_MODEL_ID) return fail("Model ID is too long.");
+    if (label.length === 0) return fail("A display name for the model is required.");
+    if (label.length > MAX_LABEL) return fail("Model display name is too long.");
 
     if (this.storage.listModels(input.providerId).some((m) => m.modelId === modelId)) {
-      return fail("این شناسهٔ مدل قبلاً برای این پروایدر ثبت شده است.", "duplicate");
+      return fail("This model ID is already registered for this provider.", "duplicate");
     }
     try {
       const id = this.storage.createModel({ providerId: input.providerId, modelId, label });
       return { ok: true, data: id };
     } catch {
-      return fail("افزودن مدل ناموفق بود.");
+      return fail("Adding the model failed.");
     }
   }
 
   /** Rename a model's display label. */
   rename(id: number, label: string): ServiceResult<true> {
     const trimmed = label.trim();
-    if (trimmed.length === 0) return fail("نام نمایشی مدل لازم است.");
-    if (trimmed.length > MAX_LABEL) return fail("نام نمایشی مدل خیلی طولانی است.");
-    if (!this.storage.setModelLabel(id, trimmed)) return fail("مدل یافت نشد.", "not_found");
+    if (trimmed.length === 0) return fail("A display name for the model is required.");
+    if (trimmed.length > MAX_LABEL) return fail("Model display name is too long.");
+    if (!this.storage.setModelLabel(id, trimmed)) return fail("Model not found.", "not_found");
     return { ok: true, data: true };
   }
 
@@ -491,15 +491,15 @@ export class ModelService {
    * so it is refused until another model is activated.
    */
   setEnabled(id: number, enabled: boolean): ServiceResult<true> {
-    if (!this.storage.getModel(id)) return fail("مدل یافت نشد.", "not_found");
+    if (!this.storage.getModel(id)) return fail("Model not found.", "not_found");
     if (!enabled && this.isActive(id)) {
       return fail(
-        "این مدل فعال است؛ برای غیرفعال‌کردن، ابتدا مدل دیگری را فعال کنید.",
+        "This model is active; activate another model first to disable it.",
         "in_use",
       );
     }
     if (!this.storage.setModelEnabled(id, enabled)) {
-      return fail("مدل یافت نشد.", "not_found");
+      return fail("Model not found.", "not_found");
     }
     return { ok: true, data: true };
   }
@@ -507,30 +507,30 @@ export class ModelService {
   /** Delete a model, naming the exact reason when it is refused. */
   remove(id: number): ServiceResult<true> {
     const model = this.storage.getModel(id);
-    if (!model) return fail("مدل یافت نشد.", "not_found");
+    if (!model) return fail("Model not found.", "not_found");
 
     // The two refusals are distinct, and an owner needs to know which applies.
     if (this.isActive(id)) {
       return fail(
-        "این مدل فعال است؛ برای حذف، ابتدا مدل دیگری را فعال کنید.",
+        "This model is active; activate another model first to delete it.",
         "in_use",
       );
     }
     const others = this.storage.listModels(model.providerId).filter((m) => m.id !== id && m.enabled);
     if (others.length === 0) {
       return fail(
-        "این تنها مدل فعال پروایدر است؛ ابتدا یک مدل دیگر اضافه یا فعال کنید.",
+        "This is the provider’s only enabled model; add or enable another model first.",
         "last_enabled",
       );
     }
 
-    if (!this.storage.deleteModel(id)) return fail("حذف مدل ناموفق بود.");
+    if (!this.storage.deleteModel(id)) return fail("Deleting the model failed.");
     return { ok: true, data: true };
   }
 
   /** Mark a model as its provider's default. */
   setDefault(id: number): ServiceResult<true> {
-    if (!this.storage.setModelDefault(id)) return fail("مدل یافت نشد.", "not_found");
+    if (!this.storage.setModelDefault(id)) return fail("Model not found.", "not_found");
     return { ok: true, data: true };
   }
 

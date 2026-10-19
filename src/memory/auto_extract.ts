@@ -147,7 +147,7 @@ export function candidatesToEventProposals(
       kind: "event",
       memoryIds: [key],
       summaryFa:
-        `رویداد پیشنهادی از گفتگو: «${c.name}» — ${eventKindLabel(c.kind, "fa")} در ${c.labelFa}. ` +
+        `رویداد پیشنهادی از گفتگو: «${c.name}» — ${eventKindLabel(c.kind)} در ${c.labelFa}. ` +
         `تأیید یعنی ثبت در حافظهٔ رویدادها؛ رد یعنی نادیده گرفتن.`,
       suggestedAction: { type: "add_event", event },
     };

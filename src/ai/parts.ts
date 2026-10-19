@@ -109,8 +109,8 @@ export function partDropNote(
   reason: "too_large" | "unsupported",
 ): string {
   return reason === "too_large"
-    ? `[پیوست ${mediaType} ارسال نشد: حجم بیش از حد مجاز]`
-    : `[پیوست ${mediaType} پشتیبانی نمی‌شود]`;
+    ? `[${mediaType} attachment not sent: exceeds size limit]`
+    : `[${mediaType} attachment not supported]`;
 }
 
 /** The text of a message, with any attachment descriptions appended. */

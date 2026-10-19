@@ -1,84 +1,20 @@
 /**
- * Persian/English strings for the Phase-3 benchmark commands
+ * English-only strings for the Phase-3 benchmark commands
  * (`src/bot/cmd_phase3_bench.ts`).
  *
  * Kept in a module-local dictionary (NOT in `src/i18n/`) because the
  * coordinator owns the i18n fold-in — this file is the source it merges from.
- * Every key is prefixed `cmd_phase3_bench.*`. Persian is the ground truth.
+ * Every key is prefixed `cmd_phase3_bench.*`.
  */
 
 /** UI languages supported by these commands. */
-export type BenchLang = "fa" | "en";
+export type BenchLang = "en";
 
 type Vars = Record<string, string | number>;
 
-const fa: Record<string, string> = {
-  "cmd_phase3_bench.owner_only": "این دستور فقط برای مالک است.",
-  "cmd_phase3_bench.need_tools": "سرویس ابزارها در دسترس نیست؛ این دستور فعلاً کار نمی‌کند.",
-  "cmd_phase3_bench.tool_failed": "اجرای ابزار ناموفق بود.",
-  "cmd_phase3_bench.no_history": "هنوز هیچ بنچ‌مارکی ثبت نشده است. با «/bench run» یکی اجرا کن.",
 
-  "cmd_phase3_bench.help":
-    "استفاده:\n/bench history [n] — آخرین اجراها\n/bench trend [task_id] — روند امتیاز (کلی یا یک تسک)\n/bench run [--live] [--bg] [task_id ...] — اجرای دستی بنچ‌مارک (--bg: در پس‌زمینه)\n/bench schedule <cron|off> [--live] — زمان‌بندی اجرای دوره‌ای (پیش‌فرض: خاموش)\n/bench status — وضعیت زمان‌بندی، ورکر و آخرین اجرا\n/bench cancel — لغو اجرای پس‌زمینهٔ در حال انجام/در صف",
 
-  "cmd_phase3_bench.history.title": "تاریخچهٔ بنچ‌مارک (آخرین {n}):",
-  "cmd_phase3_bench.history.item":
-    "#{id} — {date} — {mode} — {model}\nمیانگین امتیاز: {avg}٪ — موفق: {passed} از {tasks}",
-  "cmd_phase3_bench.history.mode.offline": "آفلاین",
-  "cmd_phase3_bench.history.mode.live": "زنده",
-
-  "cmd_phase3_bench.trend.title": "روند میانگین امتیاز ({mode} — {model}):",
-  "cmd_phase3_bench.trend.line": "#{id}: {avg}٪",
-  "cmd_phase3_bench.trend.task.title": "روند تسک {task} ({title}):",
-  "cmd_phase3_bench.trend.task.line": "#{id}: {pct}٪",
-  "cmd_phase3_bench.trend.no_task": "تسکی با شناسهٔ «{task}» در تاریخچه پیدا نشد.",
-
-  "cmd_phase3_bench.run.started": "بنچ‌مارک شروع شد (حالت {mode})؛ کمی صبر کن…",
-  "cmd_phase3_bench.run.live_note":
-    "اجرای زنده چند دقیقه طول می‌کشد؛ نتیجه همین‌جا اعلام می‌شود.",
-  "cmd_phase3_bench.run.unavailable":
-    "اجرای دستی بنچ‌مارک در این نمونه وصل نیست؛ از CLI استفاده کن: bun bench/run.ts{live}",
-  "cmd_phase3_bench.run.queued":
-    "بنچ‌مارک در صف پس‌زمینه قرار گرفت (جایگاه {position})؛ نتیجه همین‌جا اعلام می‌شود.",
-
-  "cmd_phase3_bench.schedule.created":
-    "زمان‌بندی بنچ‌مارک فعال شد: {cron} ({mode}) — شناسهٔ وظیفه: {id}",
-  "cmd_phase3_bench.schedule.updated":
-    "زمان‌بندی بنچ‌مارک به‌روز شد: {cron} ({mode}) — شناسهٔ وظیفه: {id}",
-  "cmd_phase3_bench.schedule.off": "زمان‌بندی بنچ‌مارک خاموش شد.",
-  "cmd_phase3_bench.schedule.none": "زمان‌بندی فعالی برای بنچ‌مارک نیست.",
-  "cmd_phase3_bench.schedule.bad_cron":
-    "عبارت cron نامعتبر است. مثال: «0 3 * * 0» یعنی یکشنبه‌ها ساعت ۳ صبح تهران.",
-  "cmd_phase3_bench.schedule.usage":
-    "استفاده: /bench schedule <cron|off> [--live]\nمثال: /bench schedule 0 3 * * 0 --live",
-  "cmd_phase3_bench.schedule.mode.offline": "آفلاین",
-  "cmd_phase3_bench.schedule.mode.live": "زنده",
-  "cmd_phase3_bench.schedule.live_worker_note":
-    "اجرای زنده در ورکر پس‌زمینه انجام می‌شود (خارج از محدودیت ۳۰ ثانیه‌ای زمان‌بند)؛ نتیجه و هشدار افت کیفیت به همین‌جا می‌آید.",
-
-  "cmd_phase3_bench.status.scheduled": "زمان‌بندی: فعال — {cron} ({mode})، اجرای بعدی: {next}",
-  "cmd_phase3_bench.status.unscheduled": "زمان‌بندی: خاموش (پیش‌فرض).",
-  "cmd_phase3_bench.status.last":
-    "آخرین اجرا: #{id} — {date} — میانگین {avg}٪ ({passed}/{tasks} موفق)",
-  "cmd_phase3_bench.status.no_last": "هنوز اجرایی ثبت نشده است.",
-
-  "cmd_phase3_bench.status.worker.idle": "ورکر بنچ‌مارک: بیکار.",
-  "cmd_phase3_bench.status.worker.running":
-    "ورکر بنچ‌مارک: در حال اجرا ({mode}) از {started}.",
-  "cmd_phase3_bench.status.worker.progress":
-    "پیشرفت: {done} از {total} تسک — تسک جاری: {task} — {elapsed} ثانیه گذشته.",
-  "cmd_phase3_bench.status.worker.pending": "در صف ورکر: {n} اجرا.",
-  "cmd_phase3_bench.status.worker.unavailable": "ورکر بنچ‌مارک در این نمونه فعال نیست.",
-
-  "cmd_phase3_bench.history.note": "یادداشت: {note}",
-
-  "cmd_phase3_bench.cancel.done":
-    "لغو شد: {pending} اجرای در صف و {running} اجرای در حال انجام.",
-  "cmd_phase3_bench.cancel.nothing": "اجرای فعال یا در صفی در ورکر بنچ‌مارک نیست.",
-  "cmd_phase3_bench.cancel.unavailable": "ورکر بنچ‌مارک در این نمونه فعال نیست.",
-};
-
-const en: Record<string, string> = {
+const STRINGS: Record<string, string> = {
   "cmd_phase3_bench.owner_only": "This command is owner-only.",
   "cmd_phase3_bench.need_tools": "Tool service unavailable; this command is down for now.",
   "cmd_phase3_bench.tool_failed": "Tool execution failed.",
@@ -144,12 +80,14 @@ const en: Record<string, string> = {
   "cmd_phase3_bench.cancel.unavailable": "Bench worker not active in this build.",
 };
 
-const DICTS: Record<BenchLang, Record<string, string>> = { fa, en };
-
-/** Translate a key; falls back to Persian, then to the key itself. */
-export function tr(lang: BenchLang, key: string, vars?: Vars): string {
-  const dict = DICTS[lang] ?? fa;
-  let s = dict[key] ?? fa[key] ?? key;
+/** Translate a key; falls back to the key itself. The `lang` argument is
+ * accepted for signature compatibility and ignored: the UI is English-only. */
+export function tr(
+  _lang: "en" | "fa", // accepted for compatibility; always renders English
+  key: string,
+  vars?: Vars,
+): string {
+  let s = STRINGS[key] ?? key;
   if (vars !== undefined) {
     for (const [k, v] of Object.entries(vars)) {
       s = s.split(`{${k}}`).join(String(v));

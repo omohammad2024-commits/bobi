@@ -14,11 +14,13 @@
  * Every section is built inside its own try/catch: one failing source is
  * logged and skipped, and can never kill the digest.
  *
- * BILINGUAL (Phase-2 item 3 — interactive digest): section gathering is
- * language-neutral (`buildDigestData`); text rendering is per-language
- * (`renderDigestSection`, `renderDigestText`) through the central i18n
- * packs, in the owner's `Lang`. The legacy Persian API (`buildDigest`,
- * `formatDigest`, `DigestSection`) is preserved byte-for-byte on top of the
+ * Rendering (English-only UI since v1.0, Phase-2 item 3 — interactive
+ * digest): section gathering is language-neutral (`buildDigestData`); text
+ * rendering takes a `DigestLocale` (`renderDigestSection`,
+ * `renderDigestText`) which selects fa-IR vs Latin date/number formatting
+ * for the owner's Tehran briefing — all UI strings render in English via
+ * the central i18n pack. The legacy API (`buildDigest`, `formatDigest`,
+ * `DigestSection`) is preserved byte-for-byte on top of the
  * new core, so the scheduled 08:00 text delivery and its tests are
  * unaffected.
  *
@@ -46,7 +48,7 @@
  */
 import { Storage } from "../storage/storage";
 import { UsageTracker } from "../ai/usage";
-import { t, type Lang } from "../i18n";
+import { t } from "../i18n";
 import {
   EVENT_KEY_PREFIX,
   ARCHIVE_KEY_PREFIX,
@@ -59,6 +61,17 @@ export interface DigestSection {
   titleFa: string;
   bodyFa: string;
 }
+
+/**
+ * Locale for date/number formatting in the digest (the owner's Tehran
+ * briefing keeps Persian fa-IR dates and digits).
+ *
+ * This is deliberately NOT the i18n UI `Lang` (English-only since v1.0):
+ * it selects numeral/date formatting only. All UI strings render in
+ * English via t(); the "fa" locale additionally formats dates and numbers
+ * with fa-IR (Persian digits, Jalali month names).
+ */
+export type DigestLocale = "en" | "fa";
 
 /** One web headline, from the injected search function. */
 export interface DigestHeadline {
@@ -185,8 +198,8 @@ function enNum(n: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(n));
 }
 
-function fmtNum(n: number, lang: Lang): string {
-  return lang === "fa" ? faNum(n) : enNum(n);
+function fmtNum(n: number, locale: DigestLocale): string {
+  return locale === "fa" ? faNum(n) : enNum(n);
 }
 
 /** Collapse whitespace runs so external text cannot break the layout. */
@@ -262,8 +275,8 @@ function enDateTime(nowMs: number): DigestDateTime {
   return { date, time, hour };
 }
 
-function fmtDateTime(nowMs: number, lang: Lang): DigestDateTime {
-  return lang === "fa" ? faDateTime(nowMs) : enDateTime(nowMs);
+function fmtDateTime(nowMs: number, locale: DigestLocale): DigestDateTime {
+  return locale === "fa" ? faDateTime(nowMs) : enDateTime(nowMs);
 }
 
 /** i18n key for the time-of-day greeting; same hour ranges in both languages. */
@@ -303,16 +316,16 @@ function enTimeOf(ms: number): string {
   }).format(new Date(ms));
 }
 
-function fmtTimeOf(ms: number, lang: Lang): string {
-  return lang === "fa" ? faTimeOf(ms) : enTimeOf(ms);
+function fmtTimeOf(ms: number, locale: DigestLocale): string {
+  return locale === "fa" ? faTimeOf(ms) : enTimeOf(ms);
 }
 
 /** Approximate USD amount, in the owner's language (fa keeps its exact voice). */
-function fmtCost(usd: number, lang: Lang): string {
-  if (usd <= 0) return t("digest.cost.zero", lang);
-  if (usd < 0.01) return t("digest.cost.tiny", lang);
+function fmtCost(usd: number, locale: DigestLocale): string {
+  if (usd <= 0) return t("digest.cost.zero", "en");
+  if (usd < 0.01) return t("digest.cost.tiny", "en");
   let amount: string;
-  if (lang === "fa") {
+  if (locale === "fa") {
     const digits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
     amount = usd
       .toFixed(2)
@@ -321,7 +334,7 @@ function fmtCost(usd: number, lang: Lang): string {
   } else {
     amount = usd.toFixed(2);
   }
-  return t("digest.cost.value", lang, { amount });
+  return t("digest.cost.value", "en", { amount });
 }
 
 // ---------------------------------------------------------------------------
@@ -531,80 +544,80 @@ function shortErr(err: unknown): string {
 /** Render one section's title + body in the owner's language. Pure. */
 export function renderDigestSection(
   section: DigestSectionData,
-  lang: Lang = "fa",
+  locale: DigestLocale = "fa",
 ): { title: string; body: string } {
   switch (section.kind) {
     case "date": {
-      const { date, time, hour } = fmtDateTime(section.nowMs, lang);
+      const { date, time, hour } = fmtDateTime(section.nowMs, locale);
       return {
-        title: `☀️ ${t(greetingKey(hour), lang)}!`,
-        body: t("digest.date.body", lang, { date, time }),
+        title: `☀️ ${t(greetingKey(hour), "en")}!`,
+        body: t("digest.date.body", "en", { date, time }),
       };
     }
     case "tasks": {
-      const title = t("digest.sec.tasks", lang);
+      const title = t("digest.sec.tasks", "en");
       if (section.items.length === 0) {
-        return { title, body: t("digest.tasks.empty", lang) };
+        return { title, body: t("digest.tasks.empty", "en") };
       }
       const lines = section.items.map(
         (item) =>
-          `• ${clip(item.name, 60)} — ${t("digest.tasks.time", lang, {
-            time: fmtTimeOf(item.runAtMs, lang),
+          `• ${clip(item.name, 60)} — ${t("digest.tasks.time", "en", {
+            time: fmtTimeOf(item.runAtMs, locale),
           })}`,
       );
       const head =
         section.items.length === 1
-          ? t("digest.tasks.one", lang)
-          : t("digest.tasks.many", lang, { count: fmtNum(section.items.length, lang) });
+          ? t("digest.tasks.one", "en")
+          : t("digest.tasks.many", "en", { count: fmtNum(section.items.length, locale) });
       return { title, body: `${head}\n${lines.join("\n")}` };
     }
     case "reminders": {
       const lines = section.items.map((item) => {
-        const late = item.overdue ? t("digest.reminders.overdue", lang) : "";
-        return `• ${clip(item.text, 90)} — ${fmtTimeOf(item.dueAt, lang)}${late}`;
+        const late = item.overdue ? t("digest.reminders.overdue", "en") : "";
+        return `• ${clip(item.text, 90)} — ${fmtTimeOf(item.dueAt, locale)}${late}`;
       });
       return {
-        title: t("digest.sec.reminders", lang),
-        body: `${t("digest.reminders.many", lang, {
-          count: fmtNum(section.items.length, lang),
+        title: t("digest.sec.reminders", "en"),
+        body: `${t("digest.reminders.many", "en", {
+          count: fmtNum(section.items.length, locale),
         })}\n${lines.join("\n")}`,
       };
     }
     case "events": {
       const lines = section.items.map((item) =>
-        t("digest.events.line", lang, {
-          kind: t(`events.kind.${item.kindLabel}`, lang),
+        t("digest.events.line", "en", {
+          kind: t(`events.kind.${item.kindLabel}`, "en"),
           name: clip(item.name, 60),
           label: item.labelFa,
           when:
             item.daysUntil <= 0
-              ? t("events.when.today", lang)
+              ? t("events.when.today", "en")
               : item.daysUntil === 1
-                ? t("events.when.tomorrow", lang)
-                : t("events.when.days", lang, { count: fmtNum(item.daysUntil, lang) }),
+                ? t("events.when.tomorrow", "en")
+                : t("events.when.days", "en", { count: fmtNum(item.daysUntil, locale) }),
         }),
       );
       const head =
         section.items.length === 1
-          ? t("digest.events.one", lang)
-          : t("digest.events.many", lang, { count: fmtNum(section.items.length, lang) });
-      return { title: t("digest.sec.events", lang), body: `${head}\n${lines.join("\n")}` };
+          ? t("digest.events.one", "en")
+          : t("digest.events.many", "en", { count: fmtNum(section.items.length, locale) });
+      return { title: t("digest.sec.events", "en"), body: `${head}\n${lines.join("\n")}` };
     }
     case "proposals": {
       const body =
         section.count === 1
-          ? t("digest.proposals.one", lang)
-          : t("digest.proposals.many", lang, { count: fmtNum(section.count, lang) });
-      return { title: t("digest.sec.proposals", lang), body };
+          ? t("digest.proposals.one", "en")
+          : t("digest.proposals.many", "en", { count: fmtNum(section.count, locale) });
+      return { title: t("digest.sec.proposals", "en"), body };
     }
     case "usage": {
       return {
-        title: t("digest.sec.usage", lang),
-        body: t("digest.usage.body", lang, {
-          runs: fmtNum(section.runs, lang),
-          input: fmtNum(section.inputTokens, lang),
-          output: fmtNum(section.outputTokens, lang),
-          cost: fmtCost(section.estimatedUsd, lang),
+        title: t("digest.sec.usage", "en"),
+        body: t("digest.usage.body", "en", {
+          runs: fmtNum(section.runs, locale),
+          input: fmtNum(section.inputTokens, locale),
+          output: fmtNum(section.outputTokens, locale),
+          cost: fmtCost(section.estimatedUsd, locale),
         }),
       };
     }
@@ -613,15 +626,15 @@ export function renderDigestSection(
         (h) => `• ${clip(h.title, 110)}${h.host !== undefined ? ` (${h.host})` : ""}`,
       );
       return {
-        title: t("digest.sec.headlines", lang),
-        body: `${t("digest.headlines.warn", lang)}\n${lines.join("\n")}`,
+        title: t("digest.sec.headlines", "en"),
+        body: `${t("digest.headlines.warn", "en")}\n${lines.join("\n")}`,
       };
     }
     case "memories": {
       const lines = section.items.map((m) => `• ${clip(m.content, 140)}`);
       return {
-        title: t("digest.sec.memories", lang),
-        body: `${t("digest.memories.body", lang)}\n${lines.join("\n")}`,
+        title: t("digest.sec.memories", "en"),
+        body: `${t("digest.memories.body", "en")}\n${lines.join("\n")}`,
       };
     }
   }
@@ -636,31 +649,31 @@ export function renderDigestSection(
  */
 export function fitDigestSections(
   sections: readonly DigestSectionData[],
-  lang: Lang,
+  locale: DigestLocale,
   maxChars: number,
 ): DigestSectionData[] {
   const kept: DigestSectionData[] = sections[0] !== undefined ? [sections[0]] : [];
   for (const s of sections.slice(1)) {
-    const candidate = [...kept, s].map((d) => renderDigestSection(d, lang));
-    if (joinExact(candidate, lang).length > maxChars) break;
+    const candidate = [...kept, s].map((d) => renderDigestSection(d, locale));
+    if (joinExact(candidate, locale).length > maxChars) break;
     kept.push(s);
   }
   return kept;
 }
 
 /** Exact join of pre-rendered sections with the closer (no dropping). */
-function joinExact(parts: ReadonlyArray<{ title: string; body: string }>, lang: Lang): string {
+function joinExact(parts: ReadonlyArray<{ title: string; body: string }>, locale: DigestLocale): string {
   const rendered = parts.map((p) => `${p.title}\n${p.body}`);
-  return `${rendered.join("\n\n")}\n\n${t("digest.closer", lang)}`;
+  return `${rendered.join("\n\n")}\n\n${t("digest.closer", "en")}`;
 }
 
 /** Join pre-rendered section parts with the closer, enforcing the char cap. */
 function joinDigestParts(
   parts: ReadonlyArray<{ title: string; body: string }>,
-  lang: Lang,
+  locale: DigestLocale,
   maxChars: number,
 ): string {
-  let text = joinExact(parts, lang);
+  let text = joinExact(parts, locale);
   if (text.length > maxChars) {
     // Last resort for a pathological single section: hard cut.
     text = text.slice(0, maxChars - 1) + "…";
@@ -675,12 +688,12 @@ function joinDigestParts(
  */
 export function renderDigestText(
   sections: readonly DigestSectionData[],
-  lang: Lang = "fa",
+  locale: DigestLocale = "fa",
   maxChars: number = MAX_DIGEST_CHARS,
 ): string {
   return joinDigestParts(
-    fitDigestSections(sections, lang, maxChars).map((s) => renderDigestSection(s, lang)),
-    lang,
+    fitDigestSections(sections, locale, maxChars).map((s) => renderDigestSection(s, locale)),
+    locale,
     maxChars,
   );
 }

@@ -6,9 +6,9 @@
  *
  *  1. Slow-operation feedback: `withTyping` (chat-action heartbeat while an
  *     async op runs) and `progressMessage` (one status message edited in
- *     place — the "در حال فکر کردن…" pattern from bot.ts, factored out).
+ *     place — the "🧠Thinking…" pattern from bot.ts, factored out).
  *  2. `TOOL_PROGRESS_LABELS`: the COMPLETE per-tool progress label table
- *     (fa/en) that `bot.ts`'s `progressText` should use. `bot.ts` is owned
+ *     that `bot.ts`'s `progressText` should use. `bot.ts` is owned
  *     by another work package; the coordinator swaps the import in one
  *     line (see the wiring note in the final report).
  *  3. Tap-to-act inline buttons: the `sess:` / `mdl:` / `pers:` callback
@@ -29,26 +29,20 @@ import { InlineKeyboard } from "grammy";
 import { splitForTelegram } from "../conversation/engine";
 import { resolvePersonalityName } from "../personality/personalities";
 
-/** UI languages for the shared UX helpers. */
-export type UxLang = "fa" | "en";
-
-const FA_DIGITS = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
-
-/** Persian digits for an already-formatted Latin-digit string. */
-export function faDigits(s: string): string {
-  return s.replace(/[0-9]/g, (d) => FA_DIGITS[Number(d)] ?? d);
-}
+/** UI language for the shared UX helpers. English-only since v1.0. */
+export type UxLang = "en";
 
 /**
- * Format a count for the UI language: Persian digits with ٬ grouping in
- * `fa`, Latin digits with comma grouping in `en`.
+ * Format a count: Latin digits with comma grouping.
+ * The `lang` parameter is kept so existing call sites keep compiling; it no
+ * longer selects anything.
  */
-export function formatCount(n: number, lang: UxLang): string {
-  if (!Number.isFinite(n)) return lang === "en" ? "0" : "۰";
+export function formatCount(n: number, lang: UxLang = "en"): string {
+  void lang;
+  if (!Number.isFinite(n)) return "0";
   const neg = n < 0 ? "-" : "";
   const grouped = Math.trunc(Math.abs(n)).toLocaleString("en-US");
-  if (lang === "en") return `${neg}${grouped}`;
-  return `${neg}${grouped.replace(/,/g, "٬").replace(/[0-9]/g, (d) => FA_DIGITS[Number(d)] ?? d)}`;
+  return `${neg}${grouped}`;
 }
 
 // ------------------------------------------------------------- typing ----
@@ -159,7 +153,7 @@ export interface ProgressHandle {
   update(text: string): Promise<void>;
   /**
    * Deliver the final text: edit the status message with the first chunk
-   * (so /refine's "در حال بازبینی…" becomes the answer in place), and send
+   * (so /refine's "Reviewing…" becomes the answer in place), and send
    * any overflow chunks through `send`. When the status message was never
    * posted (or the edit is refused), everything goes through `send`.
    */
@@ -172,8 +166,8 @@ export interface ProgressHandle {
 }
 
 /**
- * Post one status message ("در حال …") and return a handle for in-place
- * updates — the same pattern bot.ts uses for "در حال فکر کردن…", factored
+ * Post one status message ("Working…") and return a handle for in-place
+ * updates — the same pattern bot.ts uses for "🧠Thinking…", factored
  * out so command modules don't each re-implement it.
  */
 export async function progressMessage(
@@ -259,41 +253,6 @@ export async function progressMessage(
 export const TOOL_PROGRESS_LABELS: Readonly<
   Record<UxLang, Readonly<Record<string, string>>>
 > = {
-  fa: {
-    calculator: "محاسبه",
-    date_time: "بررسی تاریخ و ساعت",
-    text_utilities: "پردازش متن",
-    unit_converter: "تبدیل واحد",
-    fetch_url: "خواندن صفحه",
-    web_search: "جستجوی وب",
-    remember: "ذخیره در حافظه",
-    recall: "جستجوی حافظه",
-    forget: "پاک کردن از حافظه",
-    remind_at: "تنظیم یادآور",
-    list_reminders: "فهرست یادآورها",
-    cancel_reminder: "لغو یادآور",
-    search_history: "جستجوی تاریخچه",
-    note_followup: "ثبت پیگیری",
-    list_nudges: "فهرست پیگیری‌ها",
-    ack_nudge: "تأیید پیگیری",
-    snooze_nudge: "تعویق پیگیری",
-    add_goal: "ثبت هدف",
-    list_goals: "فهرست هدف‌ها",
-    complete_goal: "تکمیل هدف",
-    schedule_task: "زمان‌بندی وظیفه",
-    list_tasks: "فهرست وظایف",
-    cancel_task: "لغو وظیفه",
-    usage_report: "گزارش مصرف",
-    build_digest: "ساخت خلاصه",
-    curate_memories: "بازبینی حافظه",
-    curator_decide: "اعمال تصمیم نگهدارنده",
-    skills: "فهرست مهارت‌ها",
-    tool_search: "جستجوی ابزار",
-    delegate: "سپردن به ایجنت",
-    consult_models: "مشورت مدل‌ها",
-    generate_image: "تولید تصویر",
-    generate_video: "تولید ویدیو",
-  },
   en: {
     calculator: "calculating",
     date_time: "checking date & time",
@@ -332,15 +291,11 @@ export const TOOL_PROGRESS_LABELS: Readonly<
 };
 
 /**
- * The progress label for a tool: the table entry for `lang`, falling back
- * to Persian, then to the raw tool name (MCP/dynamic tools). Never throws.
+ * The progress label for a tool: the table entry, falling back to the raw
+ * tool name (MCP/dynamic tools). Never throws.
  */
-export function toolProgressLabel(lang: UxLang, toolName: string): string {
-  return (
-    TOOL_PROGRESS_LABELS[lang]?.[toolName] ??
-    TOOL_PROGRESS_LABELS.fa[toolName] ??
-    toolName
-  );
+export function toolProgressLabel(toolName: string): string {
+  return TOOL_PROGRESS_LABELS.en[toolName] ?? toolName;
 }
 
 // ------------------------------------------------ callback namespaces ----
@@ -451,7 +406,7 @@ export function buildModelKeyboard(
   lang: UxLang,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  const mark = lang === "fa" ? " ✅" : " ✅";
+  const mark = " ✅";
   let inRow = 0;
   for (const m of models) {
     kb.text(
@@ -480,7 +435,7 @@ export function buildPersonalityKeyboard(
   lang: UxLang,
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
-  const mark = lang === "fa" ? " ✅" : " ✅";
+  const mark = " ✅";
   for (const s of skins) {
     kb
       .text(

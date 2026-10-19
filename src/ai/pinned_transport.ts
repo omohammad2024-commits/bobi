@@ -205,22 +205,22 @@ export async function pinnedFetch(req: PinnedRequest): Promise<PinnedResponse> {
   try {
     url = new URL(req.url);
   } catch {
-    throw new AiError("invalid_response", "آدرس سرویس نامعتبر است.");
+    throw new AiError("invalid_response", "Service address is invalid.");
   }
   if (req.addresses.length === 0) {
-    throw new AiError("invalid_response", "آدرس اتصال پروایدر مشخص نیست.");
+    throw new AiError("invalid_response", "Provider connection address is not set.");
   }
   // Credentials in a URL would be echoed by error paths; the transport never
   // uses them, so refuse rather than silently drop them.
   if (url.username.length > 0 || url.password.length > 0) {
-    throw new AiError("invalid_response", "آدرس سرویس نباید شامل نام کاربری باشد.");
+    throw new AiError("invalid_response", "Service address must not contain a username.");
   }
 
   const secure = url.protocol === "https:";
   // Only the two schemes this transport implements. Anything else would fall
   // through to a plain HTTP socket, so it is refused instead.
   if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new AiError("invalid_response", "آدرس سرویس باید http یا https باشد.");
+    throw new AiError("invalid_response", "Service address must be http or https.");
   }
 
   // Re-apply the address policy here, at the connection boundary. The DNS
@@ -229,11 +229,281 @@ export async function pinnedFetch(req: PinnedRequest): Promise<PinnedResponse> {
   // rather than trusted. No socket exists yet when this throws.
   for (const address of req.addresses) {
     if (!classifyAddress(address, req.allowLocalTargets === true).allowed) {
-      throw new AiError("invalid_response", "آدرس اتصال پروایدر مجاز نیست.");
+      throw new AiError("invalid_response", "Provider connection address is not allowed.");
     }
   }
 
   return attemptAddresses(req, url);
+}
+
+/**
+ * A response whose body streams instead of being buffered.
+ *
+ * The promise resolves as soon as the response HEADERS arrive, so the caller
+ * can check the status before reading anything; the body then flows through
+ * the `chunks` generator as it arrives. Breaking out of the generator early
+ * (or throwing into it) destroys the socket — the caller must not abandon it
+ * without closing it, or the connection leaks.
+ */
+export interface StreamedResponse {
+  status: number;
+  headers: Record<string, string | undefined>;
+  /** Body chunks, in arrival order. */
+  chunks: AsyncGenerator<Buffer, void, undefined>;
+}
+
+/**
+ * Stream one response body through the pinned transport, delivering chunks as
+ * they arrive (for SSE / chunked event streams).
+ *
+ * The security posture is identical to pinnedFetch: the socket is created by
+ * node:http(s) with a lookup that returns ONLY the validated addresses, TLS
+ * still verifies the configured hostname, redirects are never followed, and
+ * the body is still capped by MAX_RESPONSE_BYTES. The caller re-applies the
+ * same address policy, so the transport never dials anything dns_guard did
+ * not approve.
+ *
+ * @throws AiError: `invalid_response` for an unusable URL or an over-large
+ * body, `timeout` when the deadline passes, `aborted` when the caller
+ * cancels, `network` on a transport failure. Messages never contain the
+ * pinned address or headers.
+ */
+export async function pinnedStream(req: PinnedRequest): Promise<StreamedResponse> {
+  let url: URL;
+  try {
+    url = new URL(req.url);
+  } catch {
+    throw new AiError("invalid_response", "Service address is invalid.");
+  }
+  if (req.addresses.length === 0) {
+    throw new AiError("invalid_response", "Provider connection address is not set.");
+  }
+  if (url.username.length > 0 || url.password.length > 0) {
+    throw new AiError("invalid_response", "Service address must not contain a username.");
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new AiError("invalid_response", "Service address must be http or https.");
+  }
+
+  // Same boundary as pinnedFetch: re-applied here, at the last place a
+  // socket can be opened.
+  for (const address of req.addresses) {
+    if (!classifyAddress(address, req.allowLocalTargets === true).allowed) {
+      throw new AiError("invalid_response", "Provider connection address is not allowed.");
+    }
+  }
+
+  return attemptStreamAddresses(req, url);
+}
+
+/**
+ * Try each validated address in turn until one's response headers arrive.
+ *
+ * Same rationale as attemptAddresses (a black-holed address must not kill the
+ * request when a later address answers), applied to the header phase: once
+ * headers arrive on an address the stream is committed to that connection,
+ * and a later chunk failure is a mid-stream failure the caller handles.
+ */
+async function attemptStreamAddresses(req: PinnedRequest, url: URL): Promise<StreamedResponse> {
+  const deadlineTs = Date.now() + Math.max(1, req.timeoutMs);
+  let lastError: AiError | undefined;
+
+  for (const [index, address] of req.addresses.entries()) {
+    if (Date.now() >= deadlineTs) {
+      throw lastError ?? new AiError("timeout", "The service did not respond in time.");
+    }
+    if (req.signal.aborted) throw new AiError("aborted", "Request was cancelled.");
+
+    // Each address gets a share of what is left for its header wait, so no
+    // single dead address can consume the whole budget. The body then runs
+    // against the overall deadline.
+    const remaining = deadlineTs - Date.now();
+    const headerShare = Math.max(
+      MIN_ATTEMPT_MS,
+      Math.floor(remaining / (req.addresses.length - index)),
+    );
+
+    try {
+      return await streamOneAddress(req, url, address, Math.min(headerShare, remaining), deadlineTs);
+    } catch (err) {
+      const mapped = err instanceof AiError ? err : new AiError("network", "Could not reach the service.");
+      if (mapped.kind === "aborted") throw mapped;
+      lastError = mapped;
+    }
+  }
+
+  throw lastError ?? new AiError("network", "Could not reach the service.");
+}
+
+/**
+ * Open one streaming request against a single validated address.
+ *
+ * Resolves when the response headers arrive; the body then flows through the
+ * returned generator. `headerMs` bounds the wait for headers; `deadlineTs`
+ * (an absolute timestamp) bounds the whole stream. Abandoning the generator
+ * without closing it destroys the socket via the generator's finally block.
+ */
+function streamOneAddress(
+  req: PinnedRequest,
+  url: URL,
+  address: string,
+  headerMs: number,
+  deadlineTs: number,
+): Promise<StreamedResponse> {
+  const secure = url.protocol === "https:";
+  const requestFn = secure ? httpsRequest : httpRequest;
+  const port = url.port ? Number(url.port) : secure ? 443 : 80;
+
+  return new Promise<StreamedResponse>((resolve, reject) => {
+    let settled = false;
+    let outgoing: ReturnType<typeof requestFn> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    // Producer/consumer queue between the socket callbacks and the generator.
+    type Item = { chunk: Buffer } | { error: unknown } | { end: true };
+    const queue: Item[] = [];
+    let waiter: (() => void) | undefined;
+    const push = (item: Item): void => {
+      queue.push(item);
+      waiter?.();
+      waiter = undefined;
+    };
+
+    const teardown = (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      req.signal.removeEventListener("abort", onAbort);
+      outgoing?.destroy();
+    };
+
+    const fail = (err: unknown): void => {
+      push({ error: err });
+      teardown();
+    };
+
+    const onAbort = (): void => {
+      if (settled) {
+        // Headers arrived: the stream is live, so the abort surfaces as a
+        // chunk error the consumer sees.
+        fail(new AiError("aborted", "Request was cancelled."));
+        return;
+      }
+      settled = true;
+      teardown();
+      reject(new AiError("aborted", "Request was cancelled."));
+    };
+
+    const onTimeout = (): void => {
+      if (settled) {
+        fail(new AiError("timeout", "The service did not respond in time."));
+        return;
+      }
+      settled = true;
+      teardown();
+      reject(new AiError("timeout", "The service did not respond in time."));
+    };
+
+    const arm = (ms: number): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      timer = setTimeout(onTimeout, Math.max(1, ms));
+    };
+
+    arm(headerMs);
+    if (req.signal.aborted) {
+      onAbort();
+      return;
+    }
+    req.signal.addEventListener("abort", onAbort, { once: true });
+
+    async function* chunks(): AsyncGenerator<Buffer, void, undefined> {
+      try {
+        for (;;) {
+          while (queue.length === 0) {
+            // eslint-disable-next-line no-await-in-loop
+            await new Promise<void>((r) => {
+              waiter = r;
+            });
+          }
+          const item = queue.shift()!;
+          if ("end" in item) return;
+          if ("error" in item) throw item.error;
+          yield item.chunk;
+        }
+      } finally {
+        // The consumer went away (break/throw/return) or the stream ended:
+        // release the socket and the timers. Without this an abandoned
+        // generator would leak a live connection.
+        teardown();
+      }
+    }
+
+    try {
+      outgoing = requestFn({
+        hostname: url.hostname,
+        port,
+        path: `${url.pathname}${url.search}`,
+        method: req.method,
+        headers: req.headers,
+        lookup: pinnedLookup([address]),
+        servername: secure ? url.hostname : undefined,
+      } as never);
+    } catch (err) {
+      settled = true;
+      teardown();
+      const message = err instanceof Error ? err.message : String(err);
+      reject(
+        message.includes("pinned") || message.includes("family")
+          ? new AiError("network", "Could not connect to the validated address.")
+          : new AiError("network", "Could not reach the service."),
+      );
+      return;
+    }
+
+    outgoing.on("error", (err: NodeJS.ErrnoException) => {
+      if (!settled) {
+        settled = true;
+        teardown();
+        reject(new AiError("network", "Could not reach the service."));
+        return;
+      }
+      fail(new AiError("network", "Could not reach the service."));
+    });
+
+    outgoing.on("response", (res: IncomingMessage) => {
+      if (settled) return;
+      settled = true;
+      // Headers arrived: the body now runs against the overall deadline, not
+      // the header share — a long generation must not be cut off by it.
+      arm(Math.max(1, deadlineTs - Date.now()));
+
+      let received = 0;
+      res.on("data", (chunk: Buffer) => {
+        received += chunk.length;
+        if (received > MAX_RESPONSE_BYTES) {
+          fail(new AiError("invalid_response", "Service response is too large."));
+          return;
+        }
+        push({ chunk });
+      });
+      res.on("error", () => {
+        fail(new AiError("network", "Could not reach the service."));
+      });
+      res.on("end", () => {
+        push({ end: true });
+        teardown();
+      });
+
+      resolve({
+        status: res.statusCode ?? 0,
+        headers: res.headers as Record<string, string | undefined>,
+        chunks: chunks(),
+      });
+    });
+
+    if (req.body !== undefined) {
+      outgoing.write(req.body);
+    }
+    outgoing.end();
+  });
 }
 
 /**
@@ -266,9 +536,9 @@ async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedRes
     // Stop when the caller's deadline has passed. A timeout is reported as
     // such rather than as a network fault, because that is what it is.
     if (Date.now() >= deadline) {
-      throw lastError ?? new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
+      throw lastError ?? new AiError("timeout", "The service did not respond in time.");
     }
-    if (req.signal.aborted) throw new AiError("aborted", "درخواست لغو شد.");
+    if (req.signal.aborted) throw new AiError("aborted", "Request was cancelled.");
 
     // Each attempt gets a share of what is left, so no single dead address can
     // consume the whole budget. The last address gets the remainder.
@@ -281,7 +551,7 @@ async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedRes
     try {
       return await attemptOne(req, url, [address], Math.min(share, remaining));
     } catch (err) {
-      const mapped = err instanceof AiError ? err : new AiError("network", "ارتباط با سرویس برقرار نشد.");
+      const mapped = err instanceof AiError ? err : new AiError("network", "Could not reach the service.");
       // A cancellation or a caller-imposed expiry ends the whole attempt: the
       // remaining addresses cannot fix either.
       if (mapped.kind === "aborted") throw mapped;
@@ -289,7 +559,7 @@ async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedRes
     }
   }
 
-  throw lastError ?? new AiError("network", "ارتباط با سرویس برقرار نشد.");
+  throw lastError ?? new AiError("network", "Could not reach the service.");
 }
 
 /**
@@ -335,14 +605,14 @@ function attemptOne(
       if (settled) return;
       settled = true;
       teardown();
-      reject(new AiError("aborted", "درخواست لغو شد."));
+      reject(new AiError("aborted", "Request was cancelled."));
     };
 
     const deadlineFn = (): void => {
       if (settled) return;
       settled = true;
       teardown();
-      reject(new AiError("timeout", "پاسخ سرویس به‌موقع نرسید."));
+      reject(new AiError("timeout", "The service did not respond in time."));
     };
 
     deadline = setTimeout(deadlineFn, Math.max(1, timeoutMs));
@@ -352,7 +622,7 @@ function attemptOne(
     if (req.signal.aborted) {
       settled = true;
       clearTimeout(deadline);
-      reject(new AiError("aborted", "درخواست لغو شد."));
+      reject(new AiError("aborted", "Request was cancelled."));
       return;
     }
     req.signal.addEventListener("abort", onAbort, { once: true });
@@ -382,8 +652,8 @@ function attemptOne(
       const message = err instanceof Error ? err.message : String(err);
       reject(
         message.includes("pinned") || message.includes("family")
-          ? new AiError("network", "اتصال به آدرس اعتبارسنجی‌شده برقرار نشد.")
-          : new AiError("network", "ارتباط با سرویس برقرار نشد."),
+          ? new AiError("network", "Could not connect to the validated address.")
+          : new AiError("network", "Could not reach the service."),
       );
       return;
     }
@@ -398,20 +668,20 @@ function attemptOne(
     outgoing.on("error", (err: NodeJS.ErrnoException) => {
       settle(() => {
         if (err.name === "AbortError" || err.code === "ABORT_ERR") {
-          reject(new AiError("aborted", "درخواست لغو شد."));
+          reject(new AiError("aborted", "Request was cancelled."));
           return;
         }
         // A getaddrinfo failure would mean our pinned lookup was bypassed;
         // either way the request did not reach a validated address, so it
         // fails closed rather than being retried by name.
-        reject(new AiError("network", "ارتباط با سرویس برقرار نشد."));
+        reject(new AiError("network", "Could not reach the service."));
       });
     });
 
     outgoing.on("timeout", () => {
       settle(() => {
         outgoing?.destroy();
-        reject(new AiError("timeout", "پاسخ سرویس به‌موقع نرسید."));
+        reject(new AiError("timeout", "The service did not respond in time."));
       });
     });
 
@@ -425,14 +695,14 @@ function attemptOne(
           // Stop accumulating and drop the socket rather than let an
           // unbounded body exhaust memory.
           settle(() =>
-            reject(new AiError("invalid_response", "پاسخ سرویس بیش از حد بزرگ است.")),
+            reject(new AiError("invalid_response", "Service response is too large.")),
           );
           return;
         }
         chunks.push(chunk);
       });
       res.on("error", () => {
-        settle(() => reject(new AiError("network", "ارتباط با سرویس برقرار نشد.")));
+        settle(() => reject(new AiError("network", "Could not reach the service.")));
       });
       res.on("end", () => {
         settle(() => {

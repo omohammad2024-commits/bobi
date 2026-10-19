@@ -59,7 +59,7 @@ export function setupFromPreset(
 ): SetupResult {
   const preset = providerPreset(presetId);
   if (preset === undefined) {
-    return { ok: false, message: "این سرویس شناخته نشده است.", notes: [] };
+    return { ok: false, message: "Unknown service.", notes: [] };
   }
 
   const baseUrl = (baseUrlOverride ?? "").trim() || preset.baseUrl;
@@ -69,7 +69,7 @@ export function setupFromPreset(
   if (preset.requiredPlaceholder !== undefined && baseUrl.includes(`{${preset.requiredPlaceholder}}`)) {
     return {
       ok: false,
-      message: `آدرس هنوز شامل {${preset.requiredPlaceholder}} است؛ آن را با مقدار واقعی عوض کن.`,
+      message: `The address still contains {${preset.requiredPlaceholder}}; replace it with the real value.`,
       notes: [],
     };
   }
@@ -92,10 +92,10 @@ export function setupFromPreset(
   // 2. A starting model. Without one the provider can be enabled but cannot
   //    answer, which reads as broken.
   if (preset.suggestedModel === undefined) {
-    notes.push("این سرویس مدل پیشنهادی ندارد؛ مدل را از منوی مدل‌ها اضافه کن.");
+    notes.push("This service has no suggested model; add one from the models menu.");
     return {
       ok: true,
-      message: `پروایدر «${preset.label}» ساخته شد.`,
+      message: `Provider "${preset.label}" was created.`,
       providerId,
       notes,
     };
@@ -109,8 +109,8 @@ export function setupFromPreset(
   if (!added.ok) {
     // The provider exists; only the model failed. Say so rather than rolling
     // back, because the owner can add a model by hand and the provider is fine.
-    notes.push(`مدل پیشنهادی اضافه نشد: ${added.message}`);
-    return { ok: true, message: `پروایدر «${preset.label}» ساخته شد.`, providerId, notes };
+    notes.push(`Suggested model was not added: ${added.message}`);
+    return { ok: true, message: `Provider "${preset.label}" was created.`, providerId, notes };
   }
   const modelId = added.data;
 
@@ -118,10 +118,10 @@ export function setupFromPreset(
   try {
     deps.storage.setRuntimeSelection({ providerId, modelId });
   } catch {
-    notes.push("فعال‌سازی خودکار انجام نشد؛ از منوی «انتخاب پروایدر و مدل» فعال کن.");
+    notes.push("Auto-activation did not happen; activate it from the provider & model picker.");
     return {
       ok: true,
-      message: `پروایدر «${preset.label}» ساخته شد.`,
+      message: `Provider "${preset.label}" was created.`,
       providerId,
       modelId,
       notes,
@@ -130,7 +130,7 @@ export function setupFromPreset(
 
   return {
     ok: true,
-    message: `«${preset.label}» ساخته، فعال، و آمادهٔ استفاده شد.`,
+    message: `"${preset.label}" was created, activated, and is ready to use.`,
     providerId,
     modelId,
     activatedModel: preset.suggestedModel,
@@ -138,40 +138,39 @@ export function setupFromPreset(
   };
 }
 
-/** The prompt shown when the owner picks a preset: one line, the key. */
-export function setupPrompt(preset: ProviderPreset, lang: "fa" | "en" = "fa"): string {
-  const en = lang === "en";
+/**
+ * The prompt shown when the owner picks a preset: one line, the key.
+ *
+ * English-only (the UI is English-only as of v1.0). The `lang` parameter is
+ * retained so existing callers keep compiling; it no longer changes the output.
+ */
+export function setupPrompt(preset: ProviderPreset, lang: "fa" | "en" = "en"): string {
+  void lang;
   const lines = [
-    en ? `Adding ${preset.label}` : `افزودن ${preset.label}`,
+    `Adding ${preset.label}`,
     "",
-    en ? "Send the API key in your next message. That's it." : "کلید API را در پیام بعدی بفرست. همین.",
+    "Send the API key in your next message. That's it.",
   ];
 
   if (preset.suggestedModel !== undefined) {
     lines.push(
       "",
-      en
-        ? `Model ${preset.suggestedModel} will be added and activated automatically.`
-        : `مدل ${preset.suggestedModel} خودکار اضافه و فعال می‌شود.`,
+      `Model ${preset.suggestedModel} will be added and activated automatically.`,
     );
   }
   if (preset.requiredPlaceholder !== undefined) {
     lines.push(
       "",
-      en
-        ? `⚠️ This service also needs ${preset.requiredPlaceholder}.`
-        : `⚠️ این سرویس به ${preset.requiredPlaceholder} هم نیاز دارد.`,
-      en
-        ? `Send key and value separated by a comma:  key, ${preset.requiredPlaceholder}`
-        : `کلید و مقدار را با کاما بفرست:  کلید, ${preset.requiredPlaceholder}`,
+      `⚠️ This service also needs ${preset.requiredPlaceholder}.`,
+      `Send key and value separated by a comma:  key, ${preset.requiredPlaceholder}`,
     );
   }
 
   lines.push(
     "",
-    en ? `Note: ${preset.note}` : `نکته: ${preset.note}`,
+    `Note: ${preset.note}`,
     "",
-    en ? "To cancel, use the Cancel button below." : "برای لغو، دکمهٔ «انصراف» را بزن.",
+    "To cancel, use the Cancel button below.",
   );
   return lines.join("\n");
 }

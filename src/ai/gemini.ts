@@ -94,7 +94,7 @@ export class GeminiAdapter implements AIProviderAdapter {
 
     const models = res["models"];
     if (!Array.isArray(models)) {
-      throw new AiError("invalid_response", "پاسخ سرویس قابل خواندن نبود.");
+      throw new AiError("invalid_response", "Service response was unreadable.");
     }
     const out: RemoteModel[] = [];
     for (const entry of models) {
@@ -197,7 +197,7 @@ export function buildBody(target: GeminiTarget, req: CompletionRequest): Record<
   }
   const systemText = systemParts.length > 0 ? systemParts.join("\n\n") : undefined;
   if (contents.length === 0) {
-    throw new AiError("invalid_response", "درخواست پیامی نداشت.");
+    throw new AiError("invalid_response", "The request had no messages.");
   }
 
   const body: Record<string, unknown> = { contents };
@@ -282,7 +282,7 @@ function extractText(res: Record<string, unknown>): string {
   const parts = firstParts(res);
   if (!parts) {
     // A blocked or empty finish reason lands here.
-    throw new AiError("invalid_response", "پاسخ سرویس متن نداشت.");
+    throw new AiError("invalid_response", "Service response had no text.");
   }
   const texts: string[] = [];
   for (const part of parts) {
@@ -359,7 +359,7 @@ async function fetchJson(
   opts: GeminiFetchOptions,
 ): Promise<Record<string, unknown>> {
   if (opts.apiKey === undefined || opts.apiKey.length === 0) {
-    throw new AiError('auth', 'کلید سرویس تنظیم نشده است.');
+    throw new AiError('auth', 'Service key is not set.');
   }
 
   // This service's protocol carries the key as a query parameter, so it is
@@ -378,11 +378,11 @@ async function fetchJson(
     ...(opts.body !== undefined ? { body: opts.body } : {}),
   }).catch((err: unknown) => {
     if (err instanceof AiError) throw err;
-    throw new AiError('network', 'ارتباط با سرویس برقرار نشد.');
+    throw new AiError('network', 'Could not reach the service.');
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new AiError('invalid_response', 'سرویس به آدرس دیگری ارجاع داد.');
+    throw new AiError('invalid_response', 'The service redirected to another address.');
   }
   if (res.status < 200 || res.status >= 300) throw statusToError(res.status);
 
@@ -390,24 +390,24 @@ async function fetchJson(
   try {
     parsed = JSON.parse(res.body);
   } catch {
-    throw new AiError('invalid_response', 'پاسخ سرویس قابل خواندن نبود.');
+    throw new AiError('invalid_response', 'Service response was unreadable.');
   }
-  if (!isRecord(parsed)) throw new AiError('invalid_response', 'پاسخ سرویس خالی بود.');
+  if (!isRecord(parsed)) throw new AiError('invalid_response', 'Service response was empty.');
   return parsed;
 }
 
 /** Same status mapping as the OpenAI-compatible adapter. */
 function statusToError(status: number): AiError {
   if (status === 401 || status === 403) {
-    return new AiError("auth", "احراز هویت سرویس ناموفق بود.");
+    return new AiError("auth", "Service authentication failed.");
   }
-  if (status === 408) return new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
-  if (status === 429) return new AiError("quota", "محدودیت نرخ سرویس پر شده است.");
-  if (status >= 500) return new AiError("network", "سرویس در دسترس نیست.");
+  if (status === 408) return new AiError("timeout", "The service did not respond in time.");
+  if (status === 429) return new AiError("quota", "Service rate limit exceeded.");
+  if (status >= 500) return new AiError("network", "Service is unavailable.");
   if (status === 400 || status === 404 || status === 422) {
-    return new AiError("invalid_response", "درخواست به سرویس نامعتبر بود.");
+    return new AiError("invalid_response", "The request to the service was invalid.");
   }
-  return new AiError("unknown", "خطای ناشناخته سرویس.");
+  return new AiError("unknown", "Unknown service error.");
 }
 
 

@@ -79,7 +79,7 @@ export class AdapterRegistry {
       case "openai_compatible":
       case "nine_router":
         return {
-          label: type === "nine_router" ? "9Router" : "سفارشی / سازگار با OpenAI",
+          label: type === "nine_router" ? "9Router" : "Custom / OpenAI-compatible",
           notes: "POST {baseUrl}/chat/completions",
           listModels: type === "openai_compatible",
           audioInput: false,

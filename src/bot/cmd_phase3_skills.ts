@@ -94,7 +94,6 @@ import { tr, type Ph3SkillsLang } from "./cmd_phase3_skills_strings";
 export const COMMAND_DEFS: HermesCommandDef[] = [
   {
     command: "skill",
-    descriptionFa: "نصب، مدیریت و اشتراک‌گذاری مهارت‌ها",
     descriptionEn: "Install, manage and share skills",
     ownerOnly: true,
   },
@@ -120,8 +119,8 @@ export interface Phase3SkillsOpts {
 
 // --------------------------------------------------------------- helpers ----
 
-function toLang(lang: Lang): Ph3SkillsLang {
-  return lang === "en" ? "en" : "fa";
+function toLang(_lang: Lang): Ph3SkillsLang {
+  return "en"; // English-only UI
 }
 
 async function safeReply(
@@ -321,7 +320,7 @@ export interface InstallOutcome {
 /**
  * Plan an install from raw markdown text (either source). Pure-ish: reads the
  * skills directory, writes nothing. On "review" the caller shows
- * `renderReviewCard` with تأیید/رد buttons bound to `pending`.
+ * `renderReviewCard` with approve/reject buttons bound to `pending`.
  *
  * `confirm` pre-authorizes REPLACING a same-named skill (the phase-1
  * destructive-confirmation style), but it never skips the review card when
@@ -385,7 +384,7 @@ function installNow(lang: Ph3SkillsLang, dir: string, validated: ValidatedSkill)
   );
 }
 
-/** The تأیید button: consume the pending install and write the file. */
+/** The approve button: consume the pending install and write the file. */
 export function approvePendingInstall(
   lang: Ph3SkillsLang,
   store: PendingStore,
@@ -406,7 +405,7 @@ export function approvePendingInstall(
   return installNow(lang, dir, plan.validated);
 }
 
-/** The رد button: drop the pending install. */
+/** The reject button: drop the pending install. */
 export function rejectPendingInstall(
   lang: Ph3SkillsLang,
   store: PendingStore,
@@ -554,7 +553,7 @@ export function renderSignatureStatus(
  * skill review card. Pure. Nothing is installed yet.
  *
  * Signed-by-trusted-publisher imports render the COMPACT card (5-line
- * preview instead of 20): same تأیید/رد gate, same re-verification at
+ * preview instead of 20): same approve/reject gate, same re-verification at
  * approve time, same disabled-by-default — just less review friction for
  * authors the owner already trusts.
  */
@@ -592,7 +591,7 @@ export function renderImportReviewCard(
  * Plan an import from package text (document, pasted content, or URL body).
  * Pure-ish: verifies the envelope (checksum + optional signature), then
  * runs the existing install validation pipeline; writes nothing. On
- * "review" the caller shows `renderImportReviewCard` with تأیید/رد buttons
+ * "review" the caller shows `renderImportReviewCard` with approve/reject buttons
  * bound to `pending`. `trust` resolves the signature against the owner's
  * registry for the card; approval re-resolves it.
  */
@@ -628,7 +627,7 @@ export function planImportFromPackage(
 }
 
 /**
- * The تأیید button for an import: consume the pending import, re-verify the
+ * The approve button for an import: consume the pending import, re-verify the
  * envelope and re-run validation (the directory may have changed since the
  * review card), write the file, then DISABLE the skill — imported skills
  * never go live without an explicit `/skill enable`.
@@ -673,7 +672,7 @@ export function approvePendingImport(
   return t("ph4_skill_share.import.done_disabled", lang, { name });
 }
 
-/** The رد button for an import: drop the pending import. */
+/** The reject button for an import: drop the pending import. */
 export function rejectPendingImport(
   lang: Ph3SkillsLang,
   store: PendingStore,
@@ -987,7 +986,7 @@ export function planUninstall(
     : { outcome: "error", text: tr(lang, "ph3_skills.uninstall.failed", { name: clean }) };
 }
 
-/** The حذف قطعی button: consume the pending uninstall and delete. */
+/** The delete-confirm button: consume the pending uninstall and delete. */
 export function approvePendingUninstall(
   lang: Ph3SkillsLang,
   store: PendingStore,
@@ -1005,7 +1004,7 @@ export function approvePendingUninstall(
     : tr(lang, "ph3_skills.uninstall.failed", { name: pending.name });
 }
 
-/** The انصراف button. */
+/** The cancel button. */
 export function rejectPendingUninstall(
   lang: Ph3SkillsLang,
   store: PendingStore,

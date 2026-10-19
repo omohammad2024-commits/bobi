@@ -65,25 +65,25 @@ import { tr, type AutoLang } from "./cmd_auto_strings";
 // ---------------------------------------------------------------------------
 
 export const COMMAND_DEFS: HermesCommandDef[] = [
-  { command: "bg", descriptionFa: "اجرای دستور در پس‌زمینه", descriptionEn: "Run a prompt in the background", ownerOnly: true },
-  { command: "btw", descriptionFa: "پرسش جانبی", descriptionEn: "Side question in a separate thread", ownerOnly: true },
-  { command: "queue", descriptionFa: "صف‌بندی پیام", descriptionEn: "Queue a prompt", ownerOnly: true },
-  { command: "steer", descriptionFa: "تزریق راهنمایی", descriptionEn: "Inject guidance into the turn", ownerOnly: true },
-  { command: "agents", descriptionFa: "ایجنت‌های فعال", descriptionEn: "List active agents and tasks", ownerOnly: true },
-  { command: "goal", descriptionFa: "هدف ماندگار", descriptionEn: "Manage persistent goals", ownerOnly: true },
-  { command: "subgoal", descriptionFa: "زیراهداف", descriptionEn: "Manage subgoals", ownerOnly: true },
-  { command: "heartbeat", descriptionFa: "یادآور دوره‌ای", descriptionEn: "Periodic heartbeat reminder", ownerOnly: true },
-  { command: "loop", descriptionFa: "تکرار خودکار", descriptionEn: "Repeating task loop", ownerOnly: true },
-  { command: "cron", descriptionFa: "وظایف زمان‌بندی‌شده", descriptionEn: "Scheduled tasks", ownerOnly: true },
-  { command: "suggestions", descriptionFa: "اتوماسیون‌های پیشنهادی", descriptionEn: "Suggested automations", ownerOnly: true },
-  { command: "blueprint", descriptionFa: "اتوماسیون از قالب", descriptionEn: "Automation from a blueprint", ownerOnly: true },
-  { command: "refine", descriptionFa: "استخراج درس از گفت‌وگو", descriptionEn: "Extract lessons from the conversation", ownerOnly: true },
-  { command: "review", descriptionFa: "بازبینی مستقل", descriptionEn: "Independent review by a subagent", ownerOnly: true },
-  { command: "plan", descriptionFa: "طرح اجرایی", descriptionEn: "Step-by-step plan, no execution", ownerOnly: true },
-  { command: "moa", descriptionFa: "اجرای چندمدلی", descriptionEn: "Multi-model consultation", ownerOnly: true },
-  { command: "memory", descriptionFa: "مدیریت حافظه", descriptionEn: "Manage long-term memory", ownerOnly: true },
-  { command: "learn", descriptionFa: "آموزش مهارت", descriptionEn: "Draft a new skill", ownerOnly: true },
-  { command: "bundles", descriptionFa: "بسته‌های مهارت", descriptionEn: "Skill bundles", ownerOnly: true },
+  { command: "bg", descriptionEn: "Run a prompt in the background", ownerOnly: true },
+  { command: "btw", descriptionEn: "Side question in a separate thread", ownerOnly: true },
+  { command: "queue", descriptionEn: "Queue a prompt", ownerOnly: true },
+  { command: "steer", descriptionEn: "Inject guidance into the turn", ownerOnly: true },
+  { command: "agents", descriptionEn: "List active agents and tasks", ownerOnly: true },
+  { command: "goal", descriptionEn: "Manage persistent goals", ownerOnly: true },
+  { command: "subgoal", descriptionEn: "Manage subgoals", ownerOnly: true },
+  { command: "heartbeat", descriptionEn: "Periodic heartbeat reminder", ownerOnly: true },
+  { command: "loop", descriptionEn: "Repeating task loop", ownerOnly: true },
+  { command: "cron", descriptionEn: "Scheduled tasks", ownerOnly: true },
+  { command: "suggestions", descriptionEn: "Suggested automations", ownerOnly: true },
+  { command: "blueprint", descriptionEn: "Automation from a blueprint", ownerOnly: true },
+  { command: "refine", descriptionEn: "Extract lessons from the conversation", ownerOnly: true },
+  { command: "review", descriptionEn: "Independent review by a subagent", ownerOnly: true },
+  { command: "plan", descriptionEn: "Step-by-step plan, no execution", ownerOnly: true },
+  { command: "moa", descriptionEn: "Multi-model consultation", ownerOnly: true },
+  { command: "memory", descriptionEn: "Manage long-term memory", ownerOnly: true },
+  { command: "learn", descriptionEn: "Draft a new skill", ownerOnly: true },
+  { command: "bundles", descriptionEn: "Skill bundles", ownerOnly: true },
 ];
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ export async function callToolAs(
 ): Promise<ToolCallOutcome> {
   const tools = deps.tools;
   if (!tools) {
-    return { ok: false, message: tr("fa", "cmd_auto.need_tools") };
+    return { ok: false, message: tr("en", "cmd_auto.need_tools") };
   }
   let res: ToolRunResult;
   try {
@@ -169,7 +169,7 @@ export async function callToolAs(
     return { ok: false, message: err instanceof Error ? err.message : String(err) };
   }
   if (res.status === "ok") return { ok: true, data: res.data };
-  return { ok: false, message: res.message ?? tr("fa", "cmd_auto.tool_failed") };
+  return { ok: false, message: res.message ?? tr("en", "cmd_auto.tool_failed") };
 }
 
 /** User-safe one-liner for an engine failure. */
@@ -244,7 +244,7 @@ export async function handleBgStart(
   sender: SenderRef,
   prompt: string,
   deliver: BgDeliver,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const text = prompt.trim();
   if (text.length === 0) return tr(lang, "cmd_auto.empty_prompt");
@@ -314,7 +314,7 @@ export async function handleBgStart(
 export function handleBgList(
   _deps: AutoDeps,
   sender: SenderRef,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   const mine = [...bgTasks.values()]
     .filter((t) => t.userId === sender.userId)
@@ -337,7 +337,7 @@ export function handleBgCancel(
   deps: AutoDeps,
   sender: SenderRef,
   id: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   const clean = id.trim();
   if (clean.length === 0) return tr(lang, "cmd_auto.bg.cancel_usage");
@@ -376,7 +376,7 @@ export async function handleBtw(
   deps: AutoDeps,
   sender: SenderRef,
   question: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const q = question.trim();
   if (q.length === 0) return tr(lang, "cmd_auto.empty_prompt");
@@ -431,7 +431,7 @@ export function handleQueue(
   _deps: AutoDeps,
   sender: SenderRef,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   const key = queueKey(sender.userId, sender.chatId);
   const tokens = arg.trim().split(/\s+/);
@@ -520,7 +520,7 @@ export async function handleSteer(
   deps: AutoDeps,
   sender: SenderRef,
   guidance: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const g = guidance.trim();
   if (g.length === 0) return tr(lang, "cmd_auto.steer.help");
@@ -568,7 +568,7 @@ export function clearSteersForTests(): void {
 export function handleAgents(
   deps: AutoDeps,
   sender: SenderRef,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   const lines: string[] = [tr(lang, "cmd_auto.agents.title")];
 
@@ -626,7 +626,7 @@ export async function handleGoal(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_auto.owner_only");
   const tokens = arg.trim().split(/\s+/);
@@ -728,7 +728,7 @@ export async function handleSubgoal(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_auto.owner_only");
   const tokens = arg.trim().split(/\s+/);
@@ -899,7 +899,7 @@ export async function handleHeartbeat(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_auto.owner_only");
   const tokens = arg.trim().split(/\s+/);
@@ -962,7 +962,7 @@ export async function handleLoop(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_auto.owner_only");
   const tokens = arg.trim().split(/\s+/);
@@ -1033,7 +1033,7 @@ export async function handleCron(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_auto.owner_only");
   const tokens = arg.trim().split(/\s+/);
@@ -1091,7 +1091,7 @@ export function handleSuggestions(
   deps: AutoDeps,
   sender: SenderRef,
   isOwner: boolean,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   let recent = "";
   try {
@@ -1107,29 +1107,25 @@ export function handleSuggestions(
   const out: Suggestion[] = [];
   if (/یادآوری|یادم بنداز|یادم بماند|هر روز|هر هفته|سر ساعت|یادآوری کن/.test(recent)) {
     out.push({
-      text:
-        lang === "fa"
-          ? "درخواست‌های تکراری/یادآوری در پیام‌هایت هست"
-          : "Recurring reminder-like requests in your messages",
-      cmd: "/loop every 1d <متن> یا /blueprint run reminder 60 <متن>",
+      text: "Recurring reminder-like requests in your messages",
+      cmd: "/loop every 1d <text> or /blueprint run reminder 60 <text>",
     });
   }
   if (/https?:\/\//.test(recent)) {
     out.push({
-      text:
-        lang === "fa" ? "لینک فرستاده‌ای؛ بستهٔ پژوهش به کارت می‌آید" : "You shared links; the research bundle fits",
+      text: "You shared links; the research bundle fits",
       cmd: "/bundles use research",
     });
   }
   if (isOwner && /هدف|برنامه/.test(recent)) {
     out.push({
-      text: lang === "fa" ? "از هدف و برنامه حرف زدی" : "You mentioned goals/plans",
-      cmd: "/goal set <متن>",
+      text: "You mentioned goals/plans",
+      cmd: "/goal set <text>",
     });
   }
   if (/خلاصه|گزارش|مرور/.test(recent)) {
     out.push({
-      text: lang === "fa" ? "به خلاصهٔ خودکار علاقه نشان دادی" : "You showed interest in automatic digests",
+      text: "You showed interest in automatic digests",
       cmd: "/blueprint list",
     });
   }
@@ -1149,7 +1145,6 @@ export function handleSuggestions(
 
 export interface Blueprint {
   name: string;
-  descFa: string;
   descEn: string;
   hint: string;
 }
@@ -1157,19 +1152,16 @@ export interface Blueprint {
 export const BLUEPRINTS: Blueprint[] = [
   {
     name: "morning_digest",
-    descFa: "خلاصهٔ صبحگاهی روزانه ساعت ۸:۰۰ تهران (وظیفهٔ زمان‌بندی‌شده)",
     descEn: "Daily 8:00 (Tehran) morning digest (scheduled task)",
     hint: "/blueprint run morning_digest",
   },
   {
     name: "reminder",
-    descFa: "یادآور یک‌باره: /blueprint run reminder <دقیقه> <متن>",
     descEn: "One-shot reminder: /blueprint run reminder <minutes> <text>",
-    hint: "/blueprint run reminder 30 آب خوردن",
+    hint: "/blueprint run reminder 30 drink water",
   },
   {
     name: "weekly_review",
-    descFa: "مرور هفتگی جمعه‌ها ساعت ۹:۰۰ تهران (وظیفهٔ زمان‌بندی‌شده)",
     descEn: "Weekly Friday 9:00 (Tehran) review (scheduled task)",
     hint: "/blueprint run weekly_review",
   },
@@ -1188,7 +1180,7 @@ export async function handleBlueprint(
   deps: AutoDeps,
   sender: SenderRef,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const tokens = arg.trim().split(/\s+/);
   const sub = (tokens[0] ?? "").toLowerCase();
@@ -1197,7 +1189,7 @@ export async function handleBlueprint(
     const lines = BLUEPRINTS.map((b) =>
       tr(lang, "cmd_auto.bp.item", {
         name: b.name,
-        desc: lang === "fa" ? b.descFa : b.descEn,
+        desc: b.descEn,
       }),
     );
     return tr(lang, "cmd_auto.bp.list_title") + "\n" + lines.join("\n");
@@ -1241,7 +1233,7 @@ export async function handleBlueprint(
     const minutes = parseInt(tokens[2] ?? "", 10);
     const text = tokens.slice(3).join(" ").trim();
     if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 43200 || text.length === 0) {
-      return tr(lang, "cmd_auto.bp.bad_args", { hint: "/blueprint run reminder 30 <متن>" });
+      return tr(lang, "cmd_auto.bp.bad_args", { hint: "/blueprint run reminder 30 <text>" });
     }
     if (text.length > 500) return tr(lang, "cmd_auto.bg.too_long");
     const dueAt = new Date(Date.now() + minutes * 60_000).toISOString();
@@ -1279,7 +1271,7 @@ const MAX_REFINE_HISTORY_CHARS = 6000;
 export async function handleRefine(
   deps: AutoDeps,
   sender: SenderRef,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   let rows: Array<{ role: string; content: string }> = [];
   try {
@@ -1332,10 +1324,10 @@ export async function handleReview(
   deps: AutoDeps,
   sender: SenderRef,
   topic: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const t = topic.trim();
-  if (t.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/review <موضوع>" });
+  if (t.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/review <topic>" });
   if (t.length > 2000) return tr(lang, "cmd_auto.bg.too_long");
 
   const actor = actorForTelegramUser(deps, sender.telegramId);
@@ -1372,10 +1364,10 @@ export async function handlePlan(
   deps: AutoDeps,
   sender: SenderRef,
   goal: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const g = goal.trim();
-  if (g.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/plan <هدف>" });
+  if (g.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/plan <goal>" });
   if (g.length > 2000) return tr(lang, "cmd_auto.bg.too_long");
 
   const actor = actorForTelegramUser(deps, sender.telegramId);
@@ -1388,9 +1380,10 @@ export async function handlePlan(
         "فقط یک طرح مرحله‌به‌مرحلهٔ شماره‌دار به فارسی تولید کن. " +
         "هیچ ابزاری را صدا نزن و هیچ کاری را اجرا نکن — فقط طرح بنویس، بدون اجرا.\n\nهدف: " +
         g,
-      // Deliberately fa: the directive fixes the plan's language to Persian
-      // regardless of the sender's /lang — the plan itself is a Persian deliverable.
-      lang: "fa",
+      // The prompt text above directs Persian output ("به فارسی تولید کن"),
+      // so the plan stays a Persian deliverable; the turn's `lang` is
+      // English-only since v1.0.
+      lang: "en",
       actor,
     });
   } catch {
@@ -1411,10 +1404,10 @@ export async function handleMoa(
   deps: AutoDeps,
   sender: SenderRef,
   question: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const q = question.trim();
-  if (q.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/moa <سؤال>" });
+  if (q.length === 0) return tr(lang, "cmd_auto.bad_args", { hint: "/moa <question>" });
   if (q.length > 2000) return tr(lang, "cmd_auto.bg.too_long");
 
   const actor = actorForTelegramUser(deps, sender.telegramId);
@@ -1423,7 +1416,7 @@ export async function handleMoa(
   const d = res.data as { answer: string; modelsUsed?: string[] };
   const models =
     Array.isArray(d.modelsUsed) && d.modelsUsed.length > 0
-      ? tr(lang, "cmd_auto.moa.models", { models: d.modelsUsed.join("، ") })
+      ? tr(lang, "cmd_auto.moa.models", { models: d.modelsUsed.join(", ") })
       : "";
   return d.answer + models;
 }
@@ -1442,7 +1435,7 @@ export async function handleMemory(
   deps: AutoDeps,
   sender: SenderRef,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<string> {
   const tokens = arg.trim().split(/\s+/);
   const sub = (tokens[0] ?? "").toLowerCase();
@@ -1511,7 +1504,7 @@ export async function handleLearn(
   sender: SenderRef,
   isOwner: boolean,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): Promise<LearnResult> {
   if (!isOwner) return { ok: false, error: tr(lang, "cmd_auto.owner_only") };
   const pipe = arg.indexOf("|");
@@ -1537,10 +1530,10 @@ export async function handleLearn(
         `ساختار فایل: ابتدا frontmatter با فیلدهای name (برابر «${name}») و description (یک جملهٔ فارسی دقیق)، ` +
         `سپس بدنه با بخش‌های: هدف، چه زمانی استفاده شود، مراحل اجرا. ` +
         `متن بدنه فارسی باشد؛ name و ساختار انگلیسی بماند.`,
-      // Deliberately fa: the directive above fixes the artifact's language
-      // to Persian regardless of the owner's /lang — the skill file itself
-      // is a Persian deliverable.
-      lang: "fa",
+      // The prompt text above directs Persian body text ("متن بدنه فارسی باشد"),
+      // so the skill file stays a Persian deliverable; the turn's `lang`
+      // is English-only since v1.0.
+      lang: "en",
       actor,
     });
   } catch {
@@ -1556,7 +1549,6 @@ export async function handleLearn(
 export interface Bundle {
   name: string;
   tools: string[];
-  descFa: string;
   descEn: string;
 }
 
@@ -1564,25 +1556,21 @@ export const BUNDLES: Bundle[] = [
   {
     name: "research",
     tools: ["web_search", "fetch_url", "remember"],
-    descFa: "پژوهش وب: جستجو، خواندن صفحه، ذخیرهٔ یافته‌ها",
     descEn: "Web research: search, fetch pages, save findings",
   },
   {
     name: "memory",
     tools: ["remember", "recall", "forget"],
-    descFa: "کار با حافظهٔ بلندمدت",
     descEn: "Long-term memory work",
   },
   {
     name: "media",
     tools: ["generate_image", "generate_video", "fetch_url"],
-    descFa: "تولید و گردآوری رسانه",
     descEn: "Media generation and gathering",
   },
   {
     name: "planning",
     tools: ["add_goal", "list_goals", "schedule_task"],
-    descFa: "هدف‌گذاری و زمان‌بندی (شامل ابزارهای مالک)",
     descEn: "Goals and scheduling (includes owner tools)",
   },
 ];
@@ -1601,7 +1589,7 @@ export function handleBundles(
   deps: AutoDeps,
   sender: SenderRef,
   arg: string,
-  lang: AutoLang = "fa",
+  lang: AutoLang = "en",
 ): string {
   const tokens = arg.trim().split(/\s+/);
   const sub = (tokens[0] ?? "").toLowerCase();
@@ -1611,7 +1599,7 @@ export function handleBundles(
       tr(lang, "cmd_auto.bundles.item", {
         name: b.name,
         tools: b.tools.join(" + "),
-        desc: lang === "fa" ? b.descFa : b.descEn,
+        desc: b.descEn,
       }),
     );
     return tr(lang, "cmd_auto.bundles.title") + "\n" + lines.join("\n");

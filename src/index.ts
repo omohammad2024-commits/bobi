@@ -5,6 +5,7 @@ import { createBot, PERSONALITY_PREF_KEY } from "./bot/bot";
 import { publicMenuCommands, ownerMenuCommands, miniAppUrl } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
 import { resolveLang } from "./i18n";
+import type { Lang } from "./i18n/types";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
 import type { Bot, Context } from "grammy";
 import type { BotCommandScope, LanguageCode } from "@grammyjs/types";
@@ -980,7 +981,7 @@ async function main(): Promise<void> {
       };
       const gaGate = async (
         ctx: Context,
-        lang: "fa" | "en",
+        lang: Lang,
         ownerOnly: boolean,
       ): Promise<boolean> => {
         if (!(await gateGroup(ctx, groups, lang))) return false;
@@ -1088,14 +1089,16 @@ async function main(): Promise<void> {
       // Phase-5: owner-only memory commands (invisible to the public via ownerOnly).
       ...PHASE5_MEMORY_COMMAND_DEFS,
       // Phase-3 group assistant (owner-gated; /gsummary usable in enabled groups).
-      { command: "gassistant", descriptionFa: "حالت دستیار گروه", descriptionEn: "Group assistant mode", ownerOnly: true },
-      { command: "gsummary", descriptionFa: "خلاصهٔ بحث گروه", descriptionEn: "Summarize group discussion", ownerOnly: true },
-      { command: "gpoll", descriptionFa: "نظرسنجی در گروه", descriptionEn: "Create a group poll", ownerOnly: true },
+      { command: "gassistant", descriptionEn: "Group assistant mode", ownerOnly: true },
+      { command: "gsummary", descriptionEn: "Summarize group discussion", ownerOnly: true },
+      { command: "gpoll", descriptionEn: "Create a group poll", ownerOnly: true },
     ];
     const publicDefs = publicMenuCommands(hermesDefs);
     const ownerDefs = ownerMenuCommands(hermesDefs);
-    const toMenu = (defs: HermesCommandDef[], fa: boolean) =>
-      defs.map((d) => ({ command: d.command, description: fa ? d.descriptionFa : d.descriptionEn }));
+    // English-only UI: the synced Telegram menu always uses the English
+    // description; no fa-scoped variant is registered.
+    const toMenu = (defs: HermesCommandDef[]) =>
+      defs.map((d) => ({ command: d.command, description: d.descriptionEn }));
     const setMenu = (
       commands: { command: string; description: string }[],
       opts: { scope?: BotCommandScope; language_code?: LanguageCode } = {},
@@ -1108,12 +1111,10 @@ async function main(): Promise<void> {
         .setMyCommands(commands, params)
         .catch((err) => log.warn("[commands] setMyCommands failed", { error: errToLog(err) }));
     };
-    void setMenu(toMenu(publicDefs, true));
-    void setMenu(toMenu(publicDefs, false), { language_code: "en" });
+    void setMenu(toMenu(publicDefs));
     if (identity.ownerId !== undefined) {
       const ownerScope: BotCommandScope = { type: "chat", chat_id: identity.ownerId };
-      void setMenu(toMenu(ownerDefs, true), { scope: ownerScope });
-      void setMenu(toMenu(ownerDefs, false), { scope: ownerScope, language_code: "en" });
+      void setMenu(toMenu(ownerDefs), { scope: ownerScope });
     }
 
     // One-tap Mini App access: the persistent menu button next to the message
@@ -1127,7 +1128,7 @@ async function main(): Promise<void> {
           chat_id: identity.ownerId,
           menu_button: {
             type: "web_app",
-            text: "🛠️ مدیریت",
+            text: "🛠️ Manage",
             web_app: { url: miniUrl },
           },
         })

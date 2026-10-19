@@ -79,7 +79,6 @@ import { tr, type BenchLang } from "./cmd_phase3_bench_strings";
 export const COMMAND_DEFS: HermesCommandDef[] = [
   {
     command: "bench",
-    descriptionFa: "بنچ‌مارک و روند کیفیت",
     descriptionEn: "Benchmarks and quality trends",
     ownerOnly: true,
   },
@@ -159,7 +158,7 @@ export async function handleBench(
   sender: SenderRef,
   arg: string,
   isOwner: boolean,
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): Promise<string> {
   if (!isOwner) return tr(lang, "cmd_phase3_bench.owner_only");
   const tokens = arg.trim().split(/\s+/).filter(Boolean);
@@ -200,7 +199,7 @@ function modeLabelFa(lang: BenchLang, mode: string): string {
 export function handleBenchHistory(
   history: BenchHistory,
   n: number,
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): string {
   const runs = history.listRuns(n);
   if (runs.length === 0) return tr(lang, "cmd_phase3_bench.no_history");
@@ -229,7 +228,7 @@ export function handleBenchHistory(
 export function handleBenchTrend(
   history: BenchHistory,
   taskId: string | undefined,
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): string {
   const latest = history.listRuns(1)[0];
   if (!latest) return tr(lang, "cmd_phase3_bench.no_history");
@@ -266,7 +265,7 @@ export async function handleBenchRun(
   deps: BenchDeps,
   sender: SenderRef,
   tokens: string[],
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): Promise<string> {
   void sender;
   const mode: "offline" | "live" = tokens.includes("--live") ? "live" : "offline";
@@ -324,7 +323,7 @@ export async function handleBenchSchedule(
   deps: BenchDeps,
   sender: SenderRef,
   tokens: string[],
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): Promise<string> {
   if (!deps.tools) return tr(lang, "cmd_phase3_bench.need_tools");
   const mode: "offline" | "live" = tokens.includes("--live") ? "live" : "offline";
@@ -396,7 +395,7 @@ export async function handleBenchSchedule(
 export async function handleBenchStatus(
   deps: BenchDeps,
   sender: SenderRef,
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): Promise<string> {
   const L: string[] = [];
 
@@ -436,7 +435,7 @@ export async function handleBenchStatus(
 /** /bench cancel — drop the worker queue and abort the active run (owner-only). */
 export async function handleBenchCancel(
   deps: BenchDeps,
-  lang: BenchLang = "fa",
+  lang: BenchLang = "en",
 ): Promise<string> {
   const worker = deps.benchWorker;
   if (!worker) return tr(lang, "cmd_phase3_bench.cancel.unavailable");
@@ -546,7 +545,8 @@ function benchTaskMode(
 
 function tehranShort(iso: string): string {
   try {
-    return new Intl.DateTimeFormat("fa-IR", {
+    // English-only UI: en-GB date parts, still anchored to Asia/Tehran.
+    return new Intl.DateTimeFormat("en-GB", {
       timeZone: "Asia/Tehran",
       month: "short",
       day: "numeric",

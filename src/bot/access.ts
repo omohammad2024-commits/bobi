@@ -8,7 +8,8 @@
  *   everything, exactly as before. No behaviour change for the owner.
  * - TIER 2 — PUBLIC: anyone may chat with Bobi, plus /start (public
  *   variant), /help (public portion only), /commands (the same tier-filtered
- *   palette /help opens), /lang and /voice. Nothing more.
+ *   palette /help opens), and /voice. Nothing more. (/lang was removed:
+ *   the UI is English-only.)
  *
  * Enforcement is defence in depth and lives in three layers:
  *   1. INVISIBILITY — public users never SEE owner-only surface: the default
@@ -36,10 +37,11 @@ export type AccessTier = "owner" | "public";
  * Commands any Telegram user may run. The set is deliberately tiny:
  * - start — the public welcome screen (never the owner onboarding wizard)
  * - help / commands — the command palette, tier-filtered per sender
- * - lang — the interface-language picker
  * - voice — the voice-mode picker (auto/always/never). Voice is
  *   conversation, not administration: anyone chatting with Bobi may choose
  *   how their own replies sound. Per-user prefs, so no cross-user leak.
+ *
+ * (/lang was removed Oct 2026: the UI is English-only.)
  *
  * Free-form conversation is not a command and is always public (subject to
  * the ban/mute gate). EVERYTHING else is owner-only.
@@ -48,7 +50,6 @@ export const PUBLIC_COMMANDS: ReadonlySet<string> = new Set([
   "start",
   "help",
   "commands",
-  "lang",
   "voice",
 ]);
 
@@ -105,7 +106,7 @@ async function safeTierReply(
 export async function requireOwnerTier(
   ctx: TierSender & { reply(text: string): Promise<unknown> },
   deps: { auth?: AuthorizationService },
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<boolean> {
   if (isOwnerCtx(ctx, deps)) return true;
   await safeTierReply(ctx, t("tier.refused", lang));

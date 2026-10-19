@@ -162,6 +162,38 @@ export interface CompletionResponse {
   usage?: TokenUsage;
 }
 
+/**
+ * One event from a streaming completion.
+ *
+ * A stream emits zero or more `text` deltas (concatenating them yields the
+ * reply text), optionally a `usage` event when the service reports token
+ * counts mid-stream, and exactly one terminal `end` event carrying the
+ * authoritative full text plus any tool calls. `end.text` equals the
+ * concatenation of the `text` deltas; `end.toolCalls` is non-empty exactly
+ * when the model requested tools instead of answering.
+ *
+ * A stream that throws BEFORE its first `text` event is equivalent to
+ * complete() failing: the caller may retry it as a single shot with no
+ * visible effect. A stream that throws AFTER a `text` event has already
+ * shown partial text to the user, so the caller must handle a partial
+ * stream (fall back to a fresh single-shot answer, or surface the error)
+ * rather than silently retrying.
+ */
+export type StreamEvent =
+  | { type: "text"; delta: string }
+  | { type: "usage"; usage: TokenUsage }
+  | {
+      type: "end";
+      /** Full reply text: the concatenation of every `text` delta. */
+      text: string;
+      /** Provider-reported model id (may differ from requested). */
+      model: string;
+      /** Tools the model asked to run instead of answering (may be empty). */
+      toolCalls: readonly ToolCall[];
+      /** Token counts, when the service reported them. */
+      usage?: TokenUsage;
+    };
+
 /** Categorized, internal error — never carries secrets. */
 export class AiError extends Error {
   constructor(
@@ -176,6 +208,16 @@ export class AiError extends Error {
 export interface AiProvider {
   readonly name: string;
   complete(req: CompletionRequest): Promise<CompletionResponse>;
+  /**
+   * Stream a completion as text deltas, when the service supports it.
+   *
+   * Optional: a provider that does not declare it is completed in one shot
+   * via complete(). The stream ends with exactly one `end` event (see
+   * StreamEvent); a stream that errors before its first `text` event may be
+   * retried as a single shot, while a later error means partial text was
+   * already shown and must be handled as a partial stream.
+   */
+  completeStream?(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined>;
   /**
    * Whether this provider accepts raw audio ContentParts natively, with no
    * transcription needed.

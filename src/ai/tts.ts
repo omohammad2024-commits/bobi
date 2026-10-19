@@ -75,14 +75,14 @@ export async function synthesizeSpeech(
   signal: AbortSignal,
 ): Promise<SpeechResult> {
   if (text.length === 0) {
-    throw new AiError("invalid_response", "متنی برای تبدیل به صدا داده نشد.");
+    throw new AiError("invalid_response", "No text was provided for speech synthesis.");
   }
   if (text.length > MAX_TTS_CHARS) {
     // The caller chunks; silently cutting speech would drop words the user
     // never hears, so this is a hard rejection instead.
     throw new AiError(
       "invalid_response",
-      `متن بیش از حد طولانی است (حداکثر ${MAX_TTS_CHARS} کاراکتر در هر درخواست).`,
+      `Text is too long (max ${MAX_TTS_CHARS} characters per request).`,
     );
   }
 
@@ -120,11 +120,11 @@ export async function synthesizeSpeech(
   }).catch((err: unknown) => {
     // pinnedFetch already throws AiError with the right category.
     if (err instanceof AiError) throw err;
-    throw new AiError("network", "ارتباط با سرویس صوتی برقرار نشد.");
+    throw new AiError("network", "Could not reach the speech service.");
   });
 
   if (res.status >= 300 && res.status < 400) {
-    throw new AiError("invalid_response", "سرویس به آدرس دیگری ارجاع داد.");
+    throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
     throw statusToAiError(res.status);
@@ -132,7 +132,7 @@ export async function synthesizeSpeech(
 
   const bytes = res.rawBody;
   if (bytes.byteLength === 0) {
-    throw new AiError("invalid_response", "سرویس صوتی پاسخی برنگرداند.");
+    throw new AiError("invalid_response", "The speech service returned no response.");
   }
 
   // Trust the response's own content type when it names audio; otherwise the

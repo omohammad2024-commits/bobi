@@ -1,5 +1,5 @@
 /**
- * Persian/English strings for the Hermes-parity automation commands
+ * English-only strings for the Hermes-parity automation commands
  * (`src/bot/cmd_auto.ts`).
  *
  * Kept in a module-local dictionary (NOT in `src/i18n/`) because the
@@ -8,141 +8,13 @@
  */
 
 /** UI languages supported by these commands. */
-export type AutoLang = "fa" | "en";
+export type AutoLang = "en";
 
 type Vars = Record<string, string | number>;
 
-const fa: Record<string, string> = {
-  "cmd_auto.owner_only": "این دستور فقط برای مالک است.",
-  "cmd_auto.need_tools": "سرویس ابزارها در دسترس نیست؛ این دستور فعلاً کار نمی‌کند.",
-  "cmd_auto.tool_failed": "اجرای ابزار ناموفق بود.",
-  "cmd_auto.engine_failed": "اجرای گفت‌وگو ناموفق بود؛ بعداً تلاش کن.",
-  "cmd_auto.empty_prompt": "متن دستور خالی است.",
-  "cmd_auto.bad_args": "آرگومان نامعتبر است. راهنما: {hint}",
 
-  "cmd_auto.bg.queued": "در پس‌زمینه شروع شد. شناسه: {id}",
-  "cmd_auto.bg.busy": "حداکثر ۳ کار هم‌زمان؛ صبر کن یکی تمام شود.",
-  "cmd_auto.bg.too_long": "متن حداکثر ۲۰۰۰ کاراکتر می‌تواند باشد.",
-  "cmd_auto.bg.list_empty": "کار پس‌زمینه‌ای نداری.",
-  "cmd_auto.bg.list_item": "{id} — {status} — {prompt}",
-  "cmd_auto.bg.cancelled": "کار {id} لغو شد.",
-  "cmd_auto.bg.not_found": "کاری با شناسهٔ {id} پیدا نشد.",
-  "cmd_auto.bg.cancel_usage": "استفاده: /bg cancel <id> یا /bg list",
-  "cmd_auto.bg.status.running": "در حال اجرا",
-  "cmd_auto.bg.status.done": "تمام شد",
-  "cmd_auto.bg.status.failed": "ناموفق",
-  "cmd_auto.bg.status.cancelled": "لغو شد",
-  "cmd_auto.bg.done_prefix": "نتیجهٔ کار پس‌زمینهٔ {id}:\n\n",
-  "cmd_auto.bg.failed_note": "کار پس‌زمینهٔ {id} ناموفق بود: {error}",
-  "cmd_auto.bg.help": "استفاده: /bg <دستور> | /bg list | /bg cancel <id>",
 
-  "cmd_auto.btw.thread_kept": "پرسش‌ت توی یه گفت‌وگوی جدا (شناسه: {id}) جواب داده شد و همون‌جا مونده؛ گفت‌وگوی اصلی دست‌نخورده‌ست.",
-
-  "cmd_auto.queue.added": "به صف اضافه شد (مورد {n}).",
-  "cmd_auto.queue.full": "صف پر است (حداکثر {max} مورد).",
-  "cmd_auto.queue.empty": "صف خالی است.",
-  "cmd_auto.queue.item": "{n}. {text}",
-  "cmd_auto.queue.cleared": "صف پاک شد ({n} مورد حذف شد).",
-  "cmd_auto.queue.clear_confirm":
-    "⚠️ {n} مورد از صف پاک می‌شود:\n{preview}\nبرگشت‌پذیر نیست.\n\nاگه مطمئنی: /queue clear --confirm",
-  "cmd_auto.queue.clear_more": "…و {n} مورد دیگر",
-  "cmd_auto.queue.note":
-    "یادداشت: تخلیهٔ خودکار صف هنوز وصل نیست؛ فعلاً موارد رو دستی کپی کن.",
-  "cmd_auto.queue.help": "استفاده: /queue <متن> | /queue list | /queue clear [--confirm]",
-
-  "cmd_auto.steer.pending": "راهنمایی ثبت شد؛ با پیام بعدی‌ت اعمال می‌شه.",
-  "cmd_auto.steer.applied": "در حال اجرای فوری با راهنمایی‌ت…",
-  "cmd_auto.steer.note":
-    "یادداشت: تزریق خودکار به پیام بعدی هنوز وصل نیست.",
-  "cmd_auto.steer.help": "استفاده: /steer <راهنمایی>",
-
-  "cmd_auto.agents.title": "ایجنت‌های فعال:",
-  "cmd_auto.agents.none": "چیز فعالی نیست.",
-  "cmd_auto.agents.bg_item": "• کار پس‌زمینهٔ {id}: {status}",
-  "cmd_auto.agents.running": "• یک گفتگو در این چت در حال اجراست.",
-  "cmd_auto.agents.delegate": "• ابزار delegate در دسترس است.",
-  "cmd_auto.agents.steer_item": "• راهنمای در انتظار: {text}",
-
-  "cmd_auto.goal.set": "هدف ثبت شد: {title} (شناسه: {id})",
-  "cmd_auto.goal.show_empty": "هدفی ثبت نشده است.",
-  "cmd_auto.goal.item": "#{id} [{status}] {title}",
-  "cmd_auto.goal.cleared": "{n} هدف فعال کامل شد.",
-  "cmd_auto.goal.clear_confirm":
-    "⚠️ این {n} هدف «کامل‌شده» می‌شود و از فهرست فعال خارج می‌گردد:\n{preview}\n\nاگه مطمئنی: /goal clear --confirm",
-  "cmd_auto.goal.clear_more": "…و {n} هدف دیگر",
-  "cmd_auto.goal.help": "استفاده: /goal set <متن> | /goal show | /goal clear [--confirm]",
-
-  "cmd_auto.subgoal.added": "زیرهدف ثبت شد: {title} (شناسه: {id})",
-  "cmd_auto.subgoal.parent_missing": "هدف والدی با شناسهٔ {id} پیدا نشد.",
-  "cmd_auto.subgoal.list_empty": "زیرهدفی پیدا نشد.",
-  "cmd_auto.subgoal.item": "#{id} [{status}] {title}",
-  "cmd_auto.subgoal.cleared": "{n} زیرهدف کامل شد.",
-  "cmd_auto.subgoal.clear_confirm":
-    "⚠️ {n} زیرهدف «کامل‌شده» می‌شود ({scope}):\n{preview}\n\nاگه مطمئنی: {cmd}",
-  "cmd_auto.subgoal.clear_more": "…و {n} زیرهدف دیگر",
-  "cmd_auto.subgoal.clear_scope_parent": "هدف «{title}»",
-  "cmd_auto.subgoal.clear_scope_all": "همهٔ اهداف — دقت کن!",
-  "cmd_auto.subgoal.help": "استفاده: /subgoal add <شناسهٔ والد> <متن> | /subgoal list [شناسهٔ والد] | /subgoal clear <شناسهٔ والد> [--confirm]",
-
-  "cmd_auto.hb.status_on": "ضربان (heartbeat) فعال است؛ فاصله: {interval}.",
-  "cmd_auto.hb.status_off": "ضربان (heartbeat) غیرفعال است.",
-  "cmd_auto.hb.status_unknown": "وضعیت سرویس ضربان از اینجا مشخص نیست.",
-  "cmd_auto.hb.tasks": "یادآورهای ضربان زمان‌بندی‌شده: {n} مورد.",
-  "cmd_auto.hb.created": "یادآور دوره‌ای ساخته شد (وظیفهٔ {id}، هر {interval}).",
-  "cmd_auto.hb.bad_interval": "فاصله نامعتبر است؛ مثلاً: 30m یا 2h یا 1d",
-  "cmd_auto.hb.help": "استفاده: /heartbeat status | /heartbeat every <فاصله> <متن>",
-
-  "cmd_auto.loop.created": "حلقه ساخته شد (وظیفهٔ {id}، هر {interval}).",
-  "cmd_auto.loop.stopped": "حلقهٔ {id} متوقف شد.",
-  "cmd_auto.loop.not_found": "وظیفه‌ای با شناسهٔ {id} پیدا نشد.",
-  "cmd_auto.loop.bad_id": "شناسه نامعتبر است.",
-  "cmd_auto.loop.help": "استفاده: /loop every <فاصله> <متن> | /loop stop <id>",
-
-  "cmd_auto.cron.list_empty": "وظیفهٔ زمان‌بندی‌شده‌ای نیست.",
-  "cmd_auto.cron.item": "#{id} — {name} ({cron}، {tz})",
-  "cmd_auto.cron.added": "وظیفه ساخته شد (شناسه: {id}، اجرای بعدی: {next}).",
-  "cmd_auto.cron.help": "استفاده: /cron list | /cron add <عبارت کرون> <متن>",
-
-  "cmd_auto.sug.title": "پیشنهادهای اتوماسیون (ابتکاری):",
-  "cmd_auto.sug.none": "سیگنال مشخصی در پیام‌های اخیر پیدا نشد.",
-  "cmd_auto.sug.item": "• {text} ← {cmd}",
-
-  "cmd_auto.bp.list_title": "قالب‌های آماده:",
-  "cmd_auto.bp.item": "• {name}: {desc}",
-  "cmd_auto.bp.unknown": "قالب «{name}» پیدا نشد. قالب‌ها: {names}",
-  "cmd_auto.bp.created_task": "قالب «{name}» ساخته شد (وظیفهٔ {id}).",
-  "cmd_auto.bp.created_reminder": "یادآور تنظیم شد؛ {minutes} دقیقهٔ دیگر یادآوری می‌کنم.",
-  "cmd_auto.bp.owner_only_tool": "این قالب به ابزار زمان‌بندی نیاز دارد که فقط مالک می‌تواند بسازد.",
-  "cmd_auto.bp.bad_args": "آرگومان قالب نامعتبر است. راهنما: {hint}",
-  "cmd_auto.bp.help": "استفاده: /blueprint list | /blueprint run <نام> [آرگومان‌ها]",
-
-  "cmd_auto.refine.working": "در حال بازبینی گفت‌وگو و استخراج درس‌ها…",
-  "cmd_auto.refine.no_history": "تاریخچه‌ای برای بازبینی پیدا نشد.",
-
-  "cmd_auto.review.failed": "بازبینی ناموفق بود: {error}",
-
-  "cmd_auto.moa.models": "\n\nمدل‌های مشورت‌شده: {models}",
-
-  "cmd_auto.mem.empty": "حافظه‌ای ذخیره نشده است.",
-  "cmd_auto.mem.item": "• {key}: {content}",
-  "cmd_auto.mem.deleted": "حافظهٔ «{key}» پاک شد.",
-  "cmd_auto.mem.not_found": "حافظه‌ای با کلید «{key}» پیدا نشد.",
-  "cmd_auto.mem.help": "استفاده: /memory list [n] | /memory search <عبارت> | /memory del <کلید>",
-
-  "cmd_auto.learn.bad_name": "نام مهارت نامعتبر است؛ فقط حروف کوچک انگلیسی، عدد و خط تیره (مثل my-skill).",
-  "cmd_auto.learn.ready": "پیش‌نویس مهارت «{name}» آماده شد؛ فایل را در پوشهٔ مهارت‌ها بگذار.",
-  "cmd_auto.learn.place_note": "یادداشت: نوشتن مستقیم در پوشهٔ مهارت‌ها از اینجا انجام نمی‌شود؛ فایل پیوست را ذخیره کن.",
-  "cmd_auto.learn.help": "استفاده: /learn <نام> | <توضیح>",
-
-  "cmd_auto.bundles.title": "بسته‌های پیشنهادی مهارت:",
-  "cmd_auto.bundles.item": "• {name}: {tools}\n  {desc}",
-  "cmd_auto.bundles.unknown": "بستهٔ «{name}» پیدا نشد. بسته‌ها: {names}",
-  "cmd_auto.bundles.used": "بستهٔ «{name}» به‌عنوان جعبه‌ابزار فعالت ذخیره شد. (فعلاً اعلامیه؛ موتور هنوز اعمالش نمی‌کنه.)",
-  "cmd_auto.bundles.no_prefs": "ذخیرهٔ ترجیحات در دسترس نیست.",
-  "cmd_auto.bundles.help": "استفاده: /bundles list | /bundles use <نام>",
-};
-
-const en: Record<string, string> = {
+const STRINGS: Record<string, string> = {
   "cmd_auto.owner_only": "This command is owner-only.",
   "cmd_auto.need_tools": "The tool service is unavailable; this command cannot run right now.",
   "cmd_auto.tool_failed": "Tool execution failed.",
@@ -272,15 +144,17 @@ const en: Record<string, string> = {
   "cmd_auto.bundles.help": "Usage: /bundles list | /bundles use <name>",
 };
 
-const DICTS: Record<AutoLang, Record<string, string>> = { fa, en };
-
 /**
  * Translate a `cmd_auto.*` key, substituting `{vars}`.
- * Falls back to Persian, then to the key itself — never throws.
+ * Falls back to the key itself — never throws. The `lang` argument is
+ * accepted for signature compatibility and ignored: the UI is English-only.
  */
-export function tr(lang: AutoLang, key: string, vars?: Vars): string {
-  const dict = DICTS[lang] ?? fa;
-  let s = dict[key] ?? fa[key] ?? key;
+export function tr(
+  _lang: "en" | "fa", // accepted for compatibility; always renders English
+  key: string,
+  vars?: Vars,
+): string {
+  let s = STRINGS[key] ?? key;
   if (vars !== undefined) {
     for (const [k, v] of Object.entries(vars)) {
       s = s.split(`{${k}}`).join(String(v));

@@ -23,6 +23,6 @@ export const NINE_ROUTER_TEMPLATE: AdapterTemplate = {
   suggestedBaseUrl: "",
   prefilled: false,
   capabilities: {
-    notes: "آدرس، credential و شناسهٔ مدل توسط مدیر تعیین می‌شود",
+    notes: "Address, credential, and model ID are set by the admin",
   },
 };

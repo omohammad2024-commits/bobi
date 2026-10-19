@@ -59,21 +59,21 @@ export class ProviderHealthService {
   async probe(providerId: number, opts: ProbeOptions = {}): Promise<ProbeResult> {
     const provider = this.storage.getProvider(providerId);
     if (!provider) {
-      return this.record(providerId, false, "پروایدر یافت نشد.");
+      return this.record(providerId, false, "Provider not found.");
     }
     if (!provider.enabled) {
-      return this.record(providerId, false, "پروایدر غیرفعال است.");
+      return this.record(providerId, false, "Provider is disabled.");
     }
 
     let apiKey: string | undefined;
     try {
       apiKey = this.providers.credentialFor(providerId);
     } catch {
-      return this.record(providerId, false, "اعتبارنامه قابل رمزگشایی نبود.");
+      return this.record(providerId, false, "Credential could not be decrypted.");
     }
 
     if (apiKey === undefined || apiKey.length === 0) {
-      return this.record(providerId, false, "اعتبارنامه تنظیم نشده است.");
+      return this.record(providerId, false, "Credential is not set.");
     }
 
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
@@ -91,6 +91,10 @@ export class ProviderHealthService {
         apiKey,
         // The probe needs a model id that exists; prefer the provider's default.
         model: this.defaultModelId(providerId) ?? "probe",
+        // The owner may have granted this provider the local-target exception;
+        // the probe must honor the same boundary as the runtime, or a local
+        // provider would always report "unreachable" right after being allowed.
+        ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
       });
 
       if (adapter.capabilities.listModels && adapter.listModels) {
@@ -109,7 +113,7 @@ export class ProviderHealthService {
         });
       }
 
-      return this.record(providerId, true, "اتصال برقرار بود.");
+      return this.record(providerId, true, "Connection succeeded.");
     } catch (err) {
       return this.record(providerId, false, probeMessage(err));
     }
@@ -128,25 +132,25 @@ export class ProviderHealthService {
   }
 }
 
-/** Map an adapter failure onto a short, safe Persian message. */
+/** Map an adapter failure onto a short, safe English message. */
 function probeMessage(err: unknown): string {
   if (err instanceof AiError) {
     switch (err.kind) {
       case "auth":
-        return "کلید یا آدرس پذیرفته نشد.";
+        return "Key or address was not accepted.";
       case "quota":
-        return "محدودیت نرخ سرویس پر است.";
+        return "Service rate limit is full.";
       case "timeout":
-        return "پاسخی در زمان مقرر نرسید.";
+        return "No response arrived in time.";
       case "aborted":
-        return "آزمایش لغو شد.";
+        return "Probe was cancelled.";
       case "network":
-        return "ارتباط برقرار نشد.";
+        return "Could not connect.";
       case "invalid_response":
-        return "پاسخ سرویس نامعتبر بود.";
+        return "Service response was invalid.";
       default:
-        return "آزمایش ناموفق بود.";
+        return "Probe failed.";
     }
   }
-  return "آزمایش ناموفق بود.";
+  return "Probe failed.";
 }

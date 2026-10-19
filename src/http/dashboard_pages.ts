@@ -77,25 +77,25 @@ const CSS = [
 export function renderLoginPage(): string {
   return (
     "<!DOCTYPE html>\n" +
-    '<html lang="fa" dir="rtl">\n' +
+    '<html lang="en" dir="ltr">\n' +
     "<head>\n" +
     '<meta charset="utf-8">\n' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
-    "<title>BOBI — داشبورد مالک</title>\n" +
+    "<title>BOBI — Owner Dashboard</title>\n" +
     "<style>" + CSS + "</style>\n" +
     "</head>\n" +
     "<body>\n" +
     '<div class="wrap login">\n' +
     '<div class="card">\n' +
-    "<h1>داشبورد مالک بابی</h1>\n" +
-    '<p class="muted">BOBI owner dashboard — ورود با توکن</p>\n' +
+    "<h1>BOBI Owner Dashboard</h1>\n" +
+    '<p class="muted">Sign in with your API token</p>\n' +
     '<form id="f" hidden>\n' +
     '<input type="password" id="tok" dir="ltr" placeholder="BOBI_API_TOKEN" autocomplete="off" autocapitalize="off">\n' +
-    "<button>" + "ورود" + "</button>\n" +
+    "<button>" + "Sign in" + "</button>\n" +
     '<p id="err" class="err" hidden></p>\n' +
-    '<p class="muted">توکن فقط در حافظهٔ همین تب نگه داشته می‌شود (sessionStorage) و هرگز در آدرس صفحه قرار نمی‌گیرد.</p>\n' +
+    '<p class="muted">The token is kept only in this tab\'s memory (sessionStorage) and never appears in the page URL.</p>\n' +
     "</form>\n" +
-    '<p id="wait" class="muted">در حال بررسی نشست…</p>\n' +
+    '<p id="wait" class="muted">Checking session…</p>\n' +
     "</div>\n" +
     "</div>\n" +
     "<script>\n" +
@@ -112,19 +112,19 @@ export function renderLoginPage(): string {
     "}\n" +
     "function loadApp(t){\n" +
     "  fetch('/dashboard',{headers:{'Authorization':'Bearer '+t}}).then(function(r){\n" +
-    "    if(!r.ok){sessionStorage.removeItem(KEY);showForm('توکن معتبر نیست.');return;}\n" +
+    "    if(!r.ok){sessionStorage.removeItem(KEY);showForm('Invalid token.');return;}\n" +
     "    r.text().then(function(html){document.open();document.write(html);document.close();});\n" +
-    "  }).catch(function(){showForm('ارتباط با سرور برقرار نشد.');});\n" +
+    "  }).catch(function(){showForm('Could not reach the server.');});\n" +
     "}\n" +
     "document.getElementById('f').addEventListener('submit',function(ev){\n" +
     "  ev.preventDefault();\n" +
     "  var t=document.getElementById('tok').value.trim();\n" +
-    "  if(!t){showForm('توکن را وارد کنید.');return;}\n" +
+    "  if(!t){showForm('Enter the token.');return;}\n" +
     "  document.getElementById('tok').value='';\n" +
     "  ping(t).then(function(ok){\n" +
     "    if(ok){try{sessionStorage.setItem(KEY,t);}catch(e){}\n" +
     "      loadApp(t);\n" +
-    "    }else{showForm('توکن معتبر نیست.');}\n" +
+    "    }else{showForm('Invalid token.');}\n" +
     "  });\n" +
     "});\n" +
     "(function(){\n" +
@@ -141,15 +141,15 @@ export function renderLoginPage(): string {
 export function renderAppPage(): string {
   return (
     "<!DOCTYPE html>\n" +
-    '<html lang="fa" dir="rtl">\n' +
+    '<html lang="en" dir="ltr">\n' +
     "<head>\n" +
     '<meta charset="utf-8">\n' +
     '<meta name="viewport" content="width=device-width,initial-scale=1">\n' +
-    "<title>BOBI — داشبورد مالک</title>\n" +
+    "<title>BOBI — Owner Dashboard</title>\n" +
     "<style>" + CSS + "</style>\n" +
     "</head>\n" +
     "<body>\n" +
-    '<div class="wrap"><div id="app"><p class="muted">در حال بارگذاری…</p></div></div>\n' +
+    '<div class="wrap"><div id="app"><p class="muted">Loading…</p></div></div>\n' +
     "<script>\n" +
     CLIENT_LIB +
     APP_JS +
@@ -168,53 +168,12 @@ export function renderAppPage(): string {
 const APP_JS = [
   "'use strict';",
   "var TOKEN_KEY='bobi_dash_token';",
-  "var LANG_KEY='bobi_dash_lang';",
   "var token=null;try{token=sessionStorage.getItem(TOKEN_KEY);}catch(e){}",
   "if(!token){window.location.reload();}",
-  "var lang='fa';try{if(sessionStorage.getItem(LANG_KEY)==='en')lang='en';}catch(e){}",
   "var esc=escapeHtml;",
   "var md2html=renderSafeMarkdown;",
   "",
   "var STR={",
-  "fa:{title:'داشبورد مالک بابی',logout:'خروج',tabP:'پروایدرها',tabM:'حافظه',tabU:'کاربران',tabB:'بنچ‌مارک‌ها',",
-  "hintAi:'افزودن پروایدر جدید و وارد کردن کلید، فقط از تلگرام انجام می‌شود: در چت با بابی دستور /ai را بزنید. کلیدها هرگز وارد مرورگر نمی‌شوند.',",
-  "live:'فعال — در حال استفاده',isOff:'غیرفعال',pOn:'فعال‌سازی',pOff:'غیرفعال‌سازی',pSet:'انتخاب به‌عنوان فعال',",
-  "keySet:'کلید ثبت شده',keyUnset:'بدون کلید',models:'مدل‌ها',mSet:'فعال‌سازی',",
-  "memPh:'جست‌وجو در کلید و متن حافظه…',memGo:'جست‌وجو',memEmpty:'حافظه‌ای ثبت نشده است.',memFound:'{n} حافظه',",
-  "cUser:'شناسه',cUname:'نام کاربری',cName:'نام',cState:'وضعیت',cAct:'اقدام',",
-  "stPending:'در انتظار',stApproved:'تأییدشده',stRejected:'بن‌شده',stRevoked:'میوت‌شده',",
-  "aBan:'بن',aUnban:'رفع بن',aMute:'میوت',aUnmute:'رفع میوت',",
-  "manualPh:'شناسه عددی کاربر',manualGo:'اجرا',",
-  "bTitle:'اجراهای بنچ‌مارک',bEmpty:'هنوز اجرایی ثبت نشده است.',bView:'مشاهده گزارش',bBack:'بازگشت به فهرست',",
-  "loading:'در حال بارگذاری…',err:'خطا: ',ok:'انجام شد.',",
-  "cfOff:'این پروایدر غیرفعال شود؟',cfBan:'کاربر {id} بن شود؟',cfMute:'کاربر {id} میوت شود؟',",
-  "tabS:'زمان‌بندها',schedTitle:'زمان‌بندها',tzNote:'منطقهٔ زمانی همهٔ زمان‌بندها: تهران',",
-  "benchName:'بنچ‌مارک زمان‌بندی‌شده',digestName:'خلاصهٔ صبحگاهی',",
-  "swOn:'روشن',swOff:'خاموش',save:'ذخیره',cadence:'دوره',runMode:'حالت',",
-  "cadDaily:'روزانه — ساعت ۳ بامداد',cadWeekly:'هفتگی — یکشنبه‌ها ساعت ۳ بامداد',cadMonthly:'ماهانه — اول هر ماه ساعت ۳ بامداد',",
-  "modeOffline:'آفلاین (سریع)',modeLive:'زنده (مدل واقعی)',",
-  "digestTime:'ساعت ارسال',nextRun:'اجرای بعدی',",
-  "stOk:'موفق',stFailed:'ناموفق',stSkipped:'رد شد',",
-  "customCron:'زمان‌بندی سفارشی (از تلگرام):',",
-  "trendTitle:'روند امتیازها',trendPair:'حالت / مدل',trendTask:'تسک',trendAll:'میانگین کلی',",
-  "trendEmpty:'هنوز داده‌ای برای نمودار نیست — اول یک بنچ‌مارک اجرا کنید.',",
-  "tabG:'گروه‌ها',gdTitle:'خلاصه‌های گروه',",
-  "gdEmpty:'هنوز هیچ گروهی پیکربندی دستیار ندارد — اول از تلگرام در گروه /gassistant را اجرا کنید.',",
-  "gdDigest:'خلاصه',gdTime:'ساعت',gdNeedMode:'اول حالت دستیار را از تلگرام روشن کنید (/gassistant on).',",
-  "cronCustom:'کرون سفارشی',cronPh:'مثل 0 9 * * 1 (خالی = انتخاب بالا)',",
-  "cronHint:'حداقل فاصلهٔ اجرا: بنچ‌مارک هر ۱ ساعت، خلاصه هر ۱۵ دقیقه.',",
-  "digestPromptTitle:'پرامپت خلاصهٔ صبحگاهی',",
-  "digestOwnedBy:'مالکیت: /blueprint تلگرام — ویرایش از همین‌جا روی همان ردیف زمان‌بند اعمال می‌شود؛ اجرای دوبارهٔ /blueprint پرامپت را به پیش‌فرض برمی‌گرداند.',",
-  "digestDest:'مقصد ارسال',destPh:'شناسهٔ چت (پیش‌فرض: دایرکت مالک)',",
-  "resetPrompt:'بازنشانی به پیش‌فرض /blueprint',cfResetPrompt:'پرامپت به پیش‌فرض /blueprint برگردد؟',",
-  "digestNoTask:'هنوز زمان‌بندی‌ای نیست — اول از همین صفحه «خلاصهٔ صبحگاهی» را فعال کنید.',",
-  "liveTitle:'اجرای زنده',liveIdle:'در حال حاضر بنچ‌مارکی در حال اجرا نیست.',",
-  "liveQueued:'{n} اجرا در صف',liveRunning:'در حال اجرا ({mode})',",
-  "liveOf:'{done} از {total} تسک',liveTask:'تسک جاری: {t}',liveElapsed:'{s} ثانیه گذشته',",
-  "liveDone:'تمام شد: {o}',liveUnavail:'پخش زنده در دسترس نیست.',",
-  "liveOk:'موفق',liveFailed:'ناموفق',liveCancelled:'لغو شد',liveSkipped:'رد شد',",
-  "mLive:'زنده',mOffline:'آفلاین',",
-  "langName:'English'},",
   "en:{title:'BOBI Owner Dashboard',logout:'Log out',tabP:'Providers',tabM:'Memory',tabU:'Users',tabB:'Benchmarks',",
   "hintAi:'Adding a provider or entering a key is Telegram-only: send /ai to Bobi in chat. Keys never enter the browser.',",
   "live:'active — in use',isOff:'disabled',pOn:'Enable',pOff:'Disable',pSet:'Set active',",
@@ -253,9 +212,9 @@ const APP_JS = [
   "liveDone:'Finished: {o}',liveUnavail:'Live stream unavailable.',",
   "liveOk:'ok',liveFailed:'failed',liveCancelled:'cancelled',liveSkipped:'skipped',",
   "mLive:'live',mOffline:'offline',",
-  "langName:'فارسی'}",
+  "},",
   "};",
-  "function T(k,v){var p=STR[lang]||STR.fa;var s=p[k]||STR.fa[k]||k;",
+  "function T(k,v){var s=STR.en[k]||k;",
   "if(v){for(var n in v){if(Object.prototype.hasOwnProperty.call(v,n)){s=s.split('{'+n+'}').join(String(v[n]));}}}",
   "return s;}",
   "",
@@ -269,15 +228,12 @@ const APP_JS = [
   "",
   "var tab='providers';var cache={};var benchName=null;var memQuery='';",
   "var trendMode='';var trendModel='';var trendTask='';",
-  "function fmtDate(ms){try{return new Date(ms).toLocaleString(lang==='fa'?'fa-IR':'en-US');}catch(e){return String(ms);}}",
+  "function fmtDate(ms){try{return new Date(ms).toLocaleString('en-US');}catch(e){return String(ms);}}",
   "",
   "function setTab(t){tab=t;benchName=null;render();load();}",
-  "function setLang(l){lang=l;try{sessionStorage.setItem(LANG_KEY,l);}catch(e){}",
-  "document.documentElement.lang=l;document.documentElement.dir=(l==='fa'?'rtl':'ltr');render();load();}",
   "",
   "function header(){",
   "var h='<div class=\"row\"><h1>'+esc(T('title'))+'</h1><div class=\"spacer\"></div>';",
-  "h+='<button class=\"ghost\" data-action=\"lang\">'+esc(T('langName'))+'</button>';",
   "h+='<button class=\"ghost\" data-action=\"logout\">'+esc(T('logout'))+'</button></div>';",
   "h+='<nav>';",
   "h+='<button data-action=\"tab\" data-t=\"providers\"'+(tab==='providers'?' class=\"on\"':'')+'>'+esc(T('tabP'))+'</button>';",
@@ -517,10 +473,10 @@ const APP_JS = [
   "var d=cache.bench;if(!d)return t+'<p class=\"muted\">'+esc(T('loading'))+'</p>';",
   "var h=t+'<div class=\"card\"><h2>'+esc(T('bTitle'))+'</h2>';",
   "if(d.runs.length===0)return h+'<p class=\"muted\">'+esc(T('bEmpty'))+'</p></div>';",
-  "h+='<table><tr><th>'+esc(lang==='fa'?'اجرا':'run')+'</th><th>'+esc(lang==='fa'?'حالت':'mode')+'</th><th>'+esc(lang==='fa'?'مدل':'model')+'</th><th>'+esc(lang==='fa'?'امتیاز':'score')+'</th><th></th></tr>';",
+  "h+='<table><tr><th>'+esc('run')+'</th><th>'+esc('mode')+'</th><th>'+esc('model')+'</th><th>'+esc('score')+'</th><th></th></tr>';",
   "for(var i=0;i<d.runs.length;i++){var b=d.runs[i];var t=b.totals||{};",
   "h+='<tr><td dir=\"ltr\">'+esc(b.name)+'</td><td>'+esc(b.mode||'—')+'</td><td dir=\"ltr\">'+esc(b.model||'—')+'</td>';",
-  "h+='<td>'+(t.avgScorePct!==undefined?esc(String(t.avgScorePct))+'٪':'—')+'</td>';",
+  "h+='<td>'+(t.avgScorePct!==undefined?esc(String(t.avgScorePct))+'%':'—')+'</td>';",
   "h+='<td><button class=\"ghost\" data-action=\"b-view\" data-name=\"'+esc(b.name)+'\">'+esc(T('bView'))+'</button></td></tr>';}",
   "return h+'</table></div>';}",
   "",
@@ -552,9 +508,9 @@ const APP_JS = [
   "var ser=[{label:T('trendAll'),color:'#4da3ff',points:d.runs.map(function(p){return{ts:p.tsMs,value:p.avgScorePct};})}];",
   "if(d.task&&d.task.points&&d.task.points.length>0){",
   "ser.push({label:(d.task.titleFa||d.task.taskId),color:'#ffb020',points:d.task.points.map(function(p){return{ts:p.tsMs,value:p.scorePct};})});}",
-  "var svg=buildLineChartSvg({series:ser,rtl:lang==='fa',emptyText:T('trendEmpty'),",
-  "formatTick:function(ts){try{return new Date(ts).toLocaleDateString(lang==='fa'?'fa-IR':'en-US',{month:'short',day:'numeric'});}catch(e){return '';}},",
-  "formatValue:function(v){try{var s=Math.round(v).toLocaleString(lang==='fa'?'fa-IR':'en-US');return lang==='fa'?s+'٪':s+'%';}catch(e){return String(Math.round(v));}}});",
+  "var svg=buildLineChartSvg({series:ser,rtl:false,emptyText:T('trendEmpty'),",
+  "formatTick:function(ts){try{return new Date(ts).toLocaleDateString('en-US',{month:'short',day:'numeric'});}catch(e){return '';}},",
+  "formatValue:function(v){try{var s=Math.round(v).toLocaleString('en-US');return s+'%';}catch(e){return String(Math.round(v));}}});",
   "return '<div style=\"max-width:100%;overflow-x:auto\">'+svg+'</div>';}",
   "",
   "",
@@ -630,7 +586,6 @@ const APP_JS = [
   "var a=el.getAttribute('data-action');",
   "if(a==='tab'){setTab(el.getAttribute('data-t'));}",
   "else if(a==='logout'){try{sessionStorage.removeItem(TOKEN_KEY);}catch(x){}window.location.reload();}",
-  "else if(a==='lang'){setLang(lang==='fa'?'en':'fa');}",
   "else if(a==='p-toggle'){var en=el.getAttribute('data-en')==='1';var id=parseInt(el.getAttribute('data-id'),10);",
   "if(!en&&!confirm(T('cfOff')))return;",
   "api('/providers/enable',{method:'POST',body:{id:id,enabled:en}}).then(function(r){if(r.status===200)refreshProviders();else alert(T('err')+((r.body&&r.body.error)||r.status));});}",

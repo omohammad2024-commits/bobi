@@ -206,8 +206,9 @@ function roleLabel(role: StoredMessage["role"], lang: Lang): string {
   return tr(lang, `cmd_session.role_${role}`);
 }
 
-function formatFaDate(ms: number, lang: Lang): string {
-  return new Intl.DateTimeFormat(lang === "fa" ? "fa-IR" : "en-GB", {
+function formatFaDate(ms: number, _lang: Lang): string {
+  // English-only UI: dates render in en-GB (Tehran time).
+  return new Intl.DateTimeFormat("en-GB", {
     dateStyle: "medium",
     timeStyle: "short",
     timeZone: "Asia/Tehran",
@@ -350,7 +351,7 @@ function readPref(prefs: UserPrefStore | undefined, userId: string, key: string)
 
 /** User-safe error text for a failed engine run. */
 function engineFailureText(err: unknown, lang: Lang): string {
-  // EngineError messages are already Persian, user-safe categories.
+  // EngineError messages are English, user-safe categories.
   if (err instanceof EngineError) return err.message;
   return tr(lang, "cmd_session.retry_failed");
 }
@@ -365,7 +366,7 @@ function engineFailureText(err: unknown, lang: Lang): string {
 export async function handleHistoryCommand(
   ctx: SessionCtx,
   env: StorageEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -431,7 +432,7 @@ function renderJsonExport(messages: readonly StoredMessage[]): string {
 export async function handleSaveCommand(
   ctx: SessionCtx,
   env: StorageEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -495,7 +496,7 @@ export async function handleSaveCommand(
 export async function handleRetryCommand(
   ctx: SessionCtx,
   env: RetryEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -570,7 +571,7 @@ export async function handleRetryCommand(
 export async function handleUndoCommand(
   ctx: SessionCtx,
   env: UndoEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -629,7 +630,7 @@ export async function handleUndoCommand(
 export async function handleTitleCommand(
   ctx: SessionCtx,
   env: PrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -680,7 +681,7 @@ export async function handleTitleCommand(
 export async function handleBranchCommand(
   ctx: SessionCtx,
   env: StoragePrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -741,7 +742,7 @@ export async function handleBranchCommand(
 export async function handleResumeCommand(
   ctx: SessionCtx,
   env: StoragePrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -814,7 +815,7 @@ export async function handleResumeCommand(
 export async function handleSessionsCommand(
   ctx: SessionCtx,
   env: StoragePrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -861,10 +862,7 @@ export async function handleSessionsCommand(
     await replyChunked(ctx, text);
     return;
   }
-  const keyboard = buildSessionsKeyboard(
-    buttons,
-    lang === "en" ? "en" : "fa",
-  );
+  const keyboard = buildSessionsKeyboard(buttons, "en");
   const chunks = splitForTelegram(text);
   for (let i = 0; i < chunks.length; i++) {
     if (i === chunks.length - 1) {
@@ -953,7 +951,7 @@ export async function handleSessionResumeCallback(
 export async function handleStatusCommand(
   ctx: SessionCtx,
   env: StatusEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -1006,7 +1004,7 @@ export async function handleStatusCommand(
 export async function handleContextCommand(
   ctx: SessionCtx,
   env: StorageEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -1059,7 +1057,7 @@ function parseBusyMode(raw: string): BusyMode | undefined {
 export async function handleBusyCommand(
   ctx: SessionCtx,
   env: PrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.from === undefined) return;
   const userId = String(ctx.from.id);
@@ -1121,13 +1119,13 @@ export async function handleBusyCommand(
 export async function handleWhoamiCommand(
   ctx: { from?: { id: number | string } | undefined; reply(text: string): Promise<unknown> },
   isOwner: boolean,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.from === undefined) return;
   const list = (ownerOnly: boolean): string =>
     COMMAND_HELP.filter((e) => e.ownerOnly === ownerOnly)
       .map((e) => `/${e.name}`)
-      .join(" ،");
+      .join(", ");
   const lines = [
     tr(lang, isOwner ? "cmd_session.whoami_owner" : "cmd_session.whoami_user"),
     "",
@@ -1157,7 +1155,7 @@ export async function handleWhoamiCommand(
 export async function handleFooterCommand(
   ctx: SessionCtx,
   env: PrefsEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   if (ctx.from === undefined) return;
   const userId = String(ctx.from.id);
@@ -1204,7 +1202,7 @@ export async function handleFooterCommand(
 export async function handleVersionCommand(
   ctx: { reply(text: string): Promise<unknown> },
   deps: { version?: string },
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   await safeReply(ctx, tr(lang, "cmd_session.version", { version: deps.version ?? "dev" }));
 }
@@ -1224,7 +1222,7 @@ export async function handleVersionCommand(
 export async function handleNewCommand(
   ctx: SessionCtx,
   env: NewEnv,
-  lang: Lang = "fa",
+  lang: Lang = "en",
 ): Promise<void> {
   const ids = idsOf(ctx);
   if (!ids) return;
@@ -1255,21 +1253,21 @@ export async function handleNewCommand(
 
 /** Menu entries for setMyCommands; merged by createBot. Two-tier access: all are owner-only. */
 export const COMMAND_DEFS: HermesCommandDef[] = [
-  { command: "history", descriptionFa: "نمایش تاریخچهٔ گفت‌وگو", descriptionEn: "Show conversation history", ownerOnly: true },
-  { command: "save", descriptionFa: "ذخیرهٔ گفت‌وگو به‌صورت فایل", descriptionEn: "Export the conversation to a file", ownerOnly: true },
-  { command: "retry", descriptionFa: "تلاش دوبارهٔ آخرین پیام", descriptionEn: "Retry the last message", ownerOnly: true },
-  { command: "undo", descriptionFa: "بازگشت و بازنویسی", descriptionEn: "Undo the last turns", ownerOnly: true },
-  { command: "title", descriptionFa: "تنظیم عنوان گفت‌وگو", descriptionEn: "Set the conversation title", ownerOnly: true },
-  { command: "branch", descriptionFa: "شاخه‌سازی گفت‌وگو", descriptionEn: "Branch the conversation", ownerOnly: true },
-  { command: "resume", descriptionFa: "ازسرگیری نشست", descriptionEn: "Resume a past session", ownerOnly: true },
-  { command: "sessions", descriptionFa: "نشست‌های قبلی", descriptionEn: "List past sessions", ownerOnly: true },
-  { command: "status", descriptionFa: "وضعیت", descriptionEn: "Session status", ownerOnly: true },
-  { command: "context", descriptionFa: "وضعیت حافظهٔ زمینه", descriptionEn: "Context window status", ownerOnly: true },
-  { command: "busy", descriptionFa: "رفتار هنگام مشغولی", descriptionEn: "Busy-behavior preference", ownerOnly: true },
-  { command: "whoami", descriptionFa: "نقش من", descriptionEn: "Show my role", ownerOnly: true },
-  { command: "footer", descriptionFa: "پانویس فنی", descriptionEn: "Technical footer preference", ownerOnly: true },
-  { command: "version", descriptionFa: "نسخهٔ بابی", descriptionEn: "Show the BOBI version", ownerOnly: true },
-  { command: "new", descriptionFa: "شروع نشست تازه", descriptionEn: "Start a fresh session", ownerOnly: true },
+  { command: "history", descriptionEn: "Show conversation history", ownerOnly: true },
+  { command: "save", descriptionEn: "Export the conversation to a file", ownerOnly: true },
+  { command: "retry", descriptionEn: "Retry the last message", ownerOnly: true },
+  { command: "undo", descriptionEn: "Undo the last turns", ownerOnly: true },
+  { command: "title", descriptionEn: "Set the conversation title", ownerOnly: true },
+  { command: "branch", descriptionEn: "Branch the conversation", ownerOnly: true },
+  { command: "resume", descriptionEn: "Resume a past session", ownerOnly: true },
+  { command: "sessions", descriptionEn: "List past sessions", ownerOnly: true },
+  { command: "status", descriptionEn: "Session status", ownerOnly: true },
+  { command: "context", descriptionEn: "Context window status", ownerOnly: true },
+  { command: "busy", descriptionEn: "Busy-behavior preference", ownerOnly: true },
+  { command: "whoami", descriptionEn: "Show my role", ownerOnly: true },
+  { command: "footer", descriptionEn: "Technical footer preference", ownerOnly: true },
+  { command: "version", descriptionEn: "Show the BOBI version", ownerOnly: true },
+  { command: "new", descriptionEn: "Start a fresh session", ownerOnly: true },
 ];
 
 // ------------------------------------------------------------- registration ----

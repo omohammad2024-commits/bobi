@@ -74,34 +74,34 @@ export function validateTarget(
 ): { baseUrl: string } {
   const raw = typeof target.baseUrl === "string" ? target.baseUrl.trim() : "";
   if (raw.length === 0) {
-    throw new AiError("invalid_response", "آدرس سرویس تنظیم نشده است.");
+    throw new AiError("invalid_response", "Service address is not set.");
   }
   if (raw.length > 512) {
-    throw new AiError("invalid_response", "آدرس سرویس خیلی طولانی است.");
+    throw new AiError("invalid_response", "Service address is too long.");
   }
 
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
-    throw new AiError("invalid_response", "آدرس سرویس نامعتبر است.");
+    throw new AiError("invalid_response", "Service address is invalid.");
   }
 
   if (!ALLOWED_SCHEMES.has(url.protocol)) {
-    throw new AiError("invalid_response", "آدرس سرویس باید http یا https باشد.");
+    throw new AiError("invalid_response", "Service address must be http or https.");
   }
   if (url.username.length > 0 || url.password.length > 0) {
     // A credential inside the URL would appear in logs and error messages.
-    throw new AiError("invalid_response", "آدرس سرویس نباید شامل نام کاربری باشد.");
+    throw new AiError("invalid_response", "Service address must not contain a username.");
   }
   if (url.hostname.length === 0) {
-    throw new AiError("invalid_response", "آدرس سرویس میزبان ندارد.");
+    throw new AiError("invalid_response", "Service address has no host.");
   }
 
   if (!opts.allowLocalTargets && isPrivateHost(url.hostname)) {
     throw new AiError(
       "invalid_response",
-      "آدرس سرویس داخلی یا خصوصی است و برای اتصال از راه دور پذیرفته نیست.",
+      "The service address is internal or private and is not accepted for remote connections.",
     );
   }
 

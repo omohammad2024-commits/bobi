@@ -3,8 +3,9 @@ import type { Lang } from "../i18n";
 /**
  * Phase: Hermes command parity — session commands.
  *
- * All user-facing strings for `cmd_session.ts`, in Persian and English.
- * The coordinator folds these keys into `src/i18n/fa.ts` / `src/i18n/en.ts`
+ * All user-facing strings for `cmd_session.ts`, English-only (owner
+ * direction, Oct 2026: the bot's chrome is English-only).
+ * The coordinator folds these keys into `src/i18n/en.ts`
  * later (never touch those files from here); until then this module is the
  * single source of truth. Every key uses the `cmd_session.*` prefix so the
  * fold-in cannot collide with the built-in keys.
@@ -14,105 +15,9 @@ import type { Lang } from "../i18n";
 
 type Vars = Record<string, string | number>;
 
-const FA: Record<string, string> = {
-  "cmd_session.storage_error": "خطا در خواندن یا ذخیرهٔ اطلاعات؛ دوباره تلاش کن.",
-  "cmd_session.prefs_unavailable": "سرویس تنظیمات در دسترس نیست.",
-  "cmd_session.prefs_save_failed": "ذخیرهٔ تنظیم ناموفق بود.",
 
-  "cmd_session.role_user": "شما",
-  "cmd_session.role_assistant": "بابی",
-  "cmd_session.role_system": "سیستم",
 
-  "cmd_session.history_empty": "هنوز پیامی در این گفت‌وگو ثبت نشده است.",
-  "cmd_session.history_title": "📜 تاریخچهٔ گفت‌وگو (آخرین {n} پیام):",
-  "cmd_session.history_more": "…و {n} پیام قدیمی‌تر",
-  "cmd_session.history_bad_arg": "تعداد پیام باید عددی بین ۱ تا ۳۰ باشد. مثال: /history 20",
-
-  "cmd_session.save_empty": "هنوز پیامی در این گفت‌وگو ثبت نشده؛ فایلی ساخته نشد.",
-  "cmd_session.save_bad_arg": "قالب نامعتبر. فقط `/save` (مارک‌داون) یا `/save json` پشتیبانی می‌شود.",
-  "cmd_session.save_caption": "گفت‌وگوی بابی — {date}",
-  "cmd_session.save_too_large": "گفت‌وگو بیش از حد بزرگ است (بیش از ۵۰۰۰ پیام)؛ این عملیات روی آن پشتیبانی نمی‌شود.",
-
-  "cmd_session.retry_none": "پیام کاربری در تاریخچه پیدا نشد؛ چیزی برای تلاش دوباره نیست.",
-  "cmd_session.retry_failed": "تلاش دوباره ناموفق بود؛ دوباره تلاش کن.",
-
-  "cmd_session.undo_usage": "برای حذف نوبت‌های آخر، تعداد رو مشخص کن (۱ تا ۵). مثال: /undo 2",
-  "cmd_session.undo_bad_arg": "تعداد باید عددی بین ۱ تا ۵ باشد. مثال: /undo 2",
-  "cmd_session.undo_nothing": "پیامی برای حذف وجود ندارد.",
-  "cmd_session.undo_done": "✅ {n} نوبت آخر حذف شد؛ می‌تونی دوباره بنویسی.\nحذف شد:\n{preview}",
-
-  "cmd_session.title_current": "🏷 عنوان فعلی این گفت‌وگو: {title}",
-  "cmd_session.title_none": "هنوز عنوانی برای این گفت‌وگو تنظیم نشده است. با `/title <متن>` یکی بذار.",
-  "cmd_session.title_too_long": "عنوان حداکثر ۱۲۰ نویسه می‌تواند باشد.",
-  "cmd_session.title_set": "✅ عنوان گفت‌وگو تنظیم شد: {title}",
-
-  "cmd_session.branch_usage": "نام شاخه رو مشخص کن. مثال: /branch ایده‌ها",
-  "cmd_session.branch_bad_name": "نام شاخه نامعتبر است؛ فقط حروف، عدد، خط تیره و زیرخط، حداکثر ۴۰ نویسه.",
-  "cmd_session.branch_empty": "این گفت‌وگو هنوز پیامی ندارد؛ چیزی برای شاخه‌سازی نیست.",
-  "cmd_session.branch_done": "🌿 شاخه ساخته شد: `{id}`\n{n} پیام کپی شد. با /sessions می‌تونی ببینیش.\n(خلاصهٔ چرخشی کپی نشد — در صورت نیاز با /compress در شاخهٔ جدید بساز.)",
-
-  "cmd_session.resume_usage": "نام یا شناسهٔ نشست رو مشخص کن. فهرست نشست‌ها: /sessions",
-  "cmd_session.resume_not_found": "نشستی با این اسم یا شناسه پیدا نشد؛ /sessions رو ببین.",
-  "cmd_session.resume_title": "📂 نشست «{name}» — آخرین {n} پیام:",
-  "cmd_session.resume_empty": "(این نشست پیامی ندارد.)",
-  "cmd_session.resume_active":
-    "✅ «{name}» به‌عنوان نشست فعال انتخاب شد؛ پیام‌های بعدی‌ات در همین نشست ادامه پیدا می‌کند.",
-
-  "cmd_session.sessions_empty": "نشست دیگری ثبت نشده است.",
-  "cmd_session.sessions_title": "💬 نشست‌هات:",
-  "cmd_session.sessions_item": "• {title} — {n} پیام — {date}{current}",
-  "cmd_session.sessions_current_mark": " (فعلی)",
-  "cmd_session.sessions_more": "…و {n} نشست دیگر",
-
-  "cmd_session.status_title": "📊 وضعیت نشست",
-  "cmd_session.status_session": "نشست: {id}",
-  "cmd_session.status_title_line": "عنوان: {title}",
-  "cmd_session.status_title_none": "—",
-  "cmd_session.status_model": "مدل: {model}",
-  "cmd_session.status_model_unknown": "نامشخص",
-  "cmd_session.status_messages": "پیام‌های ذخیره‌شده: {n}",
-  "cmd_session.status_running_yes": "در حال اجرا: بله",
-  "cmd_session.status_running_no": "در حال اجرا: خیر",
-  "cmd_session.status_tokens": "توکن امروز: ورودی {in} / خروجی {out}",
-  "cmd_session.status_requests": "درخواست امروز: {n}",
-
-  "cmd_session.context_title": "🧠 وضعیت حافظهٔ زمینه",
-  "cmd_session.context_messages": "پیام‌ها: {n}",
-  "cmd_session.context_tokens": "تخمین توکن‌ها (تقریبی): ~{n}",
-  "cmd_session.context_window": "پنجرهٔ موتور: {n} پیام آخر",
-  "cmd_session.context_summary_yes": "خلاصه‌سازی: فعال — تا پیام #{id}",
-  "cmd_session.context_summary_no": "خلاصه‌سازی: هنوز خلاصه‌ای ساخته نشده",
-  "cmd_session.context_note": "تخمین توکن = تعداد نویسه‌ها ÷ ۴؛ تقریبی است.",
-
-  "cmd_session.busy_current": "⏳ رفتار هنگام مشغولی: {mode}",
-  "cmd_session.busy_mode_queue": "صف (پیام جدید پشت پاسخ فعلی می‌ماند)",
-  "cmd_session.busy_mode_interrupt": "قطع پاسخ فعلی و شروع پاسخ به پیام جدید",
-  "cmd_session.busy_mode_ignore": "نادیده گرفتن پیام جدید تا پایان پاسخ فعلی",
-  "cmd_session.busy_set": "✅ رفتار هنگام مشغولی تنظیم شد: {mode}",
-  "cmd_session.busy_bad_arg": "گزینه نامعتبر. یکی از: queue ،interrupt ،ignore — مثال: /busy queue",
-  "cmd_session.busy_note": "(این ترجیح فعلاً اعلامی است؛ موتور هنوز آن را اعمال نمی‌کند.)",
-
-  "cmd_session.whoami_owner": "👑 تو مالک رباتی.",
-  "cmd_session.whoami_user": "👤 تو کاربر تأییدشده‌ای.",
-  "cmd_session.whoami_groups_user": "دستورها: {commands}",
-  "cmd_session.whoami_groups_owner": "دستورهای مالک: {commands}",
-
-  "cmd_session.footer_current_on": "📝 پانویس فنی پاسخ‌ها: روشن",
-  "cmd_session.footer_current_off": "📝 پانویس فنی پاسخ‌ها: خاموش",
-  "cmd_session.footer_set_on": "✅ پانویس فنی پاسخ‌ها روشن شد.",
-  "cmd_session.footer_set_off": "✅ پانویس فنی پاسخ‌ها خاموش شد.",
-  "cmd_session.footer_bad_arg": "گزینه نامعتبر. `/footer on` یا `/footer off`",
-  "cmd_session.footer_note": "(این ترجیح فعلاً اعلامی است؛ قالب‌بند پاسخ هنوز آن را اعمال نمی‌کند.)",
-
-  "cmd_session.version": "🤖 بابی نسخهٔ {version}",
-
-  "cmd_session.new_confirm":
-    "⚠️ «نشست تازه» یعنی خداحافظی با {n} پیام{summary} — برگشتی در کار نیست.\n\nاگه مطمئنی: /new --confirm",
-  "cmd_session.new_confirm_summary": " و خلاصهٔ چرخشی",
-  "cmd_session.new_done": "🆕 نشست تازه شروع شد؛ تاریخچهٔ همین گفت‌وگو پاک شد.",
-};
-
-const EN: Record<string, string> = {
+const STRINGS: Record<string, string> = {
   "cmd_session.storage_error": "Failed to read or store data. Please try again.",
   "cmd_session.prefs_unavailable": "Preference service is unavailable.",
   "cmd_session.prefs_save_failed": "Failed to save the preference.",
@@ -210,15 +115,18 @@ const EN: Record<string, string> = {
   "cmd_session.new_done": "🆕 Fresh session started; this conversation's history was cleared.",
 };
 
-const PACKS: Record<Lang, Record<string, string>> = { fa: FA, en: EN };
-
 /**
  * Look up a `cmd_session.*` key and substitute `{vars}`.
- * Unknown keys fall back to the Persian table, then to the key itself —
- * never throws, so a missing key can never break a handler.
+ * Unknown keys fall back to the key itself — never throws, so a missing
+ * key can never break a handler. The `lang` argument is accepted for
+ * signature compatibility and ignored: the UI is English-only.
  */
-export function tr(lang: Lang, key: string, vars?: Vars): string {
-  let s = PACKS[lang]?.[key] ?? FA[key] ?? key;
+export function tr(
+  _lang: "en" | "fa", // accepted for compatibility; always renders English
+  key: string,
+  vars?: Vars,
+): string {
+  let s = STRINGS[key] ?? key;
   if (vars !== undefined) {
     for (const [k, v] of Object.entries(vars)) {
       s = s.split(`{${k}}`).join(String(v));

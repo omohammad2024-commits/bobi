@@ -36,10 +36,11 @@
  *   message or inject fake buttons.
  */
 import { InlineKeyboard } from "grammy";
-import { t, type Lang } from "../i18n";
+import { t } from "../i18n";
 import {
   fitDigestSections,
   renderDigestText,
+  type DigestLocale,
   type DigestSectionData,
 } from "./builder";
 
@@ -122,7 +123,7 @@ export interface DigestDeleteConfirm {
 }
 
 export interface DigestRenderOpts {
-  lang?: Lang;
+  locale?: DigestLocale;
   /** When set, that task row renders the confirm/cancel pair instead. */
   confirm?: DigestDeleteConfirm;
   /** When false, the per-task run button is omitted (no runner wired). */
@@ -174,12 +175,12 @@ export function renderInteractiveDigest(
   data: readonly DigestSectionData[],
   opts: DigestRenderOpts = {},
 ): DigestRender {
-  const lang: Lang = opts.lang ?? "fa";
+  const locale: DigestLocale = opts.locale ?? "fa";
   const maxChars = opts.maxChars ?? INTERACTIVE_DIGEST_MAX_CHARS;
-  const kept = fitDigestSections(data, lang, maxChars);
-  const text = renderDigestText(kept, lang, maxChars);
+  const kept = fitDigestSections(data, locale, maxChars);
+  const text = renderDigestText(kept, locale, maxChars);
   const keyboard = buildDigestKeyboard(kept, {
-    lang,
+    locale,
     ...(opts.confirm !== undefined ? { confirm: opts.confirm } : {}),
     canRunTask: opts.canRunTask ?? true,
   });
@@ -189,9 +190,9 @@ export function renderInteractiveDigest(
 /** The tap-to-act keyboard for the surviving digest sections. Pure, for tests. */
 export function buildDigestKeyboard(
   data: readonly DigestSectionData[],
-  opts: { lang?: Lang; confirm?: DigestDeleteConfirm; canRunTask?: boolean } = {},
+  opts: { locale?: DigestLocale; confirm?: DigestDeleteConfirm; canRunTask?: boolean } = {},
 ): InlineKeyboard {
-  const lang: Lang = opts.lang ?? "fa";
+  const locale: DigestLocale = opts.locale ?? "fa";
   const canRunTask = opts.canRunTask ?? true;
   const kb = new InlineKeyboard();
 
@@ -200,21 +201,21 @@ export function buildDigestKeyboard(
     for (const item of tasks.items) {
       if (opts.confirm?.kind === "task" && opts.confirm.id === item.id) {
         kb.text(
-          t("digest.btn.task_confirm_yes", lang),
+          t("digest.btn.task_confirm_yes", "en"),
           `${DIGEST_CALLBACK_PREFIX}task:delc:${item.id}`,
         ).text(
-          t("digest.btn.task_confirm_no", lang),
+          t("digest.btn.task_confirm_no", "en"),
           `${DIGEST_CALLBACK_PREFIX}task:delx:${item.id}`,
         );
       } else {
         if (canRunTask) {
           kb.text(
-            t("digest.btn.task_run", lang),
+            t("digest.btn.task_run", "en"),
             `${DIGEST_CALLBACK_PREFIX}task:run:${item.id}`,
           );
         }
         kb.text(
-          t("digest.btn.task_delete", lang),
+          t("digest.btn.task_delete", "en"),
           `${DIGEST_CALLBACK_PREFIX}task:del:${item.id}`,
         );
       }
@@ -226,7 +227,7 @@ export function buildDigestKeyboard(
   if (reminders !== undefined) {
     for (const item of reminders.items) {
       kb.text(
-        t("digest.btn.reminder_done", lang),
+        t("digest.btn.reminder_done", "en"),
         `${DIGEST_CALLBACK_PREFIX}rem:done:${item.id}`,
       ).row();
     }
@@ -234,7 +235,7 @@ export function buildDigestKeyboard(
 
   if (proposalsSection(data) !== undefined) {
     kb.text(
-      t("digest.btn.proposals_review", lang),
+      t("digest.btn.proposals_review", "en"),
       `${DIGEST_CALLBACK_PREFIX}props`,
     ).row();
   }
@@ -243,13 +244,13 @@ export function buildDigestKeyboard(
   if (memories !== undefined) {
     for (let index = 0; index < memories.items.length; index++) {
       kb.text(
-        t("digest.btn.memory_details", lang),
+        t("digest.btn.memory_details", "en"),
         `${DIGEST_CALLBACK_PREFIX}mem:show:${index}`,
       ).row();
     }
   }
 
-  kb.text(t("digest.btn.refresh", lang), `${DIGEST_CALLBACK_PREFIX}refresh`);
+  kb.text(t("digest.btn.refresh", "en"), `${DIGEST_CALLBACK_PREFIX}refresh`);
   return kb;
 }
 
@@ -270,35 +271,35 @@ export interface DigestProposalRow {
  */
 export function renderProposalsView(
   proposals: readonly DigestProposalRow[],
-  lang: Lang = "fa",
+  locale: DigestLocale = "fa",
 ): { text: string; keyboard: InlineKeyboard } {
   const kb = new InlineKeyboard();
   if (proposals.length === 0) {
-    kb.text(t("digest.btn.back", lang), `${DIGEST_CALLBACK_PREFIX}back`);
+    kb.text(t("digest.btn.back", "en"), `${DIGEST_CALLBACK_PREFIX}back`);
     return {
-      text: [t("digest.proposals_view.title", lang), "", t("digest.proposals_view.empty", lang)].join("\n"),
+      text: [t("digest.proposals_view.title", "en"), "", t("digest.proposals_view.empty", "en")].join("\n"),
       keyboard: kb,
     };
   }
   const lines = proposals.map((p) =>
-    t("digest.proposals_view.item", lang, { summary: clipSummary(p.summary) }),
+    t("digest.proposals_view.item", "en", { summary: clipSummary(p.summary) }),
   );
   const text = [
-    t("digest.proposals_view.title", lang),
+    t("digest.proposals_view.title", "en"),
     "",
-    t("digest.proposals_view.hint", lang),
+    t("digest.proposals_view.hint", "en"),
     ...lines,
   ].join("\n");
   for (const p of proposals) {
     kb.text(
-      t("digest.btn.proposal_approve", lang),
+      t("digest.btn.proposal_approve", "en"),
       `${DIGEST_CALLBACK_PREFIX}prop:ok:${p.id}`,
     ).text(
-      t("digest.btn.proposal_reject", lang),
+      t("digest.btn.proposal_reject", "en"),
       `${DIGEST_CALLBACK_PREFIX}prop:no:${p.id}`,
     ).row();
   }
-  kb.text(t("digest.btn.back", lang), `${DIGEST_CALLBACK_PREFIX}back`);
+  kb.text(t("digest.btn.back", "en"), `${DIGEST_CALLBACK_PREFIX}back`);
   return { text, keyboard: kb };
 }
 
@@ -325,9 +326,9 @@ export interface DigestMemoryCard {
  */
 export function renderMemoryCard(
   memory: DigestMemoryCard,
-  lang: Lang = "fa",
+  locale: DigestLocale = "fa",
 ): string {
-  const date = new Intl.DateTimeFormat(lang === "fa" ? "fa-IR" : "en-US", {
+  const date = new Intl.DateTimeFormat(locale === "fa" ? "fa-IR" : "en-US", {
     timeZone: "Asia/Tehran",
     year: "numeric",
     month: "long",
@@ -336,11 +337,11 @@ export function renderMemoryCard(
   const content =
     memory.content.length <= 3500 ? memory.content : `${memory.content.slice(0, 3499)}…`;
   return [
-    t("digest.memory_card.title", lang),
+    t("digest.memory_card.title", "en"),
     "",
     content,
     "",
-    t("digest.memory_card.key", lang, { key: memory.key }),
-    t("digest.memory_card.saved", lang, { date }),
+    t("digest.memory_card.key", "en", { key: memory.key }),
+    t("digest.memory_card.saved", "en", { date }),
   ].join("\n");
 }

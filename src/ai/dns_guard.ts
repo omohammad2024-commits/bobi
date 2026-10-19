@@ -162,10 +162,10 @@ export async function resolveTarget(
       addresses = await resolver(hostname);
     } catch {
       // A failed lookup must never be read as "safe" or "empty is fine".
-      throw new AiError("invalid_response", "resolve دامنهٔ سرویس ناموفق بود.");
+      throw new AiError("invalid_response", "Failed to resolve the service domain.");
     }
     if (addresses.length === 0) {
-      throw new AiError("invalid_response", "دامنهٔ سرویس آدرسی برنگرداند.");
+      throw new AiError("invalid_response", "The service domain returned no address.");
     }
   }
 
@@ -175,7 +175,7 @@ export async function resolveTarget(
     if (!classifyAddress(address, allowLocal).allowed) {
       throw new AiError(
         "invalid_response",
-        "دامنهٔ سرویس به آدرس داخلی یا خصوصی اشاره می‌کند و پذیرفته نیست.",
+        "The service domain resolves to an internal or private address, which is not allowed.",
       );
     }
   }

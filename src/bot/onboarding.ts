@@ -1,6 +1,5 @@
 import { InlineKeyboard, type Context } from "grammy";
 import { t, type Lang } from "../i18n";
-import { LANG_PREF_KEY } from "../i18n";
 import { isProviderPreset, providerPreset, PROVIDER_PRESETS } from "../ai/adapter";
 import { setupPrompt, parseSetupReply, type SetupResult } from "../ai/setup";
 import type { ProbeResult } from "../ai/health";
@@ -129,7 +128,8 @@ export function parseOnboardingCallback(data: string): OnboardingAction | undefi
   }
   if (head === "lang") {
     if (value !== "fa" && value !== "en") return undefined;
-    return { kind: "lang", value };
+    // English-only UI: any language tap normalizes to "en".
+    return { kind: "lang", value: "en" };
   }
   if (head === "pers") {
     // Must resolve to a built-in skin; raw names are never stored.
@@ -390,12 +390,9 @@ export function renderProfile(lang: Lang, get: (key: string) => string | undefin
     const mark = name === current ? " ✅" : "";
     keyboard.text(`${label}${mark}`, `${ONBOARDING_CALLBACK_PREFIX}pers:${name}`).row();
   }
-  lines.push("", t("onb.profile.lang_label", lang));
-  const curLang = get(LANG_PREF_KEY) === "en" ? "en" : "fa";
-  keyboard
-    .text(`${t("lang.label.fa", curLang)}${curLang === "fa" ? " ✅" : ""}`, `${ONBOARDING_CALLBACK_PREFIX}lang:fa`)
-    .text(`${t("lang.label.en", curLang)}${curLang === "en" ? " ✅" : ""}`, `${ONBOARDING_CALLBACK_PREFIX}lang:en`)
-    .row();
+  // (Removed Oct 2026: the UI is English-only, so no language picker is
+  // rendered anymore. The onb:lang callback stays strictly parsed and
+  // owner-gated for in-flight keyboards.)
   keyboard.text(t("onb.continue", lang), `${ONBOARDING_CALLBACK_PREFIX}step:demos`).row();
   navRow(keyboard, lang, { back: true, skip: true });
   return { text: lines.join("\n"), keyboard };
@@ -742,16 +739,11 @@ export async function handleOnboardingCallback(
       return;
     }
     case "lang": {
-      try {
-        env.prefs.setUserPref(userId, LANG_PREF_KEY, action.value);
-      } catch {
-        // Best effort: still re-render, just in the old language.
-        await showStep(ctx, env, userId, cur === "provider_key" ? "provider" : cur, lang);
-        return;
-      }
-      // Re-render the current screen in the NEW language immediately.
+      // English-only UI (Oct 2026): language taps are no-ops — no picker
+      // is rendered anymore. Kept for in-flight keyboards: re-render the
+      // current step so the tap still feels answered.
       const step = cur === "provider_key" ? "provider_key" : cur;
-      await showStep(ctx, env, userId, step, action.value);
+      await showStep(ctx, env, userId, step, "en");
       return;
     }
     case "pers": {
@@ -793,6 +785,16 @@ export async function handleOnboardingCallback(
     case "demo": {
       const prompt = t(`onb.demo.p${action.index}`, lang);
       await env.runDemo(ctx, prompt);
+      // The demo buttons are one-shot: disarm them so a second tap can't
+      // start another turn now that the wizard is done.
+      const tapped = ctx.callbackQuery?.message;
+      if (tapped !== undefined && ctx.chat !== undefined) {
+        try {
+          await ctx.api.editMessageReplyMarkup(ctx.chat.id, tapped.message_id);
+        } catch {
+          // Best effort: an old message may no longer be editable.
+        }
+      }
       try {
         env.prefs.setUserPref(userId, ONBOARDING_DONE_KEY, "1");
         persistStep(env.prefs, userId, "done");
