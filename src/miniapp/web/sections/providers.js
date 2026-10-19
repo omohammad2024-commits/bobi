@@ -922,6 +922,10 @@
         "</div>";
       const urlInput = body.querySelector("#cfUrl");
       const errEl = body.querySelector("#cfUrlErr");
+      try {
+        const remembered = window.localStorage.getItem("bobi_custom_url");
+        if (remembered && !urlInput.value) urlInput.value = remembered;
+      } catch (e) { /* storage unavailable */ }
       urlInput.addEventListener("input", function () {
         const v = urlInput.value.trim();
         if (v && !urlOk(v)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; }
@@ -945,6 +949,7 @@
         const btn = body.querySelector("#cfSave");
         btn.disabled = true;
         try {
+          try { window.localStorage.setItem("bobi_custom_url", url); } catch (e) { /* ignore */ }
           const r = await ctx.api("providers.add", {
             kind: "custom", label: label || url, baseUrl: url,
             key: key || undefined,
@@ -984,6 +989,10 @@
         "</div>";
       const urlInput = body.querySelector("#nfUrl");
       const errEl = body.querySelector("#nfUrlErr");
+      try {
+        const remembered = window.localStorage.getItem("bobi_nine_url");
+        if (remembered && !urlInput.value) urlInput.value = remembered;
+      } catch (e) { /* storage unavailable */ }
       urlInput.addEventListener("input", function () {
         const v = urlInput.value.trim();
         if (v && !urlOk(v)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; }
@@ -999,6 +1008,7 @@
         const btn = body.querySelector("#nfSave");
         btn.disabled = true;
         try {
+          try { window.localStorage.setItem("bobi_nine_url", url); } catch (e) { /* ignore */ }
           const r = await ctx.api("providers.add", {
             kind: "nine_router", label: label, baseUrl: url, key: key, model: modelId || undefined,
           });

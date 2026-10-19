@@ -237,9 +237,10 @@ function validateProviderUrl(raw: unknown): string {
   } catch {
     throw new ProviderApiError(400, "آدرس سرویس نامعتبر است.");
   }
-  if (url.protocol !== "https:") {
-    throw new ProviderApiError(400, "آدرس سرویس باید با https شروع شود.");
-  }
+  // Scheme + private-host policy is enforced by validateTarget below (http
+  // and https both allowed; private/link-local/metadata hosts rejected).
+  // Plain http is legitimate here: self-hosted routers on bare IPs (where
+  // no public CA will issue a cert) are a normal case for this form.
   try {
     const { baseUrl } = validateTarget({ baseUrl: trimmed, apiKey: undefined });
     return baseUrl;
