@@ -97,21 +97,16 @@ export class ProviderHealthService {
         ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
       });
 
-      if (adapter.capabilities.listModels && adapter.listModels) {
-        await adapter.listModels({
-          target: { baseUrl: provider.baseUrl, apiKey },
-          timeoutMs,
-          signal: neverAborted,
-        });
-      } else {
-        // A minimal completion is the most portable liveness check.
-        await adapter.complete({
-          messages: [{ role: "user", content: "ping" }],
-          model: this.defaultModelId(providerId) ?? "default",
-          timeoutMs,
-          signal: neverAborted,
-        });
-      }
+      // Always verify with a real completion on the provider's default model.
+      // listModels only checks API reachability — a provider can list models
+      // fine while the specific model is rate-limited, disabled, or broken.
+      // The completion test catches those cases.
+      await adapter.complete({
+        messages: [{ role: "user", content: "ping" }],
+        model: this.defaultModelId(providerId) ?? "default",
+        timeoutMs,
+        signal: neverAborted,
+      });
 
       return this.record(providerId, true, "Connection succeeded.");
     } catch (err) {

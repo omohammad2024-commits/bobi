@@ -2203,6 +2203,7 @@ export function userFacingMessage(err: unknown, lang: Lang): string {
       case "timeout":
       case "aborted": return t("error.timeout", lang);
       case "overloaded": return t("error.overloaded", lang);
+      case "invalid_response": return t("error.invalid_response", lang);
       default: return t("error.unknown", lang);
     }
   }

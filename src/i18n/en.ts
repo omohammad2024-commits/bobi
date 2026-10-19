@@ -176,6 +176,7 @@ export const en: LanguagePack = {
   "error.network": "Network error; try again.",
   "error.timeout": "The reply took too long; it was cancelled.",
   "error.overloaded": "The system is busy; try again in a moment.",
+  "error.invalid_response": "The provider returned an invalid response; try again or check the provider.",
   "error.unknown": "Temporary error; try again.",
   "error.unexpected": "Unexpected error.",
 

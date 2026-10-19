@@ -679,7 +679,7 @@ CREATE TABLE IF NOT EXISTS ai_provider_health (
 -- provider without the owner turning it on explicitly.
 CREATE TABLE IF NOT EXISTS ai_failover_settings (
   id          INTEGER PRIMARY KEY CHECK(id = 1),
-  enabled     INTEGER NOT NULL DEFAULT 0,
+  enabled     INTEGER NOT NULL DEFAULT 1,
   max_attempts INTEGER NOT NULL DEFAULT 2,
   timeout_ms  INTEGER NOT NULL DEFAULT 300000
 );
@@ -774,7 +774,7 @@ CREATE TABLE IF NOT EXISTS skill_install_provenance (
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 19;
+export const SCHEMA_VERSION = 20;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
@@ -853,6 +853,11 @@ export class Storage {
         // the old default get the new one; an owner-set custom value is kept.
         this.exec(
           `UPDATE ai_failover_settings SET timeout_ms=300000 WHERE timeout_ms=15000`,
+        );
+        // Schema 20: failover is now on by default. Existing databases get
+        // enabled=1; the owner can turn it off in /ai if they want.
+        this.exec(
+          `UPDATE ai_failover_settings SET enabled=1 WHERE id=1`,
         );
         this.exec(
           `INSERT INTO messages_fts(rowid, content)
