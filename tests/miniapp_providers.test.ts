@@ -386,7 +386,7 @@ describe("miniapp providers api", () => {
     expect(rows.map((m) => m["modelId"])).toContain("gpt-x");
   });
 
-  test("providers.add refuses a duplicate label in Persian", async () => {
+  test("providers.add refuses a duplicate label", async () => {
     const { deps } = makeDeps();
     const handler = createMiniAppHandler(deps);
     const body = {
@@ -398,7 +398,7 @@ describe("miniapp providers api", () => {
     expect((await apiJson(handler, "providers.add", body)).status).toBe(200);
     const second = await apiJson(handler, "providers.add", body);
     expect(second.status).toBe(400);
-    expect(String(second.json["error"])).toContain("قبلاً");
+    expect(String(second.json["error"])).toContain("already registered");
   });
 
   test("providers.add preset rejects the cloudflare placeholder URL", async () => {
@@ -624,7 +624,7 @@ describe("miniapp models api", () => {
       providerId: added.json["id"],
     });
     expect(status).toBe(400);
-    expect(String(json["error"])).toContain("لیست مدل");
+    expect(String(json["error"])).toContain("cannot list models");
   });
 
   test("models.import skips duplicates and counts imports", async () => {

@@ -78,8 +78,8 @@ describe("buildSystemPrompt personality addition", () => {
     const addition = getPersonality("concise")!.systemAddition;
     const prompt = buildSystemPrompt({ ...BASE_CTX, personality: addition });
     expect(prompt).toContain(addition);
-    const identityAt = prompt.indexOf("تو بابی هستی");
-    const additionAt = prompt.indexOf("لحن پاسخ‌گویی:");
+    const identityAt = prompt.indexOf("You are Bobi");
+    const additionAt = prompt.indexOf("Reply tone:");
     expect(identityAt).toBeGreaterThanOrEqual(0);
     expect(additionAt).toBeGreaterThan(identityAt);
   });
@@ -88,7 +88,7 @@ describe("buildSystemPrompt personality addition", () => {
     const plain = buildSystemPrompt(BASE_CTX);
     expect(buildSystemPrompt({ ...BASE_CTX, personality: "" })).toBe(plain);
     expect(buildSystemPrompt({ ...BASE_CTX, personality: "   " })).toBe(plain);
-    expect(plain).not.toContain("لحن پاسخ‌گویی:");
+    expect(plain).not.toContain("Reply tone:");
   });
 });
 
@@ -128,11 +128,11 @@ describe("/personality command", () => {
     await handlePersonalityCommand(ctx, { prefs });
     expect(replies.length).toBe(1);
     const text = replies[0]!;
-    expect(text).toContain("معمولی");
-    expect(text).toContain("← فعلی");
+    expect(text).toContain("Standard");
+    expect(text).toContain("← current");
     expect(text).toContain("concise");
     expect(text).toContain("playful");
-    expect(text).toContain("/personality <نام>");
+    expect(text).toContain("/personality <name>");
   });
 
   test("stale stored value shows the default skin as current", async () => {
@@ -142,7 +142,7 @@ describe("/personality command", () => {
     const text = replies[0]!;
     // The raw stale value never appears; default is marked current.
     expect(text).not.toContain("removed-skin");
-    expect(text).toContain("default — معمولی");
+    expect(text).toContain("default — Standard");
   });
 
   test("valid name is stored as the canonical name", async () => {
@@ -150,7 +150,7 @@ describe("/personality command", () => {
     const { ctx, replies } = stubCtx("/personality PLAYFUL");
     await handlePersonalityCommand(ctx, { prefs });
     expect(prefs.getUserPref("7", PERSONALITY_PREF_KEY)).toBe("playful");
-    expect(replies[0]).toContain("شوخ‌طبع");
+    expect(replies[0]).toContain("Playful");
   });
 
   test("unknown name is rejected and nothing is stored", async () => {
@@ -158,14 +158,14 @@ describe("/personality command", () => {
     const { ctx, replies } = stubCtx("/personality evil\nhack");
     await handlePersonalityCommand(ctx, { prefs });
     expect(prefs.getUserPref("7", PERSONALITY_PREF_KEY)).toBeUndefined();
-    expect(replies[0]).toContain("ناشناخته");
-    expect(replies[0]).toContain("default، concise، playful");
+    expect(replies[0]).toContain("Unknown personality");
+    expect(replies[0]).toContain("default, concise, playful");
   });
 
   test("missing preference store reports unavailability", async () => {
     const { ctx, replies } = stubCtx("/personality concise");
     await handlePersonalityCommand(ctx, {});
-    expect(replies[0]).toContain("در دسترس نیست");
+    expect(replies[0]).toContain("unavailable");
   });
 });
 

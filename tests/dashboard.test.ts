@@ -595,7 +595,7 @@ describe("server.ts wiring (additive)", () => {
     expect(res!.status).toBe(200);
     const page = await res!.text();
     expect(page).toContain('data-t="schedulers"');
-    expect(page).toContain("زمان‌بندها");
+    expect(page).toContain("Schedulers");
     expect(page).toContain("buildLineChartSvg");
     expect(page).toContain("trendTitle");
     // Still code, not data: no scheduler state baked into the shell.

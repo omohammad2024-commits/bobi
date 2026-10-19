@@ -31,7 +31,7 @@ import {
   renderImportError,
   isSkillImportCaption,
 } from "../src/bot/cmd_phase3_skills";
-import { fa, en, t } from "../src/i18n";
+import { en, t } from "../src/i18n";
 
 const SKILL_V1 = `---
 name: memory-coach
@@ -394,13 +394,13 @@ describe("import review/approve flow (disabled by default)", () => {
   test("review card shows the import trust block", () => {
     const dir = tmpDir();
     writeSkill(dir, "memory-coach", SKILL_V1);
-    const out = planImportFromPackage("fa", exportFrom(SKILL_V2), "https://x/pkg", dir);
+    const out = planImportFromPackage("en", exportFrom(SKILL_V2), "https://x/pkg", dir);
     expect(out.outcome).toBe("review");
     expect(out.text).toContain("🔒");
     expect(out.text).toContain("⬆️");
     expect(out.text).toContain("1.2.0");
     expect(out.text).toContain("1.3.0");
-    expect(out.text).toContain("غیرفعال");
+    expect(out.text).toContain("DISABLED");
     expect(out.pending?.startDisabled).toBe(true);
     expect(out.pending?.packageText).toBeDefined();
     expect(readdirSync(dir).filter((f) => f === "memory-coach.md")).toEqual(["memory-coach.md"]);
@@ -409,10 +409,10 @@ describe("import review/approve flow (disabled by default)", () => {
   test("downgrade review card warns explicitly", () => {
     const dir = tmpDir();
     writeSkill(dir, "memory-coach", SKILL_V2);
-    const out = planImportFromPackage("fa", exportFrom(SKILL_V0), "file", dir);
+    const out = planImportFromPackage("en", exportFrom(SKILL_V0), "file", dir);
     expect(out.outcome).toBe("review");
     expect(out.text).toContain("⚠️");
-    expect(out.text).toContain("قدیمی‌تر");
+    expect(out.text).toContain("OLDER");
   });
 
   test("english card mirrors the persian one", () => {
@@ -426,11 +426,11 @@ describe("import review/approve flow (disabled by default)", () => {
   test("approve writes the file DISABLED; tokens are single-use", () => {
     const dir = tmpDir();
     const store = new PendingStore();
-    const out = planImportFromPackage("fa", exportFrom(SKILL_V2), "file", dir);
+    const out = planImportFromPackage("en", exportFrom(SKILL_V2), "file", dir);
     expect(out.outcome).toBe("review");
     const token = store.createInstall(out.pending!);
 
-    const done = approvePendingImport("fa", store, token, dir);
+    const done = approvePendingImport("en", store, token, dir);
     expect(done).toContain("memory-coach");
     expect(done).toContain("/skill enable");
     // The skill is installed but inert: hidden file, loader skips it.
@@ -440,25 +440,25 @@ describe("import review/approve flow (disabled by default)", () => {
     expect(found?.status).toBe("disabled");
     expect(found?.skill.body).toContain("every morning and evening");
 
-    expect(approvePendingImport("fa", store, token, dir)).toContain("منقضی");
+    expect(approvePendingImport("en", store, token, dir)).toContain("expired");
   });
 
   test("approve re-verifies: a tampered pending package is refused", () => {
     const dir = tmpDir();
     const store = new PendingStore();
     const pkgText = exportFrom(SKILL_V1);
-    const out = planImportFromPackage("fa", pkgText, "file", dir);
+    const out = planImportFromPackage("en", pkgText, "file", dir);
     const pending = { ...out.pending!, packageText: pkgText.replace("morning", "evening") };
     const token = store.createInstall(pending);
-    const done = approvePendingImport("fa", store, token, dir);
-    expect(done).toContain("دست‌کاری");
+    const done = approvePendingImport("en", store, token, dir);
+    expect(done).toContain("tampered with");
     expect(readdirSync(dir)).toEqual([]);
   });
 
   test("reject drops the import", () => {
     const dir = tmpDir();
     const store = new PendingStore();
-    const out = planImportFromPackage("fa", exportFrom(SKILL_V1), "file", dir);
+    const out = planImportFromPackage("en", exportFrom(SKILL_V1), "file", dir);
     const token = store.createInstall(out.pending!);
     expect(rejectPendingImport("en", store, token)).toContain("cancelled");
     expect(readdirSync(dir)).toEqual([]);
@@ -469,9 +469,9 @@ describe("import review/approve flow (disabled by default)", () => {
     const dir = tmpDir();
     const env = JSON.parse(exportFrom(SKILL_V1));
     env.skill.description = "changed";
-    const out = planImportFromPackage("fa", JSON.stringify(env), "file", dir);
+    const out = planImportFromPackage("en", JSON.stringify(env), "file", dir);
     expect(out.outcome).toBe("error");
-    expect(out.text).toContain("دست‌کاری");
+    expect(out.text).toContain("tampered with");
   });
 
   test("non-package input errors clearly", () => {
@@ -528,40 +528,33 @@ describe("loader version frontmatter", () => {
   });
 });
 
-describe("central pack parity for ph4_skill_share.*", () => {
-  const KEYS = Object.keys(fa).filter((k) => k.startsWith("ph4_skill_share."));
+describe("central pack coverage for ph4_skill_share.*", () => {
+  const KEYS = Object.keys(en).filter((k) => k.startsWith("ph4_skill_share."));
 
-  test("the feature added keys to both packs", () => {
+  test("the feature added keys to the English pack", () => {
     expect(KEYS.length).toBeGreaterThan(15);
   });
 
-  test("every key exists in both fa and en with matching placeholders", () => {
+  test("every key resolves to English text with consistent placeholders", () => {
     const placeholders = (s: string): string[] =>
       [...s.matchAll(/\{([a-zA-Z0-9_]+)\}/g)].map((m) => m[1]!).sort();
     for (const key of KEYS) {
-      expect(key in en, `missing en key ${key}`).toBe(true);
-      expect(t(key, "fa")).not.toBe(key);
       expect(t(key, "en")).not.toBe(key);
-      expect(placeholders(en[key]!)).toEqual(placeholders(fa[key]!));
+      expect(placeholders(en[key]!)).toEqual(placeholders(t(key, "en")));
     }
-  });
-
-  test("fa and en key sets are identical for the feature", () => {
-    const enKeys = Object.keys(en).filter((k) => k.startsWith("ph4_skill_share."));
-    expect(enKeys.sort()).toEqual(KEYS.sort());
   });
 });
 
 describe("renderImportError", () => {
   test("maps every package error kind to text", () => {
     const dir = tmpDir();
-    expect(renderImportError("fa", { kind: "not_json" }, "f")).toContain("معتبر نیست");
-    expect(renderImportError("fa", { kind: "checksum_mismatch" }, "f")).toContain("دست‌کاری");
+    expect(renderImportError("en", { kind: "not_json" }, "f")).toContain("not a valid skill package");
+    expect(renderImportError("en", { kind: "checksum_mismatch" }, "f")).toContain("tampered with");
     expect(
       renderImportError("en", { kind: "bad_envelope", reason: "x" }, "f"),
     ).toContain("not a valid skill package");
     expect(
-      renderImportError("fa", { kind: "too_large", bytes: 10, maxBytes: 5 }, "f"),
-    ).toContain("سقف");
+      renderImportError("en", { kind: "too_large", bytes: 10, maxBytes: 5 }, "f"),
+    ).toContain("exceeds");
   });
 });

@@ -338,12 +338,12 @@ describe("note_event / list_events tools", () => {
     const r = await svc.runTool({ tool: "list_events", input: {}, actor: ownerActor() });
     expect(r.status).toBe("ok");
     const out = r.data as {
-      events: Array<{ name: string; daysUntil: number; whenFa: string }>;
+      events: Array<{ name: string; daysUntil: number; when: string }>;
       count: number;
     };
     expect(out.count).toBe(1);
     expect(out.events[0]!.name).toBe("علی");
     expect(out.events[0]!.daysUntil).toBe(3);
-    expect(out.events[0]!.whenFa).toBe("۳ روز دیگه");
+    expect(out.events[0]!.when).toBe("in 3 days");
   });
 });

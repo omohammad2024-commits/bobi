@@ -17,9 +17,9 @@ import { t, LANG_PREF_KEY } from "../src/i18n";
 
 // ---------- menu ----------
 describe("menu", () => {
-  test("menu has 6 section buttons in 3 grouped rows with correct labels", () => {
+  test("menu is a clean 2x2 grid with correct labels", () => {
     const kb = buildMainMenu();
-    expect(kb.inline_keyboard.length).toBe(3);
+    expect(kb.inline_keyboard.length).toBe(2);
     expect(kb.inline_keyboard[0]!.map((b) => b.text)).toEqual([
       MAIN_MENU_LABELS.chat,
       MAIN_MENU_LABELS.tools,
@@ -27,10 +27,6 @@ describe("menu", () => {
     expect(kb.inline_keyboard[1]!.map((b) => b.text)).toEqual([
       MAIN_MENU_LABELS.commands,
       MAIN_MENU_LABELS.settings,
-    ]);
-    expect(kb.inline_keyboard[2]!.map((b) => b.text)).toEqual([
-      MAIN_MENU_LABELS.about,
-      MAIN_MENU_LABELS.help,
     ]);
   });
 
@@ -44,8 +40,6 @@ describe("menu", () => {
       CALLBACKS.tools,
       CALLBACKS.commands,
       CALLBACKS.settings,
-      CALLBACKS.about,
-      CALLBACKS.help,
     ]);
     // The original three callbacks keep their values (in-flight keyboards).
     expect(CALLBACKS.chat).toBe("menu:chat");
@@ -60,33 +54,37 @@ describe("menu", () => {
   });
 
   test("unknown callback returns fallback", () => {
-    expect(replyForCallback("menu:nope")).toBe("گزینهٔ نامشخص.");
+    expect(replyForCallback("menu:nope")).toBe("Unknown option.");
   });
 
   test("chat screen is not a 'coming soon' placeholder", () => {
     const text = replyForCallback(CALLBACKS.chat);
-    expect(text).toContain("فقط بنویس");
-    expect(text).not.toContain("به‌زودی");
-  });
-
-  test("about screen drops the beta positioning", () => {
-    expect(replyForCallback(CALLBACKS.about)).not.toContain("آزمایشی");
+    expect(text).toContain("Just type");
+    expect(text).not.toContain("soon");
   });
 
   test("tools fallback is honest when no tool service is attached", () => {
     const text = replyForCallback(CALLBACKS.tools, undefined);
     expect(text.length).toBeGreaterThan(0);
-    expect(text).not.toContain("مرحلهٔ بعد");
   });
 
   test("home renders the start screen", () => {
-    expect(replyForCallback(CALLBACKS.home)).toBe(startScreenText("fa"));
-    expect(startScreenText("fa")).toContain("/help");
+    expect(replyForCallback(CALLBACKS.home)).toBe(startScreenText("en"));
+    expect(startScreenText("en")).toContain("/help");
+  });
+
+  test("the welcome screen is tier-aware", () => {
+    const owner = startScreenText("en", true);
+    const pub = startScreenText("en", false);
+    expect(owner).toContain("/reset");
+    expect(owner).toContain("/digest");
+    expect(pub).not.toContain("/reset");
+    expect(pub).not.toContain("/digest");
   });
 
   test("menuKeyboardFor: home gets the full menu, sub-screens get a back button", () => {
     const home = menuKeyboardFor(CALLBACKS.home);
-    expect(home.inline_keyboard.length).toBe(3);
+    expect(home.inline_keyboard.length).toBe(2);
     for (const cb of [CALLBACKS.chat, CALLBACKS.tools, CALLBACKS.commands, CALLBACKS.settings, CALLBACKS.about, CALLBACKS.help] as const) {
       const sub = menuKeyboardFor(cb);
       expect(sub.inline_keyboard.length, cb).toBe(1);
@@ -280,7 +278,7 @@ describe("gateUser ban/mute language", () => {
       const f = gateCtx(7);
       const ok = await gateUser(f.ctx as never, { users });
       expect(ok).toBe(false);
-      expect(f.replies).toEqual([t("gate.user_banned", "fa")]);
+      expect(f.replies).toEqual([t("gate.user_banned", "en")]);
     } finally {
       storage.close();
     }

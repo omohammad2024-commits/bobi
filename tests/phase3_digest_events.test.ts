@@ -63,11 +63,11 @@ describe("digest events section", () => {
     expect(events).toBeDefined();
     if (events?.kind !== "events") throw new Error("unreachable");
     expect(events.items.map((i) => i.name)).toEqual(["سارا", "علی"]);
-    const text = renderDigestText(sections, "fa");
-    expect(text).toContain("🎉 رویدادهای پیش رو");
+    const text = renderDigestText(sections, "en");
+    expect(text).toContain("🎉 Upcoming events");
     expect(text).toContain("سارا");
-    expect(text).toContain("امروز");
-    expect(text).toContain("۳ روز دیگه");
+    expect(text).toContain("today");
+    expect(text).toContain("in 3 days");
   });
 
   test("no section when all events are beyond 7 days", async () => {
@@ -83,8 +83,8 @@ describe("digest events section", () => {
     d.storage.upsertMemory({ userId: OWNER, key: "k1", content: "خاطرهٔ ساده" });
     const sections = await buildDigestData(d);
     expect(sections.some((s) => s.kind === "events")).toBe(false);
-    const text = renderDigestText(sections, "fa");
-    expect(text).toContain("☀️ صبح بخیر!");
+    const text = renderDigestText(sections, "en");
+    expect(text).toContain("☀️ Good morning!");
   });
 
   test("structured keys are excluded from memory highlights", async () => {

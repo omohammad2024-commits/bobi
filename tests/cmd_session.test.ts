@@ -104,7 +104,7 @@ describe("COMMAND_DEFS", () => {
   test("all are owner-only (two-tier) and all have fa+en descriptions", () => {
     for (const d of COMMAND_DEFS) {
       expect(d.ownerOnly).toBe(true);
-      expect(d.descriptionFa.length).toBeGreaterThan(0);
+      expect(d.descriptionEn.length).toBeGreaterThan(0);
       expect(d.descriptionEn.length).toBeGreaterThan(0);
     }
   });
@@ -114,13 +114,13 @@ describe("COMMAND_DEFS", () => {
 
 describe("tr", () => {
   test("persian lookup with vars", () => {
-    expect(tr("fa", "cmd_session.history_title", { n: 3 })).toContain("3");
+    expect(tr("en", "cmd_session.history_title", { n: 3 })).toContain("3");
   });
   test("english lookup", () => {
     expect(tr("en", "cmd_session.history_empty")).toContain("No messages");
   });
   test("unknown key falls back to the key itself, never throws", () => {
-    expect(tr("fa", "cmd_session.nope")).toBe("cmd_session.nope");
+    expect(tr("en", "cmd_session.nope")).toBe("cmd_session.nope");
   });
 });
 
@@ -185,43 +185,43 @@ describe("/history", () => {
   test("empty conversation", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/history" });
-    await handleHistoryCommand(ctx, { storage: s }, "fa");
+    await handleHistoryCommand(ctx, { storage: s }, "en");
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toContain("هنوز پیامی");
+    expect(replies[0]).toContain("No messages in this conversation yet");
   });
   test("shows last N messages with role labels", async () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"], ["q2", "a2"], ["q3", "a3"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/history 4" });
-    await handleHistoryCommand(ctx, { storage: s }, "fa");
+    await handleHistoryCommand(ctx, { storage: s }, "en");
     const text = replies.join("\n");
-    expect(text).toContain("شما: q3");
-    expect(text).toContain("بابی: a3");
+    expect(text).toContain("You: q3");
+    expect(text).toContain("BOBI: a3");
     expect(text).not.toContain("q1");
-    expect(text).toContain("پیام قدیمی‌تر");
+    expect(text).toContain("older messages");
   });
   test("default shows up to 10", async () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/history" });
-    await handleHistoryCommand(ctx, { storage: s }, "fa");
+    await handleHistoryCommand(ctx, { storage: s }, "en");
     expect(replies.join("\n")).toContain("q1");
   });
   test("junk args rejected", async () => {
     const s = openStorage();
     for (const t of ["/history 0", "/history 31", "/history abc", "/history 2x"]) {
       const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: t });
-      await handleHistoryCommand(ctx, { storage: s }, "fa");
-      expect(replies[0]).toContain("۱ تا ۳۰");
+      await handleHistoryCommand(ctx, { storage: s }, "en");
+      expect(replies[0]).toContain("between 1 and 30");
     }
   });
   test("per-user scoping: user B cannot read user A's conversation", async () => {
     const s = openStorage();
     seedTurns(s, "uA", "c1", [["secret", "shh"]]);
     const { ctx, replies } = makeCtx({ userId: "uB", chatId: "c1", text: "/history" });
-    await handleHistoryCommand(ctx, { storage: s }, "fa");
+    await handleHistoryCommand(ctx, { storage: s }, "en");
     expect(replies.join("\n")).not.toContain("secret");
-    expect(replies[0]).toContain("هنوز پیامی");
+    expect(replies[0]).toContain("No messages in this conversation yet");
   });
 });
 
@@ -232,18 +232,18 @@ describe("/save", () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, docs } = makeCtx({ userId: "u1", chatId: "c1", text: "/save" });
-    await handleSaveCommand(ctx, { storage: s }, "fa");
+    await handleSaveCommand(ctx, { storage: s }, "en");
     expect(docs).toHaveLength(1);
     expect(docs[0]!.filename).toMatch(/\.md$/);
     expect(docs[0]!.body).toContain("q1");
     expect(docs[0]!.body).toContain("a1");
-    expect(docs[0]!.caption).toContain("بابی");
+    expect(docs[0]!.caption).toContain("BOBI");
   });
   test("json with the json argument", async () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, docs } = makeCtx({ userId: "u1", chatId: "c1", text: "/save json" });
-    await handleSaveCommand(ctx, { storage: s }, "fa");
+    await handleSaveCommand(ctx, { storage: s }, "en");
     expect(docs).toHaveLength(1);
     expect(docs[0]!.filename).toMatch(/\.json$/);
     const parsed = JSON.parse(docs[0]!.body) as { role: string; content: string }[];
@@ -252,23 +252,23 @@ describe("/save", () => {
   test("junk format rejected", async () => {
     const s = openStorage();
     const { ctx, replies, docs } = makeCtx({ userId: "u1", chatId: "c1", text: "/save xml" });
-    await handleSaveCommand(ctx, { storage: s }, "fa");
+    await handleSaveCommand(ctx, { storage: s }, "en");
     expect(docs).toHaveLength(0);
-    expect(replies[0]).toContain("قالب نامعتبر");
+    expect(replies[0]).toContain("Invalid format");
   });
   test("user B cannot export user A's conversation", async () => {
     const s = openStorage();
     seedTurns(s, "uA", "c1", [["secret", "shh"]]);
     const { ctx, replies, docs } = makeCtx({ userId: "uB", chatId: "c1", text: "/save" });
-    await handleSaveCommand(ctx, { storage: s }, "fa");
+    await handleSaveCommand(ctx, { storage: s }, "en");
     expect(docs).toHaveLength(0);
-    expect(replies[0]).toContain("فایلی ساخته نشد");
+    expect(replies[0]).toContain("no file created");
   });
   test("falls back to chunked text without replyWithDocument", async () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/save", noDoc: true });
-    await handleSaveCommand(ctx, { storage: s }, "fa");
+    await handleSaveCommand(ctx, { storage: s }, "en");
     expect(replies.join("\n")).toContain("q1");
   });
 });
@@ -281,7 +281,7 @@ describe("/retry", () => {
     const engine = makeEngine(s);
     seedTurns(s, "u1", "c1", [["q1", "old-a1"], ["q2", "old-a2"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/retry" });
-    await handleRetryCommand(ctx, { engine, storage: s }, "fa");
+    await handleRetryCommand(ctx, { engine, storage: s }, "en");
     // The fake provider echoes the last user text; the old answer is gone.
     const got = contents(s, "u1", "c1");
     expect(got).toHaveLength(4);
@@ -294,8 +294,8 @@ describe("/retry", () => {
     const s = openStorage();
     const engine = makeEngine(s);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/retry" });
-    await handleRetryCommand(ctx, { engine, storage: s }, "fa");
-    expect(replies[0]).toContain("چیزی برای تلاش دوباره نیست");
+    await handleRetryCommand(ctx, { engine, storage: s }, "en");
+    expect(replies[0]).toContain("nothing to retry");
   });
   test("engine failure keeps history and reports safely", async () => {
     const s = openStorage();
@@ -314,7 +314,7 @@ describe("/retry", () => {
     });
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/retry" });
-    await handleRetryCommand(ctx, { engine: failing, storage: s }, "fa");
+    await handleRetryCommand(ctx, { engine: failing, storage: s }, "en");
     expect(replies).toHaveLength(1);
     expect(replies[0]!.length).toBeGreaterThan(0);
     // The dropped tail is restored: a failed retry loses nothing.
@@ -330,7 +330,7 @@ describe("/undo", () => {
     const engine = makeEngine(s);
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
     expect(replies[0]).toContain("/undo 2");
     expect(contents(s, "u1", "c1")).toHaveLength(2);
   });
@@ -339,7 +339,7 @@ describe("/undo", () => {
     const engine = makeEngine(s);
     seedTurns(s, "u1", "c1", [["q1", "a1"], ["q2", "a2"], ["q3", "a3"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo 2" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
     expect(contents(s, "u1", "c1")).toEqual(["user:q1", "assistant:a1"]);
     expect(replies[0]).toContain("2");
     expect(replies[0]).toContain("q2");
@@ -351,8 +351,8 @@ describe("/undo", () => {
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     for (const t of ["/undo 0", "/undo 6", "/undo abc", "/undo -1"]) {
       const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: t });
-      await handleUndoCommand(ctx, { engine, storage: s }, "fa");
-      expect(replies[0]).toContain("۱ تا ۵");
+      await handleUndoCommand(ctx, { engine, storage: s }, "en");
+      expect(replies[0]).toContain("between 1 and 5");
     }
     expect(contents(s, "u1", "c1")).toHaveLength(2);
   });
@@ -361,7 +361,7 @@ describe("/undo", () => {
     const engine = makeEngine(s);
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo 5" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
     expect(contents(s, "u1", "c1")).toHaveLength(0);
     expect(replies[0]).toContain("1");
   });
@@ -369,8 +369,8 @@ describe("/undo", () => {
     const s = openStorage();
     const engine = makeEngine(s);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo 1" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
-    expect(replies[0]).toContain("پیامی برای حذف وجود ندارد");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
+    expect(replies[0]).toContain("No messages to drop");
   });
   test("rolling-summary watermark is remapped to the renumbered ids", async () => {
     const s = openStorage();
@@ -380,7 +380,7 @@ describe("/undo", () => {
     const a1 = before.find((m) => m.content === "a1")!;
     s.setConversationSummary({ userId: "u1", chatId: "c1", summary: "old stuff", summarisedUntil: a1.id });
     const { ctx } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo 1" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
     const summary = s.getConversationSummary("u1", "c1");
     expect(summary).toBeDefined();
     const after = s.history("u1", "c1", 10);
@@ -396,7 +396,7 @@ describe("/undo", () => {
     const a2 = before.find((m) => m.content === "a2")!;
     s.setConversationSummary({ userId: "u1", chatId: "c1", summary: "covers a2", summarisedUntil: a2.id });
     const { ctx } = makeCtx({ userId: "u1", chatId: "c1", text: "/undo 1" });
-    await handleUndoCommand(ctx, { engine, storage: s }, "fa");
+    await handleUndoCommand(ctx, { engine, storage: s }, "en");
     expect(s.getConversationSummary("u1", "c1")).toBeUndefined();
   });
 });
@@ -408,36 +408,36 @@ describe("/title", () => {
     const s = openStorage();
     const env = { prefs: s };
     const set = makeCtx({ userId: "u1", chatId: "c1", text: "/title جلسهٔ طراحی" });
-    await handleTitleCommand(set.ctx, env, "fa");
+    await handleTitleCommand(set.ctx, env, "en");
     expect(set.replies[0]).toContain("جلسهٔ طراحی");
     const show = makeCtx({ userId: "u1", chatId: "c1", text: "/title" });
-    await handleTitleCommand(show.ctx, env, "fa");
+    await handleTitleCommand(show.ctx, env, "en");
     expect(show.replies[0]).toContain("جلسهٔ طراحی");
   });
   test("bare /title with no title set", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/title" });
-    await handleTitleCommand(ctx, { prefs: s }, "fa");
-    expect(replies[0]).toContain("عنوانی");
+    await handleTitleCommand(ctx, { prefs: s }, "en");
+    expect(replies[0]).toContain("No title set");
   });
   test("title longer than 120 chars is rejected", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: `/title ${"x".repeat(121)}` });
-    await handleTitleCommand(ctx, { prefs: s }, "fa");
-    expect(replies[0]).toContain("۱۲۰");
+    await handleTitleCommand(ctx, { prefs: s }, "en");
+    expect(replies[0]).toContain("120");
   });
   test("titles are per conversation", async () => {
     const s = openStorage();
     const env = { prefs: s };
-    await handleTitleCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/title one" }).ctx, env, "fa");
+    await handleTitleCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/title one" }).ctx, env, "en");
     const show = makeCtx({ userId: "u1", chatId: "c2", text: "/title" });
-    await handleTitleCommand(show.ctx, env, "fa");
-    expect(show.replies[0]).toContain("عنوانی");
+    await handleTitleCommand(show.ctx, env, "en");
+    expect(show.replies[0]).toContain("No title set");
   });
   test("missing pref store → honest message", async () => {
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/title x" });
-    await handleTitleCommand(ctx, {}, "fa");
-    expect(replies[0]).toContain("در دسترس نیست");
+    await handleTitleCommand(ctx, {}, "en");
+    expect(replies[0]).toContain("unavailable");
   });
 });
 
@@ -448,7 +448,7 @@ describe("/branch", () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"], ["q2", "a2"]]);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/branch ideas" });
-    await handleBranchCommand(ctx, { storage: s, prefs: s }, "fa");
+    await handleBranchCommand(ctx, { storage: s, prefs: s }, "en");
     expect(replies[0]).toContain("c1:ideas");
     expect(contents(s, "u1", "c1:ideas")).toEqual(["user:q1", "assistant:a1", "user:q2", "assistant:a2"]);
     // Original untouched.
@@ -458,7 +458,7 @@ describe("/branch", () => {
     const s = openStorage();
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     const { ctx } = makeCtx({ userId: "u1", chatId: "c1", text: "/branch ideas" });
-    await handleBranchCommand(ctx, { storage: s, prefs: s }, "fa");
+    await handleBranchCommand(ctx, { storage: s, prefs: s }, "en");
     expect(s.history("uB", "c1:ideas", 10)).toHaveLength(0);
   });
   test("junk names rejected, usage shown without arg", async () => {
@@ -466,7 +466,7 @@ describe("/branch", () => {
     seedTurns(s, "u1", "c1", [["q1", "a1"]]);
     for (const t of ["/branch", "/branch a b c d e f", "/branch x".replace("x", "y".repeat(41)), "/branch bad/name"]) {
       const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: t });
-      await handleBranchCommand(ctx, { storage: s, prefs: s }, "fa");
+      await handleBranchCommand(ctx, { storage: s, prefs: s }, "en");
       expect(replies[0]!.length).toBeGreaterThan(0);
     }
     expect(s.listUserConversations("u1")).toHaveLength(1);
@@ -474,8 +474,8 @@ describe("/branch", () => {
   test("empty conversation → nothing to branch", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/branch ideas" });
-    await handleBranchCommand(ctx, { storage: s, prefs: s }, "fa");
-    expect(replies[0]).toContain("پیامی ندارد");
+    await handleBranchCommand(ctx, { storage: s, prefs: s }, "en");
+    expect(replies[0]).toContain("no messages");
   });
 });
 
@@ -486,11 +486,11 @@ describe("/resume", () => {
     const s = openStorage();
     const env = { storage: s, prefs: s };
     const bare = makeCtx({ userId: "u1", chatId: "c1", text: "/resume" });
-    await handleResumeCommand(bare.ctx, env, "fa");
+    await handleResumeCommand(bare.ctx, env, "en");
     expect(bare.replies[0]).toContain("/sessions");
     const unknown = makeCtx({ userId: "u1", chatId: "c1", text: "/resume nope" });
-    await handleResumeCommand(unknown.ctx, env, "fa");
-    expect(unknown.replies[0]).toContain("پیدا نشد");
+    await handleResumeCommand(unknown.ctx, env, "en");
+    expect(unknown.replies[0]).toContain("No session with that name");
   });
   test("matches by branch suffix, stores the pref, shows history + active note", async () => {
     const s = openStorage();
@@ -498,13 +498,13 @@ describe("/resume", () => {
     seedTurns(s, "u1", "c1:ideas", [["bq", "ba"]]);
     const env = { storage: s, prefs: s };
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/resume ideas" });
-    await handleResumeCommand(ctx, env, "fa");
+    await handleResumeCommand(ctx, env, "en");
     expect(s.getUserPref("u1", "active_conversation:c1")).toBe("c1:ideas");
     const text = replies.join("\n");
     expect(text).toContain("bq");
     // The stale "handler not wired" warning is gone; the reply confirms the
     // switch honestly.
-    expect(text).toContain("نشست فعال");
+    expect(text).toContain("active session");
     expect(text).not.toContain("هندلر پیام");
   });
   test("matches by exact id", async () => {
@@ -512,7 +512,7 @@ describe("/resume", () => {
     seedTurns(s, "u1", "other", [["oq", "oa"]]);
     const env = { storage: s, prefs: s };
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/resume other" });
-    await handleResumeCommand(ctx, env, "fa");
+    await handleResumeCommand(ctx, env, "en");
     expect(s.getUserPref("u1", "active_conversation:c1")).toBe("other");
     expect(replies.join("\n")).toContain("oq");
   });
@@ -524,8 +524,8 @@ describe("/sessions", () => {
   test("empty → honest note", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/sessions" });
-    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "fa");
-    expect(replies[0]).toContain("نشست دیگری");
+    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "en");
+    expect(replies[0]).toContain("No other sessions");
   });
   test("lists own sessions with titles and the current mark", async () => {
     const s = openStorage();
@@ -533,17 +533,17 @@ describe("/sessions", () => {
     seedTurns(s, "u1", "c2", [["q2", "a2"]]);
     s.setUserPref("u1", "title:c2", "طراحی");
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/sessions" });
-    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "fa");
+    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "en");
     const text = replies.join("\n");
     expect(text).toContain("طراحی");
-    expect(text).toContain("فعلی");
+    expect(text).toContain("current");
     expect(text).not.toContain("secret");
   });
   test("another user's sessions never leak in", async () => {
     const s = openStorage();
     seedTurns(s, "uA", "c9", [["secret", "shh"]]);
     const { ctx, replies } = makeCtx({ userId: "uB", chatId: "c1", text: "/sessions" });
-    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "fa");
+    await handleSessionsCommand(ctx, { storage: s, prefs: s }, "en");
     expect(replies.join("\n")).not.toContain("c9");
   });
 });
@@ -560,21 +560,21 @@ describe("/status", () => {
     s.recordUsage({ userId: "u1", conversationId: convId, providerId: 1, modelId: "m1", inputTokens: 100, outputTokens: 50, atMs: now });
     s.recordUsage({ userId: "u1", conversationId: convId, providerId: 1, modelId: "m1", inputTokens: 200, outputTokens: 25, atMs: now - 2 * 86400000 });
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/status" });
-    await handleStatusCommand(ctx, { engine, storage: s, prefs: s }, "fa");
+    await handleStatusCommand(ctx, { engine, storage: s, prefs: s }, "en");
     const text = replies.join("\n");
     expect(text).toContain("c1");
     expect(text).toContain("m1");
-    expect(text).toContain("۲"); // message count (Persian digits in fa)
-    expect(text).toContain("۱۰۰"); // today's input only (Persian digits)
-    expect(text).not.toContain("۲۰۰");
-    expect(text).toContain("خیر"); // not running
+    expect(text).toContain("2"); // message count
+    expect(text).toContain("100"); // today's input only
+    expect(text).not.toContain("200");
+    expect(text).toContain("no"); // not running
   });
   test("unknown model when no usage yet", async () => {
     const s = openStorage();
     const engine = makeEngine(s);
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/status" });
-    await handleStatusCommand(ctx, { engine, storage: s }, "fa");
-    expect(replies.join("\n")).toContain("نامشخص");
+    await handleStatusCommand(ctx, { engine, storage: s }, "en");
+    expect(replies.join("\n")).toContain("unknown");
   });
 });
 
@@ -587,17 +587,17 @@ describe("/context", () => {
     const before = s.history("u1", "c1", 10);
     s.setConversationSummary({ userId: "u1", chatId: "c1", summary: "s", summarisedUntil: before[0]!.id });
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/context" });
-    await handleContextCommand(ctx, { storage: s }, "fa");
+    await handleContextCommand(ctx, { storage: s }, "en");
     const text = replies.join("\n");
-    expect(text).toContain("پیام‌ها: 2");
-    expect(text).toContain("خلاصه‌سازی: فعال");
-    expect(text).toContain("تقریبی");
+    expect(text).toContain("Messages: 2");
+    expect(text).toContain("Summarisation: active");
+    expect(text).toContain("rough");
   });
   test("no summary yet", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/context" });
-    await handleContextCommand(ctx, { storage: s }, "fa");
-    expect(replies.join("\n")).toContain("خلاصه‌ای ساخته نشده");
+    await handleContextCommand(ctx, { storage: s }, "en");
+    expect(replies.join("\n")).toContain("no summary built yet");
   });
 });
 
@@ -607,21 +607,21 @@ describe("/busy", () => {
   test("bare shows the default queue mode", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/busy" });
-    await handleBusyCommand(ctx, { prefs: s }, "fa");
-    expect(replies[0]).toContain("صف");
+    await handleBusyCommand(ctx, { prefs: s }, "en");
+    expect(replies[0]).toContain("queue");
   });
   test("set and show round-trip", async () => {
     const s = openStorage();
     const env = { prefs: s };
-    await handleBusyCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/busy interrupt" }).ctx, env, "fa");
+    await handleBusyCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/busy interrupt" }).ctx, env, "en");
     const show = makeCtx({ userId: "u1", chatId: "c1", text: "/busy" });
-    await handleBusyCommand(show.ctx, env, "fa");
-    expect(show.replies[0]).toContain("قطع پاسخ فعلی");
+    await handleBusyCommand(show.ctx, env, "en");
+    expect(show.replies[0]).toContain("interrupt the current reply");
   });
   test("junk rejected", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/busy explode" });
-    await handleBusyCommand(ctx, { prefs: s }, "fa");
+    await handleBusyCommand(ctx, { prefs: s }, "en");
     expect(replies[0]).toContain("queue");
   });
 });
@@ -631,19 +631,23 @@ describe("/busy", () => {
 describe("/whoami", () => {
   test("owner sees owner role and owner commands", async () => {
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/whoami" });
-    await handleWhoamiCommand(ctx, true, "fa");
+    await handleWhoamiCommand(ctx, true, "en");
     const text = replies.join("\n");
-    expect(text).toContain("مالک");
+    expect(text).toContain("owner");
     expect(text).toContain("/admin");
   });
   test("regular user sees user role and only public commands", async () => {
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/whoami" });
-    await handleWhoamiCommand(ctx, false, "fa");
+    await handleWhoamiCommand(ctx, false, "en");
     const text = replies.join("\n");
-    expect(text).toContain("کاربر تأییدشده");
+    expect(text).toContain("approved user");
     expect(text).not.toContain("/admin");
     expect(text).not.toContain("/history");
-    expect(text).toContain("/lang");
+    expect(text).toContain("/start");
+    expect(text).toContain("/help");
+    expect(text).toContain("/commands");
+    expect(text).toContain("/voice");
+    expect(text).not.toContain("/lang");
   });
 });
 
@@ -654,18 +658,18 @@ describe("/footer", () => {
     const s = openStorage();
     const env = { prefs: s };
     const show0 = makeCtx({ userId: "u1", chatId: "c1", text: "/footer" });
-    await handleFooterCommand(show0.ctx, env, "fa");
-    expect(show0.replies[0]).toContain("خاموش");
-    await handleFooterCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/footer on" }).ctx, env, "fa");
+    await handleFooterCommand(show0.ctx, env, "en");
+    expect(show0.replies[0]).toContain("off");
+    await handleFooterCommand(makeCtx({ userId: "u1", chatId: "c1", text: "/footer on" }).ctx, env, "en");
     const show1 = makeCtx({ userId: "u1", chatId: "c1", text: "/footer" });
-    await handleFooterCommand(show1.ctx, env, "fa");
-    expect(show1.replies[0]).toContain("روشن");
-    expect(show1.replies[0]).toContain("اعلامی");
+    await handleFooterCommand(show1.ctx, env, "en");
+    expect(show1.replies[0]).toContain("on");
+    expect(show1.replies[0]).toContain("declared only");
   });
   test("junk rejected", async () => {
     const s = openStorage();
     const { ctx, replies } = makeCtx({ userId: "u1", chatId: "c1", text: "/footer maybe" });
-    await handleFooterCommand(ctx, { prefs: s }, "fa");
+    await handleFooterCommand(ctx, { prefs: s }, "en");
     expect(replies[0]).toContain("/footer on");
   });
 });
@@ -675,10 +679,10 @@ describe("/footer", () => {
 describe("/version", () => {
   test("version from deps, dev fallback", async () => {
     const a = makeCtx({});
-    await handleVersionCommand(a.ctx, { version: "9.9.9" }, "fa");
+    await handleVersionCommand(a.ctx, { version: "9.9.9" }, "en");
     expect(a.replies[0]).toContain("9.9.9");
     const b = makeCtx({});
-    await handleVersionCommand(b.ctx, {}, "fa");
+    await handleVersionCommand(b.ctx, {}, "en");
     expect(b.replies[0]).toContain("dev");
   });
 });
@@ -696,21 +700,21 @@ describe("/new", () => {
     // Bare /new: nothing is destroyed, the reply names the count and the
     // exact confirmation command.
     const bare = makeCtx({ userId: "u1", chatId: "c1", text: "/new" });
-    await handleNewCommand(bare.ctx, { engine, storage: s }, "fa");
+    await handleNewCommand(bare.ctx, { engine, storage: s }, "en");
     expect(contents(s, "u1", "c1")).toHaveLength(2);
     expect(s.getConversationSummary("u1", "c1")).toBeDefined();
     expect(bare.replies[0]).toContain("/new --confirm");
 
     // A near-miss flag does NOT count as confirmation.
     const near = makeCtx({ userId: "u1", chatId: "c1", text: "/new --confirmx" });
-    await handleNewCommand(near.ctx, { engine, storage: s }, "fa");
+    await handleNewCommand(near.ctx, { engine, storage: s }, "en");
     expect(contents(s, "u1", "c1")).toHaveLength(2);
 
     // Confirmed: messages and the rolling summary are cleared.
     const done = makeCtx({ userId: "u1", chatId: "c1", text: "/new --confirm" });
-    await handleNewCommand(done.ctx, { engine, storage: s }, "fa");
+    await handleNewCommand(done.ctx, { engine, storage: s }, "en");
     expect(contents(s, "u1", "c1")).toHaveLength(0);
     expect(s.getConversationSummary("u1", "c1")).toBeUndefined();
-    expect(done.replies[0]).toContain("نشست تازه");
+    expect(done.replies[0]).toContain("Fresh session");
   });
 });

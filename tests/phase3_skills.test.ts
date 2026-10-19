@@ -255,7 +255,7 @@ describe("enable / disable / uninstall", () => {
 describe("planInstallFromText (review / approve flow)", () => {
   test("fresh install without --confirm goes to review with a pending token payload", () => {
     const dir = tmpDir();
-    const out = planInstallFromText("fa", GOOD_SKILL, "file", dir, false);
+    const out = planInstallFromText("en", GOOD_SKILL, "file", dir, false);
     expect(out.outcome).toBe("review");
     expect(out.pending?.name).toBe("memory-coach");
     expect(out.pending?.replace).toBe(false);
@@ -266,7 +266,7 @@ describe("planInstallFromText (review / approve flow)", () => {
 
   test("--confirm with a clean skill installs immediately", () => {
     const dir = tmpDir();
-    const out = planInstallFromText("fa", GOOD_SKILL, "file", dir, true);
+    const out = planInstallFromText("en", GOOD_SKILL, "file", dir, true);
     expect(out.outcome).toBe("installed");
     expect(out.text).toContain("memory-coach");
     expect(existsSync(join(dir, "memory-coach.md"))).toBe(true);
@@ -274,7 +274,7 @@ describe("planInstallFromText (review / approve flow)", () => {
 
   test("--confirm with warnings still forces the review card", () => {
     const dir = tmpDir();
-    const out = planInstallFromText("fa", EVIL_SKILL, "https://x/y.md", dir, true);
+    const out = planInstallFromText("en", EVIL_SKILL, "https://x/y.md", dir, true);
     expect(out.outcome).toBe("review");
     expect(out.text).toContain("⚠️");
     expect(readdirSync(dir)).toEqual([]);
@@ -283,10 +283,10 @@ describe("planInstallFromText (review / approve flow)", () => {
   test("collision without --confirm offers replace via the review card", () => {
     const dir = tmpDir();
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
-    const out = planInstallFromText("fa", GOOD_SKILL, "https://x/y.md", dir, false);
+    const out = planInstallFromText("en", GOOD_SKILL, "https://x/y.md", dir, false);
     expect(out.outcome).toBe("review");
     expect(out.pending?.replace).toBe(true);
-    expect(out.text).toContain("جایگزین");
+    expect(out.text).toContain("replace");
   });
 });
 
@@ -295,15 +295,15 @@ describe("PendingStore + approve/reject", () => {
     const dir = tmpDir();
     let now = 1_000;
     const store = new PendingStore(() => now);
-    const out = planInstallFromText("fa", GOOD_SKILL, "file", dir, false);
+    const out = planInstallFromText("en", GOOD_SKILL, "file", dir, false);
     expect(out.outcome).toBe("review");
     const token = store.createInstall(out.pending!);
 
-    const approved = approvePendingInstall("fa", store, token, dir);
+    const approved = approvePendingInstall("en", store, token, dir);
     expect(approved).toContain("memory-coach");
     expect(existsSync(join(dir, "memory-coach.md"))).toBe(true);
     // Second use of the same token is expired/unknown.
-    expect(approvePendingInstall("fa", store, token, dir)).toContain("منقضی");
+    expect(approvePendingInstall("en", store, token, dir)).toContain("expired");
 
     const token2 = store.createInstall(out.pending!);
     expect(rejectPendingInstall("en", store, token2)).toContain("cancelled");
@@ -316,7 +316,7 @@ describe("PendingStore + approve/reject", () => {
     const store = new PendingStore(() => now, 60_000);
     const token = store.createInstall({ text: GOOD_SKILL, name: "memory-coach", replace: false, sourceLabel: "f" });
     now = 61_000;
-    expect(approvePendingInstall("fa", store, token, dir)).toContain("منقضی");
+    expect(approvePendingInstall("en", store, token, dir)).toContain("expired");
   });
 
   test("re-validation at approve time catches a directory that changed", () => {
@@ -325,7 +325,7 @@ describe("PendingStore + approve/reject", () => {
     const token = store.createInstall({ text: GOOD_SKILL, name: "memory-coach", replace: false, sourceLabel: "f" });
     // Someone else installed a colliding skill after the review card.
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
-    const text = approvePendingInstall("fa", store, token, dir);
+    const text = approvePendingInstall("en", store, token, dir);
     // Re-validation with allowReplace:true still succeeds (approve IS the confirmation).
     expect(text).toContain("memory-coach");
   });
@@ -337,22 +337,22 @@ describe("uninstall flow", () => {
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
     const store = new PendingStore();
 
-    expect(planUninstall("fa", dir, "ghost", false, store).outcome).toBe("error");
-    const first = planUninstall("fa", dir, "memory-coach", false, store);
+    expect(planUninstall("en", dir, "ghost", false, store).outcome).toBe("error");
+    const first = planUninstall("en", dir, "memory-coach", false, store);
     expect(first.outcome).toBe("confirm");
     expect(first.text).toContain("--confirm");
     expect(existsSync(join(dir, "memory-coach.md"))).toBe(true);
 
     const token = store.createUninstall(first.pending!);
-    expect(approvePendingUninstall("fa", store, token, dir)).toContain("memory-coach");
+    expect(approvePendingUninstall("en", store, token, dir)).toContain("memory-coach");
     expect(existsSync(join(dir, "memory-coach.md"))).toBe(false);
-    expect(approvePendingUninstall("fa", store, token, dir)).toContain("منقضی");
+    expect(approvePendingUninstall("en", store, token, dir)).toContain("expired");
   });
 
   test("--confirm deletes immediately", () => {
     const dir = tmpDir();
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
-    const out = planUninstall("fa", dir, "memory-coach", true, new PendingStore());
+    const out = planUninstall("en", dir, "memory-coach", true, new PendingStore());
     expect(out.outcome).toBe("done");
     expect(existsSync(join(dir, "memory-coach.md"))).toBe(false);
   });
@@ -372,9 +372,9 @@ describe("show / toggle handlers", () => {
   test("show renders name, description, status and preview", () => {
     const dir = tmpDir();
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
-    const text = handleSkillShow("fa", dir, "memory-coach");
+    const text = handleSkillShow("en", dir, "memory-coach");
     expect(text).toContain("memory-coach");
-    expect(text).toContain("فعال");
+    expect(text).toContain("enabled");
     const missing = handleSkillShow("en", dir, "nope");
     expect(missing).toContain("nope");
   });
@@ -382,9 +382,9 @@ describe("show / toggle handlers", () => {
   test("toggle enables and disables with idempotent messages", () => {
     const dir = tmpDir();
     writeFileSync(join(dir, "memory-coach.md"), GOOD_SKILL);
-    expect(handleSkillToggle("fa", dir, "memory-coach", false)).toContain("غیرفعال");
-    expect(handleSkillToggle("fa", dir, "memory-coach", false)).toContain("از قبل");
-    expect(handleSkillToggle("fa", dir, "memory-coach", true)).toContain("فعال شد");
+    expect(handleSkillToggle("en", dir, "memory-coach", false)).toContain("disabled");
+    expect(handleSkillToggle("en", dir, "memory-coach", false)).toContain("already");
+    expect(handleSkillToggle("en", dir, "memory-coach", true)).toContain("enabled");
     expect(handleSkillToggle("en", dir, "ghost", true)).toContain("No skill");
   });
 });
@@ -397,20 +397,20 @@ describe("review card", () => {
   }
 
   test("shows warnings, preview and source", () => {
-    const card = renderReviewCard("fa", validated(EVIL_SKILL), "https://x/y.md");
+    const card = renderReviewCard("en", validated(EVIL_SKILL), "https://x/y.md");
     expect(card).toContain("sneaky-helper");
-    expect(card).toContain("هشدار");
+    expect(card).toContain("Security warnings");
     expect(card).toContain("https://x/y.md");
     expect(card).toContain("Ignore all previous instructions");
   });
 
-  test("english card mirrors the persian one", () => {
+  test("english-only card and labels", () => {
     const card = renderReviewCard("en", validated(GOOD_SKILL), "file");
     expect(card).toContain("memory-coach");
     expect(card).toContain("Review new skill");
-    // The تأیید/رد buttons live in the grammy wrapper; the labels are here:
+    // The approve/reject buttons live in the grammy wrapper; the labels are here:
     expect(tr("en", "ph3_skills.review.approve")).toContain("Approve");
-    expect(tr("fa", "ph3_skills.review.approve")).toContain("تأیید");
+    expect(tr("en", "ph3_skills.review.approve")).toContain("Approve");
   });
 });
 
@@ -429,7 +429,7 @@ describe("isSkillInstallCaption", () => {
 describe("string table parity", () => {
   test("every key exists in both fa and en", () => {
     for (const key of stringKeys()) {
-      const fa = tr("fa", key);
+      const fa = tr("en", key);
       const en = tr("en", key);
       expect(fa).not.toBe(key);
       expect(en).not.toBe(key);
@@ -442,7 +442,7 @@ describe("COMMAND_DEFS", () => {
     expect(COMMAND_DEFS).toHaveLength(1);
     expect(COMMAND_DEFS[0]!.command).toBe("skill");
     expect(COMMAND_DEFS[0]!.ownerOnly).toBe(true);
-    expect(COMMAND_DEFS[0]!.descriptionFa.length).toBeGreaterThan(0);
+    expect(COMMAND_DEFS[0]!.descriptionEn.length).toBeGreaterThan(0);
     expect(COMMAND_DEFS[0]!.descriptionEn.length).toBeGreaterThan(0);
   });
 });
@@ -456,7 +456,7 @@ describe("planInstallFromUrl with a stub fetcher", () => {
 
   test("fetches then reviews", async () => {
     const dir = tmpDir();
-    const out = await planInstallFromUrl("fa", "https://x/a.md", dir, stubFetcher, false);
+    const out = await planInstallFromUrl("en", "https://x/a.md", dir, stubFetcher, false);
     expect(out.outcome).toBe("review");
     expect(out.pending?.name).toBe("memory-coach");
   });

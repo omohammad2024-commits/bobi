@@ -118,17 +118,15 @@ describe("ToolService", () => {
 // ---------- menu ↔ registry wiring ----------
 
 describe("menu wiring", () => {
-  test("the main menu has six section buttons in three rows", () => {
+  test("the main menu is a clean 2x2 grid", () => {
     const kb = buildMainMenu();
-    expect(kb.inline_keyboard.length).toBe(3);
+    expect(kb.inline_keyboard.length).toBe(2);
     const labels = kb.inline_keyboard.flat().map((b) => b.text);
     expect(labels).toEqual([
-      "💬 گفت‌وگو",
-      "🛠 ابزارها",
-      "⌨️ فرمان‌ها",
-      "⚙️ تنظیمات",
-      "ℹ️ دربارهٔ بابی",
-      "❓ راهنما",
+      "💬 Chat",
+      "🛠 Tools",
+      "⌨️ Commands",
+      "⚙️ Settings",
     ]);
   });
 
@@ -137,14 +135,14 @@ describe("menu wiring", () => {
     const names = svc.listActiveNames();
     const text = toolListText(names);
     expect(names.length).toBe(DEFAULT_NAMES.length);
-    expect(text).toContain("ابزارهای فعال بابی:");
+    expect(text).toContain("BOBI's active tools:");
     // One numbered line per active tool, in registry order.
     for (let i = 1; i <= names.length; i++) {
       expect(text).toContain(`${i}. `);
     }
-    expect(text).toContain("ماشین‌حساب"); // calculator's Persian label
-    expect(text).toContain("تبدیل واحد"); // unit_converter's Persian label
-    expect(text).toContain("خواندن صفحهٔ وب"); // fetch_url's Persian label
+    expect(text).toContain("Calculator"); // calculator's English label
+    expect(text).toContain("Unit converter"); // unit_converter's English label
+    expect(text).toContain("Web page reader"); // fetch_url's Persian label
   });
 
   test("the tools reply is built from the registry, not a placeholder", () => {
@@ -156,7 +154,7 @@ describe("menu wiring", () => {
 
   test("an empty registry renders an honest 'no active tools' message", () => {
     const text = toolListText([]);
-    expect(text).toContain("هیچ ابزار فعالی وجود ندارد");
+    expect(text).toContain("no active tools");
   });
 
   test("listing a tool does not grant permission to run it", async () => {
@@ -188,7 +186,7 @@ describe("menu wiring", () => {
   test("chat and about entries still return their replies", () => {
     expect(replyForCallback(CALLBACKS.chat).length).toBeGreaterThan(0);
     expect(replyForCallback(CALLBACKS.about).length).toBeGreaterThan(0);
-    expect(replyForCallback("menu:nope")).toBe("گزینهٔ نامشخص.");
+    expect(replyForCallback("menu:nope")).toBe("Unknown option.");
   });
 });
 

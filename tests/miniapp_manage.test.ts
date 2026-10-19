@@ -92,14 +92,14 @@ describe("routing + auth", () => {
   test("missing initData -> 401 generic", async () => {
     const { status, json } = await callNoAuth("/miniapp/api/users.list");
     expect(status).toBe(401);
-    expect(json.error).toBe("احراز هویت نامعتبر است.");
+    expect(json.error).toBe("Invalid authentication.");
   });
 
   test("tampered initData -> 401 generic", async () => {
     const bad = initData.replace(/hash=[^&]*/, "hash=deadbeef");
     const res = await handleManageApi("/miniapp/api/users.list", { initData: bad }, deps);
     expect(res!.status).toBe(401);
-    expect((await res!.json()).error).toBe("احراز هویت نامعتبر است.");
+    expect((await res!.json()).error).toBe("Invalid authentication.");
   });
 
   test("non-owner initData -> 401", async () => {
@@ -333,7 +333,7 @@ describe("bench", () => {
     expect(json.ok).toBe(true);
     expect(json.alerts.length).toBe(1);
     expect(json.alerts[0].key).toBe("bench-worker-failures");
-    expect(json.alerts[0].labelFa).toBeDefined();
+    expect(json.alerts[0].label).toBeDefined();
   });
 });
 

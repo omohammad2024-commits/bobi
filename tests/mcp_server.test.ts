@@ -213,7 +213,7 @@ describe("bobi_send_message", () => {
     });
     expect(ok).toBe(true);
     const result = payload as { reply: string; isFake: boolean };
-    expect(result.reply).toContain("آزمایشی بابی");
+    expect(result.reply).toContain("BOBI test mode");
     expect(result.reply).toContain("سلام بابی");
     expect(result.isFake).toBe(true);
   });

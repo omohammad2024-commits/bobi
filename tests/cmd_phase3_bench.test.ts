@@ -74,20 +74,20 @@ describe("COMMAND_DEFS", () => {
     expect(COMMAND_DEFS).toHaveLength(1);
     expect(COMMAND_DEFS[0]!.command).toBe("bench");
     expect(COMMAND_DEFS[0]!.ownerOnly).toBe(true);
-    expect(COMMAND_DEFS[0]!.descriptionFa.length).toBeGreaterThan(0);
+    expect(COMMAND_DEFS[0]!.descriptionEn.length).toBeGreaterThan(0);
     expect(COMMAND_DEFS[0]!.descriptionEn.length).toBeGreaterThan(0);
   });
 });
 
 describe("handleBench dispatch", () => {
   test("non-owner gets the owner-only refusal", async () => {
-    const out = await handleBench(deps(), sender, "history", false, "fa");
-    expect(out).toContain("مالک");
+    const out = await handleBench(deps(), sender, "history", false, "en");
+    expect(out).toContain("owner");
   });
 
   test("empty and unknown subcommands show help", async () => {
-    expect(await handleBench(deps(), sender, "", true, "fa")).toContain("/bench history");
-    expect(await handleBench(deps(), sender, "wat", true, "fa")).toContain("/bench history");
+    expect(await handleBench(deps(), sender, "", true, "en")).toContain("/bench history");
+    expect(await handleBench(deps(), sender, "wat", true, "en")).toContain("/bench history");
   });
 
   test("english help", async () => {
@@ -97,16 +97,16 @@ describe("handleBench dispatch", () => {
 
 describe("handleBenchHistory", () => {
   test("empty history message", () => {
-    expect(handleBenchHistory(history, 10, "fa")).toContain("ثبت نشده");
+    expect(handleBenchHistory(history, 10, "en")).toContain("No benchmark runs recorded");
   });
 
   test("lists runs newest-first with scores", () => {
     history.recordRun(cannedReport(70, "2026-10-18T18:00:00.000Z"));
     history.recordRun(cannedReport(90, "2026-10-18T19:00:00.000Z"));
-    const out = handleBenchHistory(history, 10, "fa");
-    expect(out).toContain("میانگین امتیاز: 90٪");
-    expect(out).toContain("میانگین امتیاز: 70٪");
-    expect(out.indexOf("90٪")).toBeLessThan(out.indexOf("70٪"));
+    const out = handleBenchHistory(history, 10, "en");
+    expect(out).toContain("Avg score: 90%");
+    expect(out).toContain("Avg score: 70%");
+    expect(out.indexOf("90%")).toBeLessThan(out.indexOf("70%"));
   });
 });
 
@@ -114,27 +114,27 @@ describe("handleBenchTrend", () => {
   test("overall trend oldest-first", () => {
     history.recordRun(cannedReport(70, "2026-10-18T18:00:00.000Z"));
     history.recordRun(cannedReport(90, "2026-10-18T19:00:00.000Z"));
-    const out = handleBenchTrend(history, undefined, "fa");
-    expect(out).toContain("روند میانگین امتیاز");
-    expect(out.indexOf("70٪")).toBeLessThan(out.indexOf("90٪"));
+    const out = handleBenchTrend(history, undefined, "en");
+    expect(out).toContain("Average score trend");
+    expect(out.indexOf("70%")).toBeLessThan(out.indexOf("90%"));
   });
 
   test("per-task trend and unknown task", () => {
     history.recordRun(cannedReport(80, "2026-10-18T19:00:00.000Z"));
-    const out = handleBenchTrend(history, "calc_01", "fa");
+    const out = handleBenchTrend(history, "calc_01", "en");
     expect(out).toContain("calc_01");
-    expect(out).toContain("100٪");
-    expect(handleBenchTrend(history, "nope", "fa")).toContain("nope");
+    expect(out).toContain("100%");
+    expect(handleBenchTrend(history, "nope", "en")).toContain("nope");
   });
 
   test("empty history", () => {
-    expect(handleBenchTrend(history, undefined, "fa")).toContain("ثبت نشده");
+    expect(handleBenchTrend(history, undefined, "en")).toContain("No benchmark runs recorded");
   });
 });
 
 describe("handleBenchRun", () => {
   test("unwired runner explains the CLI fallback", async () => {
-    const out = await handleBenchRun(deps(), sender, [], "fa");
+    const out = await handleBenchRun(deps(), sender, [], "en");
     expect(out).toContain("bench/run.ts");
   });
 
@@ -145,11 +145,11 @@ describe("handleBenchRun", () => {
         runId: 3,
         mode: "offline",
         alerted: false,
-        summary: "بنچ‌مارک تمام شد (شناسهٔ ثبت: 3).",
+        summary: "Benchmark finished (record id: 3).",
       }),
     });
-    const out = await handleBenchRun(d, sender, [], "fa");
-    expect(out).toContain("شناسهٔ ثبت: 3");
+    const out = await handleBenchRun(d, sender, [], "en");
+    expect(out).toContain("record id: 3");
   });
 
   test("live mode is forwarded and noted", async () => {
@@ -160,14 +160,14 @@ describe("handleBenchRun", () => {
         return { status: "ok", mode: "live", alerted: false, summary: "ok" };
       },
     });
-    const out = await handleBenchRun(d, sender, ["--live"], "fa");
+    const out = await handleBenchRun(d, sender, ["--live"], "en");
     expect(seenMode).toBe("live");
-    expect(out).toContain("چند دقیقه");
+    expect(out).toContain("several minutes");
   });
 
   test("bad task ids show help", async () => {
     const d = deps({ runBenchNow: async () => ({ status: "ok", mode: "offline", alerted: false, summary: "x" }) });
-    expect(await handleBenchRun(d, sender, ["BAD!"], "fa")).toContain("/bench run");
+    expect(await handleBenchRun(d, sender, ["BAD!"], "en")).toContain("/bench run");
   });
 });
 
@@ -205,8 +205,8 @@ describe("handleBenchSchedule", () => {
   test("creates a schedule when none exists", async () => {
     const calls: string[] = [];
     const d = deps({ tools: stubTools([], calls) as never });
-    const out = await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0"], "fa");
-    expect(out).toContain("فعال شد");
+    const out = await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0"], "en");
+    expect(out).toContain("enabled");
     expect(out).toContain("0 3 * * 0");
     expect(calls).toEqual(["list_tasks", "schedule_task"]);
   });
@@ -217,8 +217,8 @@ describe("handleBenchSchedule", () => {
       { id: 5, name: BENCH_SCHEDULE_TASK_NAME, cron: "0 3 * * 0", nextRunAt: "2026-10-25T00:00:00.000Z" },
     ];
     const d = deps({ tools: stubTools(existing, calls) as never });
-    const out = await handleBenchSchedule(d, sender, ["0", "4", "*", "*", "*"], "fa");
-    expect(out).toContain("به‌روز شد");
+    const out = await handleBenchSchedule(d, sender, ["0", "4", "*", "*", "*"], "en");
+    expect(out).toContain("updated");
     expect(calls).toEqual(["list_tasks", "cancel_task", "schedule_task"]);
   });
 
@@ -228,24 +228,24 @@ describe("handleBenchSchedule", () => {
       { id: 5, name: BENCH_SCHEDULE_TASK_NAME, cron: "0 3 * * 0", nextRunAt: "2026-10-25T00:00:00.000Z" },
     ];
     const d = deps({ tools: stubTools(existing, calls) as never });
-    expect(await handleBenchSchedule(d, sender, ["off"], "fa")).toContain("خاموش شد");
+    expect(await handleBenchSchedule(d, sender, ["off"], "en")).toContain("turned off");
     expect(calls).toEqual(["list_tasks", "cancel_task"]);
 
     const d2 = deps({ tools: stubTools([], []) as never });
-    expect(await handleBenchSchedule(d2, sender, ["off"], "fa")).toContain("فعالی");
+    expect(await handleBenchSchedule(d2, sender, ["off"], "en")).toContain("No active");
   });
 
   test("invalid cron is rejected before any tool call", async () => {
     const calls: string[] = [];
     const d = deps({ tools: stubTools([], calls) as never });
-    const out = await handleBenchSchedule(d, sender, ["not-a-cron"], "fa");
-    expect(out).toContain("نامعتبر");
+    const out = await handleBenchSchedule(d, sender, ["not-a-cron"], "en");
+    expect(out).toContain("Invalid");
     expect(calls).toEqual([]);
   });
 
   test("empty args show usage", async () => {
     const d = deps({ tools: stubTools([], []) as never });
-    expect(await handleBenchSchedule(d, sender, [], "fa")).toContain("/bench schedule");
+    expect(await handleBenchSchedule(d, sender, [], "en")).toContain("/bench schedule");
   });
 
   test("--live flag selects the live mode", async () => {
@@ -261,7 +261,7 @@ describe("handleBenchSchedule", () => {
       },
     };
     const d = deps({ tools: tools as never });
-    await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0", "--live"], "fa");
+    await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0", "--live"], "en");
     const action = (seen[0] as { action: { input: { mode: string } } }).action;
     expect(action.input.mode).toBe("live");
   });
@@ -270,9 +270,9 @@ describe("handleBenchSchedule", () => {
 describe("handleBenchStatus", () => {
   test("unscheduled + no runs", async () => {
     const d = deps({ tools: stubTools([], []) as never });
-    const out = await handleBenchStatus(d, sender, "fa");
-    expect(out).toContain("خاموش");
-    expect(out).toContain("ثبت نشده");
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("off");
+    expect(out).toContain("No runs recorded yet");
   });
 
   test("scheduled + latest run", async () => {
@@ -281,10 +281,10 @@ describe("handleBenchStatus", () => {
     ];
     const d = deps({ tools: stubTools(existing, []) as never });
     history.recordRun(cannedReport(85, "2026-10-18T19:00:00.000Z"));
-    const out = await handleBenchStatus(d, sender, "fa");
-    expect(out).toContain("فعال");
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("on");
     expect(out).toContain("0 3 * * 0");
-    expect(out).toContain("85٪");
+    expect(out).toContain("85%");
   });
 });
 
@@ -327,9 +327,9 @@ describe("handleBenchRun --bg (Phase-4)", () => {
         return { status: "queued", mode: opts.mode, alerted: false, summary: "q", position: 2 };
       }) as never,
     });
-    const out = await handleBenchRun(d, sender, ["--live", "--bg"], "fa");
+    const out = await handleBenchRun(d, sender, ["--live", "--bg"], "en");
     expect(seen).toEqual([{ background: true, mode: "live" }]);
-    expect(out).toContain("صف");
+    expect(out).toContain("queued");
     expect(out).toContain("2");
   });
 
@@ -374,13 +374,13 @@ describe("handleBenchSchedule (Phase-4)", () => {
       },
     };
     const d = deps({ tools: tools as never });
-    const out = await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0", "--live"], "fa");
+    const out = await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0", "--live"], "en");
     const action = (seen[0] as { action: { input: Record<string, unknown> } }).action;
     expect(action.input.mode).toBe("live");
     expect(action.input.background).toBe(true);
     expect(action.input.source).toBe("schedule");
     // The reply tells the owner the run happens in the background worker.
-    expect(out).toContain("پس‌زمینه");
+    expect(out).toContain("background worker");
   });
 
   test("offline schedule has no background flag", async () => {
@@ -396,7 +396,7 @@ describe("handleBenchSchedule (Phase-4)", () => {
       },
     };
     const d = deps({ tools: tools as never });
-    await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0"], "fa");
+    await handleBenchSchedule(d, sender, ["0", "3", "*", "*", "0"], "en");
     const action = (seen[0] as { action: { input: Record<string, unknown> } }).action;
     expect(action.input.mode).toBe("offline");
     expect("background" in action.input).toBe(false);
@@ -409,8 +409,8 @@ describe("handleBenchStatus worker section (Phase-4)", () => {
       tools: stubTools([], []) as never,
       benchWorker: stubWorker({ state: "idle" }) as never,
     });
-    const out = await handleBenchStatus(d, sender, "fa");
-    expect(out).toContain("بیکار");
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("idle");
   });
 
   test("running worker renders mode + pending count", async () => {
@@ -418,8 +418,8 @@ describe("handleBenchStatus worker section (Phase-4)", () => {
       tools: stubTools([], []) as never,
       benchWorker: stubWorker({ state: "running", pending: 2 }) as never,
     });
-    const out = await handleBenchStatus(d, sender, "fa");
-    expect(out).toContain("در حال اجرا");
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("running");
     expect(out).toContain("2");
   });
 
@@ -437,14 +437,14 @@ describe("handleBenchCancel (Phase-4)", () => {
         cancel: { cancelledPending: 2, abortedRunning: true },
       }) as never,
     });
-    const out = await handleBench(d, sender, "cancel", true, "fa");
-    expect(out).toContain("لغو شد");
+    const out = await handleBench(d, sender, "cancel", true, "en");
+    expect(out).toContain("Cancelled:");
     expect(out).toContain("2");
   });
 
   test("nothing to cancel says so", async () => {
     const d = deps({ benchWorker: stubWorker() as never });
-    expect(await handleBench(d, sender, "cancel", true, "fa")).toContain("نیست");
+    expect(await handleBench(d, sender, "cancel", true, "en")).toContain("No active or queued runs");
   });
 
   test("no worker wired refuses", async () => {
@@ -454,14 +454,14 @@ describe("handleBenchCancel (Phase-4)", () => {
 
   test("non-owner is rejected before dispatch", async () => {
     const d = deps({ benchWorker: stubWorker() as never });
-    expect(await handleBench(d, sender, "cancel", false, "fa")).toContain("مالک");
+    expect(await handleBench(d, sender, "cancel", false, "en")).toContain("owner");
   });
 });
 
 describe("help text (Phase-4)", () => {
   test("help mentions --bg and cancel in both languages", async () => {
     const d = deps({});
-    expect(await handleBench(d, sender, "help", true, "fa")).toContain("/bench cancel");
+    expect(await handleBench(d, sender, "help", true, "en")).toContain("/bench cancel");
     expect(await handleBench(d, sender, "", true, "en")).toContain("--bg");
   });
 });

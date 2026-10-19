@@ -119,7 +119,7 @@ describe("http api server (listen:false)", () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(typeof body["reply"]).toBe("string");
-    expect(body["reply"] as string).toContain("آزمایشی بابی");
+    expect(body["reply"] as string).toContain("BOBI test mode");
   });
 
   test("turn runs as the server-side owner actor, never the requester", async () => {

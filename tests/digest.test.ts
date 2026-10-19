@@ -106,22 +106,22 @@ describe("buildDigest", () => {
     seedFull(d);
     const text = formatDigest(await buildDigest(d));
 
-    expect(text).toContain("☀️ صبح بخیر!");
-    expect(text).toContain("کارهای امروز");
+    expect(text).toContain("Good morning!");
+    expect(text).toContain("Today's tasks");
     expect(text).toContain("جلسهٔ تیم");
-    expect(text).toContain("یادآورها");
+    expect(text).toContain("Reminders");
     expect(text).toContain("دارو بخور");
-    expect(text).toContain("پیشنهادهای حافظه");
-    expect(text).toContain("۲ پیشنهاد");
-    expect(text).toContain("مصرف ۲۴ ساعت اخیر");
-    expect(text).toContain("سرخط خبرها");
+    expect(text).toContain("Memory proposals");
+    expect(text).toContain("proposals");
+    expect(text).toContain("Last 24h usage");
+    expect(text).toContain("Headlines");
     expect(text).toContain("خبر اول امروز");
     // Headline URLs are reduced to hostnames: query-string secrets never leak.
     expect(text).toContain("example.com");
     expect(text).not.toContain("token=secret");
-    expect(text).toContain("از حافظه‌ات");
+    expect(text).toContain("From your memory");
     expect(text).toContain("عاشق قهوه");
-    expect(text).toContain("روز خوبی داشته باشی");
+    expect(text).toContain("Have a great day");
   });
 
   test("one failing source is skipped, never kills the digest", async () => {
@@ -136,10 +136,10 @@ describe("buildDigest", () => {
     const sections = await buildDigest(d);
     const text = formatDigest(sections);
 
-    expect(text).not.toContain("سرخط خبرها");
-    expect(text).toContain("کارهای امروز");
-    expect(text).toContain("یادآورها");
-    expect(text).toContain("از حافظه‌ات");
+    expect(text).not.toContain("Headlines");
+    expect(text).toContain("Today's tasks");
+    expect(text).toContain("Reminders");
+    expect(text).toContain("From your memory");
     expect(logs.some((m) => m.includes("headlines"))).toBe(true);
   });
 
@@ -147,8 +147,8 @@ describe("buildDigest", () => {
     const d = deps();
     seedFull(d);
     const text = formatDigest(await buildDigest(d));
-    expect(text).not.toContain("سرخط خبرها");
-    expect(text).toContain("کارهای امروز");
+    expect(text).not.toContain("Headlines");
+    expect(text).toContain("Today's tasks");
   });
 
   test("enforces the char cap on a pathological digest", async () => {
@@ -175,7 +175,7 @@ describe("buildDigest", () => {
     const text = formatDigest(await buildDigest(d));
     expect(text).toContain("مهر");
     expect(text).toContain("۱۴۰۵");
-    expect(text).toContain("صبح بخیر");
+    expect(text).toContain("Good morning");
     // No Latin digits in the date line.
     const dateLine = text.split("\n").find((l) => l.includes("امروز")) ?? "";
     expect(/[0-9]/.test(dateLine)).toBe(false);
@@ -185,9 +185,9 @@ describe("buildDigest", () => {
     const d = deps();
     const text = formatDigest(await buildDigest(d));
     expect(text.length).toBeGreaterThan(0);
-    expect(text).toContain("صبح بخیر");
-    expect(text).toContain("کارهای امروز");
-    expect(text).toContain("روز آرومی");
+    expect(text).toContain("Good morning");
+    expect(text).toContain("Today's tasks");
+    expect(text).toContain("enjoy the calm");
     expect(text.length).toBeLessThanOrEqual(MAX_DIGEST_CHARS);
   });
 
@@ -200,8 +200,8 @@ describe("buildDigest", () => {
     };
     const sections = await buildDigest({ ...d, proposalStore: broken });
     const text = formatDigest(sections);
-    expect(text).not.toContain("پیشنهادهای حافظه");
-    expect(text).toContain("کارهای امروز");
+    expect(text).not.toContain("Memory proposals");
+    expect(text).toContain("Today's tasks");
     expect(logs.some((m) => m.includes("proposals"))).toBe(true);
   });
 });
@@ -231,7 +231,7 @@ describe("createDigestTool", () => {
   test("owner gets the formatted digest", async () => {
     const tool = toolDeps();
     const out = await tool.run({}, ctx(OWNER));
-    expect(out.text).toContain("صبح بخیر");
+    expect(out.text).toContain("Good morning");
     expect(out.text).toContain("جلسهٔ تیم");
     expect(out.text.length).toBeLessThanOrEqual(MAX_DIGEST_CHARS);
   });

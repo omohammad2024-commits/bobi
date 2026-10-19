@@ -48,7 +48,7 @@ import {
 } from "../src/bot/cmd_system";
 import { tr } from "../src/bot/cmd_system_strings";
 
-const FA = "fa" as const;
+const EN = "en" as const; // English-only UI
 
 function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "cmd-system-"));
@@ -68,7 +68,7 @@ describe("COMMAND_DEFS", () => {
       ].sort(),
     );
     expect(COMMAND_DEFS.every((d) => d.ownerOnly)).toBe(true);
-    expect(COMMAND_DEFS.every((d) => d.descriptionFa.length > 0)).toBe(true);
+    expect(COMMAND_DEFS.every((d) => d.descriptionEn.length > 0)).toBe(true);
     expect(COMMAND_DEFS.every((d) => d.descriptionEn.length > 0)).toBe(true);
   });
 });
@@ -97,10 +97,10 @@ describe("checkOwner", () => {
         isOwner: () => false,
       },
     };
-    const ok = await checkOwner(ctx as never, deps as never, FA);
+    const ok = await checkOwner(ctx as never, deps as never, EN);
     expect(ok).toBe(false);
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toContain("فقط برای مالک");
+    expect(replies[0]).toContain("for the bot owner only");
   });
 
   test("owner passes with no reply", async () => {
@@ -111,16 +111,16 @@ describe("checkOwner", () => {
         isOwner: () => true,
       },
     };
-    const ok = await checkOwner(ctx as never, deps as never, FA);
+    const ok = await checkOwner(ctx as never, deps as never, EN);
     expect(ok).toBe(true);
     expect(replies).toHaveLength(0);
   });
 
   test("no auth configured = fail closed", async () => {
     const { ctx, replies } = fakeCtx();
-    const ok = await checkOwner(ctx as never, {} as never, FA);
+    const ok = await checkOwner(ctx as never, {} as never, EN);
     expect(ok).toBe(false);
-    expect(replies[0]).toContain("فقط برای مالک");
+    expect(replies[0]).toContain("for the bot owner only");
   });
 });
 
@@ -153,56 +153,56 @@ describe("snapshot round-trip", () => {
 
   test("create with default name + list + restore", () => {
     const e = env();
-    const created = handleSnapshotCreate(FA, e, undefined, 1729252800000);
+    const created = handleSnapshotCreate(EN, e, undefined, 1729252800000);
     expect(created.text).toContain("✅");
     const entries = listSnapshots(e.snapshotDir);
     expect(entries).toHaveLength(1);
     expect(entries[0]!.name).toMatch(/^bobi-\d{8}-\d{6}$/);
 
     // Restore without --confirm only explains.
-    const ask = handleSnapshotRestore(FA, e, entries[0]!.name, false, false);
+    const ask = handleSnapshotRestore(EN, e, entries[0]!.name, false, false);
     expect(ask.text).toContain("--confirm");
     expect(ask.restart).toBeUndefined();
 
     // Confirmed restore replaces the db file.
     writeFileSync(e.dbPath, "changed-bytes");
-    const done = handleSnapshotRestore(FA, e, entries[0]!.name, false, true);
+    const done = handleSnapshotRestore(EN, e, entries[0]!.name, false, true);
     expect(done.text).toContain("✅");
     expect(
-      handleSnapshotList(FA, e.snapshotDir).text,
+      handleSnapshotList(EN, e.snapshotDir).text,
     ).toContain(entries[0]!.name);
   });
 
   test("restore refuses while a turn is running", () => {
     const e = env();
-    handleSnapshotCreate(FA, e, "one", 1);
-    const r = handleSnapshotRestore(FA, e, "one", true, true);
-    expect(r.text).toContain("در حال اجراست");
+    handleSnapshotCreate(EN, e, "one", 1);
+    const r = handleSnapshotRestore(EN, e, "one", true, true);
+    expect(r.text).toContain("turn is running");
   });
 
   test("restore of a missing snapshot is an error, not a throw", () => {
     const e = env();
-    const r = handleSnapshotRestore(FA, e, "nope", false, true);
-    expect(r.text).toContain("پیدا نشد");
+    const r = handleSnapshotRestore(EN, e, "nope", false, true);
+    expect(r.text).toContain("not found");
   });
 
   test("traversal name is rejected before any fs access", () => {
     const e = env();
-    const r = handleSnapshotCreate(FA, e, "../escape", 1);
-    expect(r.text).toContain("معتبر نیست");
+    const r = handleSnapshotCreate(EN, e, "../escape", 1);
+    expect(r.text).toContain("Invalid");
     expect(listSnapshots(e.snapshotDir)).toHaveLength(0);
   });
 
   test("dispatch: bare /snapshot lists, unknown sub shows usage", () => {
     const e = env();
-    expect(handleSnapshot(FA, e, undefined, false, 1).text).toContain(
-      "اسنپشاتی",
+    expect(handleSnapshot(EN, e, undefined, false, 1).text).toContain(
+      "No snapshots",
     );
-    expect(handleSnapshot(FA, e, "frobnicate", false, 1).text).toContain(
+    expect(handleSnapshot(EN, e, "frobnicate", false, 1).text).toContain(
       "/snapshot create",
     );
     expect(
-      handleSnapshot(FA, e, "create named-one", false, 1).text,
+      handleSnapshot(EN, e, "create named-one", false, 1).text,
     ).toContain("named-one");
   });
 });
@@ -212,10 +212,10 @@ describe("snapshot round-trip", () => {
 describe("handleRestart", () => {
   test("refuses while a turn runs unless --force", () => {
     expect(
-      handleRestart(FA, { turnRunning: true, force: false, confirmed: true })
+      handleRestart(EN, { turnRunning: true, force: false, confirmed: true })
         .text,
-    ).toContain("در حال اجراست");
-    const forced = handleRestart(FA, {
+    ).toContain("turn is running");
+    const forced = handleRestart(EN, {
       turnRunning: true,
       force: true,
       confirmed: true,
@@ -224,7 +224,7 @@ describe("handleRestart", () => {
   });
 
   test("needs explicit --confirm", () => {
-    const r = handleRestart(FA, {
+    const r = handleRestart(EN, {
       turnRunning: false,
       force: false,
       confirmed: false,
@@ -232,7 +232,7 @@ describe("handleRestart", () => {
     expect(r.restart).toBeUndefined();
     expect(r.text).toContain("--confirm");
     expect(
-      handleRestart(FA, { turnRunning: false, force: false, confirmed: true })
+      handleRestart(EN, { turnRunning: false, force: false, confirmed: true })
         .restart,
     ).toBe(true);
   });
@@ -243,7 +243,7 @@ describe("handleRestart", () => {
 describe("handleUpdate", () => {
   test("asks for confirmation first", async () => {
     const r = await handleUpdate(
-      FA,
+      EN,
       {
         execGit: async () => ({ code: 0, out: "", err: "" }),
         repoDir: "/tmp",
@@ -256,20 +256,20 @@ describe("handleUpdate", () => {
 
   test("refuses when cwd is not a git repo", async () => {
     const r = await handleUpdate(
-      FA,
+      EN,
       {
         execGit: async () => ({ code: 128, out: "", err: "not a git repo" }),
         repoDir: "/tmp",
       },
       true,
     );
-    expect(r.text).toContain("git نیست");
+    expect(r.text).toContain("not a git repository");
     expect(r.restart).toBeUndefined();
   });
 
   test("successful pull restarts; failed pull does not", async () => {
     const ok = await handleUpdate(
-      FA,
+      EN,
       {
         execGit: async () => ({ code: 0, out: "Already up to date.", err: "" }),
         repoDir: "/tmp",
@@ -280,7 +280,7 @@ describe("handleUpdate", () => {
     expect(ok.text).toContain("Already up to date");
 
     const fail = await handleUpdate(
-      FA,
+      EN,
       {
         execGit: async (args) =>
           args[0] === "rev-parse"
@@ -322,7 +322,7 @@ describe("scrubSecrets", () => {
 
 describe("buildDebugMarkdown", () => {
   test("includes diagnostics, never secrets", () => {
-    const md = buildDebugMarkdown(FA, {
+    const md = buildDebugMarkdown(EN, {
       version: "1.2.3",
       uptimeSec: 754,
       providerLabel: "Anthropic",
@@ -345,14 +345,14 @@ describe("buildDebugMarkdown", () => {
 describe("handleUsage", () => {
   test("summarises today + week with the approximate-cost disclaimer", () => {
     const text = handleUsage(
-      FA,
+      EN,
       { inputTokens: 1000, outputTokens: 500, runs: 3, costUsd: 0.0123 },
       { inputTokens: 7000, outputTokens: 3500, runs: 21, costUsd: 0.0861 },
       [{ modelId: "m1", inputTokens: 7000, outputTokens: 3500, runs: 21 }],
     );
-    expect(text).toContain("امروز");
-    expect(text).toContain("۷ روز اخیر");
-    expect(text).toContain("تقریبی");
+    expect(text).toContain("today");
+    expect(text).toContain("last 7 days");
+    expect(text).toContain("Approximate");
     expect(text).toContain("m1");
   });
 });
@@ -364,25 +364,25 @@ describe("handleInsights", () => {
   ];
   test("reports an upward trend vs the previous period", () => {
     const text = handleInsights(
-      FA,
+      EN,
       2,
       days,
       { inputTokens: 50, outputTokens: 25, runs: 1 },
       [],
     );
-    expect(text).toContain("صعودی");
+    expect(text).toContain("up (");
     expect(text).toContain("2026-10-17");
   });
 
   test("flat trend when periods are similar", () => {
     const text = handleInsights(
-      FA,
+      EN,
       2,
       days,
       { inputTokens: 440, outputTokens: 0, runs: 3 },
       [],
     );
-    expect(text).toContain("بدون تغییر");
+    expect(text).toContain("unchanged");
   });
 });
 
@@ -413,23 +413,23 @@ describe("handleModelSwitch", () => {
 
   test("switches by label and by model id", () => {
     const s = fakeStorage();
-    const r = handleModelSwitch(FA, s as never, "Alpha");
+    const r = handleModelSwitch(EN, s as never, "Alpha");
     expect(r.text).toContain("Alpha");
     expect(s.selections).toEqual([{ providerId: 1, modelId: 10 }]);
-    const r2 = handleModelSwitch(FA, s as never, "beta-1");
-    expect(r2.text).toContain("غیرفعال");
+    const r2 = handleModelSwitch(EN, s as never, "beta-1");
+    expect(r2.text).toContain("disabled");
   });
 
   test("unknown name is an error, not a throw", () => {
-    const r = handleModelSwitch(FA, fakeStorage() as never, "nope");
-    expect(r.text).toContain("پیدا نشد");
+    const r = handleModelSwitch(EN, fakeStorage() as never, "nope");
+    expect(r.text).toContain("No model named");
   });
 });
 
 describe("handleModelShow", () => {
   test("marks the active model", () => {
     const text = handleModelShow(
-      FA,
+      EN,
       { providerLabel: "P1", modelLabel: "Alpha" },
       [
         {
@@ -442,7 +442,7 @@ describe("handleModelShow", () => {
         },
       ],
     );
-    expect(text).toContain("فعال ✅");
+    expect(text).toContain("active ✅");
     expect(text).toContain("/model");
   });
 });
@@ -451,7 +451,7 @@ describe("handleModelShow", () => {
 
 describe("reasoning", () => {
   test("show reports the effective env-resolved level", () => {
-    const text = handleReasoningShow(FA, "low");
+    const text = handleReasoningShow(EN, "low");
     expect(text).toContain("BOBI_REASONING_EFFORT");
     expect(text).toContain("low");
   });
@@ -464,9 +464,9 @@ describe("reasoning", () => {
         saved[`${u}:${k}`] = v;
       },
     };
-    expect(handleReasoningSet(FA, prefs, "1", "high")).toContain("high");
+    expect(handleReasoningSet(EN, prefs, "1", "high")).toContain("high");
     expect(saved["1:reasoning_effort"]).toBe("high");
-    expect(handleReasoningSet(FA, prefs, "1", "ultra")).toContain("off، low");
+    expect(handleReasoningSet(EN, prefs, "1", "ultra")).toContain("off, low");
   });
 });
 
@@ -487,10 +487,10 @@ describe("autoprune", () => {
         saved[`${u}:${k}`] = v;
       },
     };
-    expect(handleAutopruneSet(FA, prefs, "1", "on 30")).toContain("on (30d)");
+    expect(handleAutopruneSet(EN, prefs, "1", "on 30")).toContain("on (30d)");
     expect(saved["1:autoprune"]).toBe("on:30");
-    expect(handleAutopruneSet(FA, prefs, "1", "off")).toContain("off");
-    expect(handleAutopruneSet(FA, prefs, "1", "maybe")).toContain("/autoprune on");
+    expect(handleAutopruneSet(EN, prefs, "1", "off")).toContain("off");
+    expect(handleAutopruneSet(EN, prefs, "1", "maybe")).toContain("/autoprune on");
   });
 });
 
@@ -498,7 +498,7 @@ describe("autoprune", () => {
 
 describe("handleTools", () => {
   test("lists tools with toolset and disabled state", () => {
-    const text = handleTools(FA, {
+    const text = handleTools(EN, {
       registry: {
         list: () => [
           { name: "a", description: "A", enabled: true, toolset: "core" },
@@ -509,11 +509,11 @@ describe("handleTools", () => {
     } as never);
     expect(text).toContain("a");
     expect(text).toContain("[core]");
-    expect(text).toContain("غیرفعال");
+    expect(text).toContain("disabled");
   });
 
   test("unavailable without the service", () => {
-    expect(handleTools(FA, undefined)).toContain("در دسترس نیست");
+    expect(handleTools(EN, undefined)).toContain("unavailable");
   });
 });
 
@@ -521,7 +521,7 @@ describe("handleTools", () => {
 
 describe("handleSkills", () => {
   test("prefers the skills tool path", async () => {
-    const text = await handleSkills(FA, {
+    const text = await handleSkills(EN, {
       ownerId: "1",
       tools: {
         execute: async () => ({
@@ -537,7 +537,7 @@ describe("handleSkills", () => {
   });
 
   test("falls back to the skill cache", async () => {
-    const text = await handleSkills(FA, {
+    const text = await handleSkills(EN, {
       ownerId: "1",
       skills: { skills: () => [{ name: "k", description: "d" }] } as never,
     });
@@ -545,7 +545,7 @@ describe("handleSkills", () => {
   });
 
   test("honest when nothing is wired", async () => {
-    expect(await handleSkills(FA, { ownerId: "1" })).toContain("در دسترس نیست");
+    expect(await handleSkills(EN, { ownerId: "1" })).toContain("is available");
   });
 });
 
@@ -553,14 +553,14 @@ describe("handleSkills", () => {
 
 describe("curator", () => {
   test("status shows the pending count", () => {
-    expect(handleCuratorStatus(FA, {} as never, 3)).toContain("3");
-    expect(handleCuratorStatus(FA, undefined, 0)).toContain("در دسترس نیست");
+    expect(handleCuratorStatus(EN, {} as never, 3)).toContain("3");
+    expect(handleCuratorStatus(EN, undefined, 0)).toContain("unavailable");
   });
 
   test("run executes curate_memories with an owner actor", async () => {
     let seenActor: unknown;
     const text = await handleCuratorRun(
-      FA,
+      EN,
       {
         execute: async (req: { actor: unknown }) => {
           seenActor = req.actor;
@@ -590,13 +590,13 @@ describe("handlePlugins", () => {
       join(pdir, "plugin.md"),
       `---\nname: demo\nversion: 0.1.0\ndescription: Demo plugin\nenabled: true\n---\n`,
     );
-    const text = handlePlugins(FA, dir);
+    const text = handlePlugins(EN, dir);
     expect(text).toContain("demo");
     expect(text).toContain("0.1.0");
   });
 
   test("empty dir is an honest empty message", () => {
-    expect(handlePlugins(FA, tempDir())).toContain("افزونه‌ای");
+    expect(handlePlugins(EN, tempDir())).toContain("No plugins");
   });
 });
 
@@ -605,7 +605,7 @@ describe("handlePlugins", () => {
 describe("reload", () => {
   test("reload_mcp reconnects through closeAll+connectAll", async () => {
     const calls: string[] = [];
-    const text = await handleReloadMcp(FA, {
+    const text = await handleReloadMcp(EN, {
       closeAll: async () => {
         calls.push("close");
       },
@@ -619,16 +619,16 @@ describe("reload", () => {
   });
 
   test("reload_mcp is honest without the manager", async () => {
-    expect(await handleReloadMcp(FA, undefined)).toContain("وصل نیست");
+    expect(await handleReloadMcp(EN, undefined)).toContain("not wired");
   });
 
   test("reload_skills rescans the cache", () => {
     expect(
-      handleReloadSkills(FA, {
+      handleReloadSkills(EN, {
         skills: () => [{ name: "a", description: "b" }],
       } as never),
     ).toContain("1");
-    expect(handleReloadSkills(FA, undefined)).toContain("وصل نیست");
+    expect(handleReloadSkills(EN, undefined)).toContain("not wired");
   });
 });
 
@@ -673,7 +673,7 @@ describe("access list and decisions", () => {
   }
 
   test("list shows pending users with confirm commands", () => {
-    const text = handleAccessList(FA, [
+    const text = handleAccessList(EN, [
       { kind: "user", id: "42", label: "Ali" },
     ]);
     expect(text).toContain("42");
@@ -681,13 +681,13 @@ describe("access list and decisions", () => {
   });
 
   test("empty list is an honest message", () => {
-    expect(handleAccessList(FA, [])).toContain("در انتظار");
+    expect(handleAccessList(EN, [])).toContain("pending");
   });
 
   test("decision without --confirm only explains", () => {
     const { users, calls, storage } = fakeServices();
     const r = handleAccessDecision(
-      FA,
+      EN,
       { users: users as never },
       storage as never,
       { kind: "user", id: "42", approve: true, confirmed: false, ownerId: "1" },
@@ -699,19 +699,19 @@ describe("access list and decisions", () => {
   test("approve and deny with --confirm execute", () => {
     const { users, calls, storage } = fakeServices();
     const a = handleAccessDecision(
-      FA,
+      EN,
       { users: users as never },
       storage as never,
       { kind: "user", id: "42", approve: true, confirmed: true, ownerId: "1" },
     );
-    expect(a.text).toContain("تأیید شد");
+    expect(a.text).toContain("approved");
     const d = handleAccessDecision(
-      FA,
+      EN,
       { users: users as never },
       storage as never,
       { kind: "user", id: "42", approve: false, confirmed: true, ownerId: "1" },
     );
-    expect(d.text).toContain("رد شد");
+    expect(d.text).toContain("denied");
     expect(calls.map((c) => c.op)).toEqual(["approve", "reject"]);
   });
 });
@@ -727,10 +727,10 @@ describe("sethome and pause", () => {
         saved[`${u}:${k}`] = v;
       },
     };
-    expect(handleSetHome(FA, prefs, "1", "-100")).toContain("کانال اصلی");
+    expect(handleSetHome(EN, prefs, "1", "-100")).toContain("home chat");
     expect(saved["1:home_chat_id"]).toBe("-100");
-    expect(handleSetHome(FA, undefined, "1", "-100")).toContain(
-      "در دسترس نیست",
+    expect(handleSetHome(EN, undefined, "1", "-100")).toContain(
+      "unavailable",
     );
   });
 
@@ -741,11 +741,11 @@ describe("sethome and pause", () => {
       getUserPref: () => undefined,
       setUserPref: () => {},
     };
-    expect(handlePause(FA, prefs, "1", "on")).toContain("متوقف شد");
+    expect(handlePause(EN, prefs, "1", "on")).toContain("paused");
     expect(isPaused()).toBe(true);
-    expect(handlePause(FA, prefs, "1", "off")).toContain("خارج شد");
+    expect(handlePause(EN, prefs, "1", "off")).toContain("resumed");
     expect(isPaused()).toBe(false);
-    expect(handlePause(FA, prefs, "1", "maybe")).toContain("/pause on");
+    expect(handlePause(EN, prefs, "1", "maybe")).toContain("/pause on");
   });
 });
 
@@ -753,7 +753,7 @@ describe("sethome and pause", () => {
 
 describe("tr", () => {
   test("translates, falls back to the key, substitutes vars", () => {
-    expect(tr("fa", "cmd_system.owner_only")).toContain("مالک");
+    expect(tr("fa", "cmd_system.owner_only")).toContain("owner");
     expect(tr("en", "cmd_system.owner_only")).toContain("owner");
     expect(tr("fa", "cmd_system.nope")).toBe("cmd_system.nope");
     expect(tr("fa", "cmd_system.snapshot.created", { name: "n", size: "1 KB" }))

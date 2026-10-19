@@ -172,7 +172,7 @@ describe("COMMAND_DEFS", () => {
     const names = COMMAND_DEFS.map((d) => d.command);
     expect(new Set(names).size).toBe(names.length);
     for (const d of COMMAND_DEFS) {
-      expect(d.descriptionFa.length).toBeGreaterThan(0);
+      expect(d.descriptionEn.length).toBeGreaterThan(0);
       expect(d.descriptionEn.length).toBeGreaterThan(0);
     }
   });
@@ -231,7 +231,7 @@ describe("/bg", () => {
   test("per-user isolation: B cannot see A's tasks", async () => {
     const deps = depsWith();
     await handleBgStart(deps, A, "کار آ", async () => {});
-    expect(handleBgList(deps, B)).toContain("نداری");
+    expect(handleBgList(deps, B)).toContain("no background tasks");
     expect(handleBgList(deps, A)).toContain("bg-1");
   });
 
@@ -243,7 +243,7 @@ describe("/bg", () => {
     await handleBgStart(deps, A, "دو", noop);
     await handleBgStart(deps, A, "سه", noop);
     const fourth = await handleBgStart(deps, A, "چهار", noop);
-    expect(fourth).toContain("۳ کار");
+    expect(fourth).toContain("3 concurrent");
     // B still has room: the cap is per user.
     const bFirst = await handleBgStart(deps, B, "کار ب", noop);
     expect(bFirst).toContain("bg-");
@@ -256,23 +256,23 @@ describe("/bg", () => {
     });
     const delivered: string[] = [];
     await handleBgStart(deps, A, "دیر", async (_c, t) => { delivered.push(t); });
-    expect(handleBgCancel(deps, A, "bg-1")).toContain("لغو شد");
+    expect(handleBgCancel(deps, A, "bg-1")).toContain("cancelled");
     resolveTurn(fakeOutput("دیر رسید"));
     await tick();
     expect(delivered).toEqual([]);
-    expect(handleBgList(deps, A)).toContain("لغو شد");
+    expect(handleBgList(deps, A)).toContain("cancelled");
   });
 
   test("cancel of an unknown id reports not_found", () => {
-    expect(handleBgCancel(depsWith(), A, "bg-999")).toContain("پیدا نشد");
+    expect(handleBgCancel(depsWith(), A, "bg-999")).toContain("No task with ID");
     expect(handleBgCancel(depsWith(), A, "")).toContain("/bg cancel");
   });
 
   test("junk args rejected: empty and over-long prompts", async () => {
     const deps = depsWith();
     const noop: BgDeliver = async () => {};
-    expect(await handleBgStart(deps, A, "   ", noop)).toContain("خالی");
-    expect(await handleBgStart(deps, A, "x".repeat(2001), noop)).toContain("۲۰۰۰");
+    expect(await handleBgStart(deps, A, "   ", noop)).toContain("empty");
+    expect(await handleBgStart(deps, A, "x".repeat(2001), noop)).toContain("2000");
   });
 
   test("failed engine turn delivers a failure note", async () => {
@@ -283,7 +283,7 @@ describe("/bg", () => {
     await handleBgStart(deps, A, "خراب", async (_c, t) => { delivered.push(t); });
     await tick();
     expect(delivered.length).toBe(1);
-    expect(delivered[0]).toContain("ناموفق");
+    expect(delivered[0]).toContain("failed");
   });
 });
 
@@ -309,7 +309,7 @@ describe("/btw", () => {
   });
 
   test("empty question rejected", async () => {
-    expect(await handleBtw(depsWith(), A, "  ")).toContain("خالی");
+    expect(await handleBtw(depsWith(), A, "  ")).toContain("empty");
   });
 });
 
@@ -320,33 +320,33 @@ describe("/btw", () => {
 describe("/queue", () => {
   test("add / list / clear round-trip (clear is two-step)", () => {
     const deps = depsWith();
-    expect(handleQueue(deps, A, "اولین کار")).toContain("مورد 1");
-    expect(handleQueue(deps, A, "دومین کار")).toContain("مورد 2");
+    expect(handleQueue(deps, A, "اولین کار")).toContain("item 1");
+    expect(handleQueue(deps, A, "دومین کار")).toContain("item 2");
     const list = handleQueue(deps, A, "list");
     expect(list).toContain("اولین کار");
     expect(list).toContain("دومین کار");
     // Bare "clear" only shows the confirm prompt — the queue survives.
     const confirm = handleQueue(deps, A, "clear");
-    expect(confirm).toContain("2 مورد");
+    expect(confirm).toContain("2 queued items");
     expect(confirm).toContain("/queue clear --confirm");
     expect(handleQueue(deps, A, "list")).toContain("اولین کار");
     // Confirmed: actually cleared.
-    expect(handleQueue(deps, A, "clear --confirm")).toContain("2 مورد حذف شد");
-    expect(handleQueue(deps, A, "list")).toContain("خالی");
+    expect(handleQueue(deps, A, "clear --confirm")).toContain("2 items removed");
+    expect(handleQueue(deps, A, "list")).toContain("empty");
   });
 
   test("queues are per user+chat", () => {
     const deps = depsWith();
     handleQueue(deps, A, "کار آ");
-    expect(handleQueue(deps, B, "list")).toContain("خالی");
+    expect(handleQueue(deps, B, "list")).toContain("empty");
   });
 
   test("junk: empty shows help, over-long rejected, cap at 10", () => {
     const deps = depsWith();
     expect(handleQueue(deps, A, "")).toContain("/queue");
-    expect(handleQueue(deps, A, "x".repeat(2001))).toContain("۲۰۰۰");
+    expect(handleQueue(deps, A, "x".repeat(2001))).toContain("2000");
     for (let i = 0; i < 10; i++) handleQueue(deps, A, `کار ${i}`);
-    expect(handleQueue(deps, A, "کار یازدهم")).toContain("پر است");
+    expect(handleQueue(deps, A, "کار یازدهم")).toContain("is full");
   });
 });
 
@@ -358,8 +358,8 @@ describe("/steer", () => {
   test("stores a pending steer when a turn is running", async () => {
     const deps = depsWith({ engine: stubEngine({ isConversationRunning: () => true }) });
     const reply = await handleSteer(deps, A, "خلاصه‌تر جواب بده");
-    expect(reply).toContain("ثبت شد");
-    expect(handleAgents(deps, A)).toContain("راهنمای در انتظار");
+    expect(reply).toContain("saved");
+    expect(handleAgents(deps, A)).toContain("pending steer");
   });
 
   test("runs immediately when nothing is running", async () => {
@@ -396,12 +396,12 @@ describe("/agents", () => {
     await handleBgStart(deps, A, "کار", async () => {});
     const out = handleAgents(deps, A);
     expect(out).toContain("bg-1");
-    expect(out).toContain("در حال اجراست");
+    expect(out).toContain("is running");
     expect(out).toContain("delegate");
   });
 
   test("empty when nothing is active", () => {
-    expect(handleAgents(depsWith(), A)).toContain("فعالی نیست");
+    expect(handleAgents(depsWith(), A)).toContain("Nothing is active");
   });
 });
 
@@ -434,7 +434,7 @@ describe("/goal", () => {
   test("non-owner is rejected", async () => {
     const { tools } = goalTools();
     const out = await handleGoal(authDeps({ tools }), A, false, "set ورزش");
-    expect(out).toContain("مالک");
+    expect(out).toContain("owner");
   });
 
   test("set / show / clear via the goal tools", async () => {
@@ -455,7 +455,7 @@ describe("/goal", () => {
     expect(calls.some((c) => c.tool === "complete_goal")).toBe(false);
 
     const clearOut = await handleGoal(deps, OWNER, true, "clear --confirm");
-    expect(clearOut).toContain("1 هدف");
+    expect(clearOut).toContain("1 active goals completed");
     expect(calls.some((c) => c.tool === "complete_goal")).toBe(true);
   });
 
@@ -497,14 +497,14 @@ function subgoalTools() {
 describe("/subgoal", () => {
   test("non-owner is rejected", async () => {
     const { tools } = subgoalTools();
-    expect(await handleSubgoal(authDeps({ tools }), A, false, "list")).toContain("مالک");
+    expect(await handleSubgoal(authDeps({ tools }), A, false, "list")).toContain("owner");
   });
 
   test("add uses the ↳ <parent title> naming convention", async () => {
     const { tools, created } = subgoalTools();
     const deps = authDeps({ tools });
     const out = await handleSubgoal(deps, OWNER, true, "add 7 دویدن صبح");
-    expect(out).toContain("زیرهدف");
+    expect(out).toContain("Subgoal");
     expect(created[0]!.title.startsWith("↳ ورزش")).toBe(true);
   });
 
@@ -520,7 +520,7 @@ describe("/subgoal", () => {
     expect(confirm).toContain("/subgoal clear 7 --confirm");
     expect(completed).toEqual([]);
     const clear = await handleSubgoal(deps, OWNER, true, "clear 7 --confirm");
-    expect(clear).toContain("1 زیرهدف");
+    expect(clear).toContain("1 subgoals completed");
     expect(completed).toEqual([11]);
   });
 
@@ -530,7 +530,7 @@ describe("/subgoal", () => {
     await handleSubgoal(deps, OWNER, true, "add 7 دویدن صبح");
     const confirm = await handleSubgoal(deps, OWNER, true, "clear");
     expect(confirm).toContain("/subgoal clear --confirm");
-    expect(confirm).toContain("همهٔ اهداف");
+    expect(confirm).toContain("ALL goals");
   });
 
   test("missing parent reports parent_missing", async () => {
@@ -578,7 +578,7 @@ function taskTools() {
 describe("/heartbeat", () => {
   test("non-owner is rejected", async () => {
     const { tools } = taskTools();
-    expect(await handleHeartbeat(authDeps({ tools }), A, false, "status")).toContain("مالک");
+    expect(await handleHeartbeat(authDeps({ tools }), A, false, "status")).toContain("owner");
   });
 
   test("status reports the provider state honestly", async () => {
@@ -586,26 +586,26 @@ describe("/heartbeat", () => {
     const deps = authDeps({ tools });
     setHeartbeatInfoProvider(() => ({ enabled: true, interval: "30m" }));
     const out = await handleHeartbeat(deps, OWNER, true, "status");
-    expect(out).toContain("فعال");
+    expect(out).toContain("enabled");
     expect(out).toContain("30m");
   });
 
   test("status without a provider says it is unknown", async () => {
     const { tools } = taskTools();
     const out = await handleHeartbeat(authDeps({ tools }), OWNER, true, "status");
-    expect(out).toContain("مشخص نیست");
+    expect(out).toContain("not visible");
   });
 
   test("every with a bad interval is rejected", async () => {
     const { tools } = taskTools();
     const out = await handleHeartbeat(authDeps({ tools }), OWNER, true, "every someday سلام");
-    expect(out).toContain("نامعتبر");
+    expect(out).toContain("Invalid");
   });
 
   test("every creates an agent-action scheduled task", async () => {
     const { tools, calls } = taskTools();
     const out = await handleHeartbeat(authDeps({ tools }), OWNER, true, "every 30m وضعیت را چک کن");
-    expect(out).toContain("ساخته شد");
+    expect(out).toContain("created");
     const created = calls.find((c) => c.tool === "schedule_task")!;
     expect(created.input.cron).toBe("*/30 * * * *");
     expect(created.input.name.startsWith("heartbeat:")).toBe(true);
@@ -619,18 +619,18 @@ describe("/loop", () => {
     const { tools, calls } = taskTools();
     const deps = authDeps({ tools });
     const created = await handleLoop(deps, OWNER, true, "every 2h قیمت را چک کن");
-    expect(created).toContain("ساخته شد");
+    expect(created).toContain("created");
     expect(calls.find((c) => c.tool === "schedule_task")!.input.cron).toBe("0 */2 * * *");
     const stopped = await handleLoop(deps, OWNER, true, "stop 3");
-    expect(stopped).toContain("متوقف شد");
+    expect(stopped).toContain("stopped");
     const missing = await handleLoop(deps, OWNER, true, "stop 99");
-    expect(missing).toContain("پیدا نشد");
-    expect(await handleLoop(deps, OWNER, true, "stop x")).toContain("نامعتبر");
+    expect(missing).toContain("No task with ID");
+    expect(await handleLoop(deps, OWNER, true, "stop x")).toContain("Invalid");
   });
 
   test("non-owner is rejected", async () => {
     const { tools } = taskTools();
-    expect(await handleLoop(authDeps({ tools }), A, false, "every 1h x")).toContain("مالک");
+    expect(await handleLoop(authDeps({ tools }), A, false, "every 1h x")).toContain("owner");
   });
 });
 
@@ -638,21 +638,21 @@ describe("/cron", () => {
   test("list shows tasks; add parses cron expressions", async () => {
     const { tools, calls } = taskTools();
     const deps = authDeps({ tools });
-    expect(await handleCron(deps, OWNER, true, "list")).toContain("نیست");
+    expect(await handleCron(deps, OWNER, true, "list")).toContain("No scheduled tasks");
     const added = await handleCron(deps, OWNER, true, "add 0 9 * * * صبح بخیر");
-    expect(added).toContain("ساخته شد");
+    expect(added).toContain("created");
     const created = calls.find((c) => c.tool === "schedule_task")!;
     expect(created.input.cron).toBe("0 9 * * *");
     expect(created.input.action).toEqual({ type: "message", chatId: "10", text: "صبح بخیر" });
     const addedAt = await handleCron(deps, OWNER, true, "add @daily گزارش روزانه");
-    expect(addedAt).toContain("ساخته شد");
+    expect(addedAt).toContain("created");
     expect(calls[calls.length - 1]!.input.cron).toBe("@daily");
   });
 
   test("junk add shows help", async () => {
     const { tools } = taskTools();
     expect(await handleCron(authDeps({ tools }), OWNER, true, "add 0 9")).toContain("/cron");
-    expect(await handleCron(authDeps({ tools }), A, false, "list")).toContain("مالک");
+    expect(await handleCron(authDeps({ tools }), A, false, "list")).toContain("owner");
   });
 });
 
@@ -690,7 +690,7 @@ describe("/suggestions", () => {
 
   test("no signal, no suggestions", () => {
     const deps = depsWith({ storage: stubStorage([{ role: "user", content: "سلام چطوری" }]) });
-    expect(handleSuggestions(deps, A, false)).toContain("سیگنال");
+    expect(handleSuggestions(deps, A, false)).toContain("No clear signal");
   });
 });
 
@@ -713,13 +713,13 @@ describe("/blueprint", () => {
   test("non-owner running morning_digest gets a clear denial", async () => {
     const { tools } = taskTools();
     const out = await handleBlueprint(authDeps({ tools }), A, "run morning_digest");
-    expect(out).toContain("فقط مالک");
+    expect(out).toContain("only the owner");
   });
 
   test("owner running morning_digest creates the scheduled task", async () => {
     const { tools, calls } = taskTools();
     const out = await handleBlueprint(authDeps({ tools }), OWNER, "run morning_digest");
-    expect(out).toContain("ساخته شد");
+    expect(out).toContain("created");
     expect(calls.find((c) => c.tool === "schedule_task")!.input.cron).toBe("0 8 * * *");
   });
 
@@ -736,7 +736,7 @@ describe("/blueprint", () => {
       ],
     });
     const out = await handleBlueprint(authDeps({ tools }), A, "run reminder 30 آب خوردن");
-    expect(out).toContain("30 دقیقه");
+    expect(out).toContain("30 minutes");
     expect(seenInput.text).toBe("آب خوردن");
     // The destination chat comes from server context, never user text.
     expect(seenCtx!.conversationId).toBe("10");
@@ -744,8 +744,8 @@ describe("/blueprint", () => {
 
   test("reminder junk args rejected", async () => {
     const { tools } = taskTools();
-    expect(await handleBlueprint(authDeps({ tools }), A, "run reminder")).toContain("نامعتبر");
-    expect(await handleBlueprint(authDeps({ tools }), A, "run reminder abc متن")).toContain("نامعتبر");
+    expect(await handleBlueprint(authDeps({ tools }), A, "run reminder")).toContain("Invalid");
+    expect(await handleBlueprint(authDeps({ tools }), A, "run reminder abc متن")).toContain("Invalid");
   });
 });
 
@@ -755,7 +755,7 @@ describe("/blueprint", () => {
 
 describe("/refine", () => {
   test("no history reports honestly", async () => {
-    expect(await handleRefine(depsWith({ storage: stubStorage([]) }), A)).toContain("تاریخچه‌ای");
+    expect(await handleRefine(depsWith({ storage: stubStorage([]) }), A)).toContain("No history found");
   });
 
   test("passes recent history as read-only context with a remember directive", async () => {
@@ -874,9 +874,9 @@ describe("/memory", () => {
     const deps = authDeps({ tools });
     expect(await handleMemory(deps, A, "list")).toContain("نام پروژه");
     expect(await handleMemory(deps, A, "search سول")).toContain("نام پروژه");
-    expect(await handleMemory(deps, A, "search بی‌ربط")).toContain("ذخیره نشده");
-    expect(await handleMemory(deps, A, "del نام پروژه")).toContain("پاک شد");
-    expect(await handleMemory(deps, A, "del نام پروژه")).toContain("پیدا نشد");
+    expect(await handleMemory(deps, A, "search بی‌ربط")).toContain("No memories stored");
+    expect(await handleMemory(deps, A, "del نام پروژه")).toContain("deleted");
+    expect(await handleMemory(deps, A, "del نام پروژه")).toContain("No memory with key");
   });
 
   test("calls run as the caller's own actor (per-user scoping)", async () => {
@@ -901,7 +901,7 @@ describe("/learn", () => {
   test("non-owner is rejected", async () => {
     const res = await handleLearn(authDeps(), A, false, "x | y");
     expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.error).toContain("مالک");
+    if (!res.ok) expect(res.error).toContain("owner");
   });
 
   test("path traversal names are rejected", async () => {
@@ -958,7 +958,7 @@ describe("/bundles", () => {
 
   test("unknown bundle names the available ones; missing prefs is honest", () => {
     expect(handleBundles(depsWith(), A, "use nope")).toContain("research");
-    expect(handleBundles(depsWith(), A, "use research")).toContain("در دسترس نیست");
+    expect(handleBundles(depsWith(), A, "use research")).toContain("unavailable");
   });
 });
 
@@ -971,7 +971,7 @@ describe("callToolAs", () => {
     const actor = actorForTelegramUser(depsWith(), 111);
     const out = await callToolAs(depsWith(), "recall", {}, actor);
     expect(out.ok).toBe(false);
-    expect(out.message).toContain("ابزارها");
+    expect(out.message).toContain("tool service");
   });
 
   test("surfaces tool failures as messages", async () => {

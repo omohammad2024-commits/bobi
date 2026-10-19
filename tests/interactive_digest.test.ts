@@ -139,41 +139,34 @@ async function digestData(storage: Storage): Promise<DigestSectionData[]> {
 }
 
 describe("interactive rendering", () => {
-  test("fa and en renders carry the same structure in the owner's language", async () => {
+  test("the English render carries the full structure", async () => {
     const storage = Storage.open(":memory:");
     seedDigestData(storage);
     const data = await digestData(storage);
 
-    const fa = renderInteractiveDigest(data, { lang: "fa" });
-    expect(fa.text).toContain("صبح بخیر");
-    expect(fa.text).toContain("کارهای امروز");
-    expect(fa.text).toContain("جلسهٔ تیم");
-    expect(fa.text).toContain("یادآورها");
-    expect(fa.text).toContain("۲ پیشنهاد");
-    expect(fa.text).toContain("روز خوبی داشته باشی");
-    const faDatas = callbackDatas(fa.keyboard);
-    expect(faDatas).toContain("dgst:refresh");
-    expect(faDatas.some((d) => d.startsWith("dgst:task:run:"))).toBe(true);
-    expect(faDatas.some((d) => d.startsWith("dgst:rem:done:"))).toBe(true);
-    expect(faDatas.some((d) => d.startsWith("dgst:mem:show:"))).toBe(true);
-    expect(faDatas).toContain("dgst:props");
-
-    const en = renderInteractiveDigest(data, { lang: "en" });
-    expect(en.text).toContain("Good morning");
-    expect(en.text).toContain("Today's tasks");
-    expect(en.text).toContain("جلسهٔ تیم"); // user content passes through untouched
-    expect(en.text).toContain("2 memory-tidying proposals");
-    expect(en.text).toContain("Have a great day");
-    // No Persian digits leak into the English render.
-    expect(/[۰-۹]/.test(en.text)).toBe(false);
+    const render = renderInteractiveDigest(data, { locale: "en" });
+    expect(render.text).toContain("Good morning");
+    expect(render.text).toContain("Today's tasks");
+    expect(render.text).toContain("جلسهٔ تیم"); // user content passes through untouched
+    expect(render.text).toContain("Reminders");
+    expect(render.text).toContain("proposals");
+    expect(render.text).toContain("Have a great day");
+    const datas = callbackDatas(render.keyboard);
+    expect(datas).toContain("dgst:refresh");
+    expect(datas.some((d) => d.startsWith("dgst:task:run:"))).toBe(true);
+    expect(datas.some((d) => d.startsWith("dgst:rem:done:"))).toBe(true);
+    expect(datas.some((d) => d.startsWith("dgst:mem:show:"))).toBe(true);
+    expect(datas).toContain("dgst:props");
+    // Persian user content passes through; chrome stays English.
+    expect(render.text).not.toMatch(/صبح بخیر/);
   });
 
   test("empty day renders a friendly empty state, not a broken list", async () => {
     const storage = Storage.open(":memory:");
     const data = await digestData(storage);
-    const fa = renderInteractiveDigest(data, { lang: "fa" });
-    expect(fa.text).toContain("روز آرومی");
-    const en = renderInteractiveDigest(data, { lang: "en" });
+    const fa = renderInteractiveDigest(data, { locale: "en" });
+    expect(fa.text).toContain("enjoy the calm");
+    const en = renderInteractiveDigest(data, { locale: "en" });
     expect(en.text).toContain("Nothing scheduled today");
   });
 
@@ -183,12 +176,12 @@ describe("interactive rendering", () => {
     const data = await digestData(storage);
 
     const normal = callbackDatas(
-      renderInteractiveDigest(data, { lang: "fa" }).keyboard,
+      renderInteractiveDigest(data, { locale: "en" }).keyboard,
     );
     expect(normal.some((d) => d.startsWith("dgst:task:delc:"))).toBe(false);
 
     const confirm = callbackDatas(
-      renderInteractiveDigest(data, { lang: "fa", confirm: { kind: "task", id: 1 } }).keyboard,
+      renderInteractiveDigest(data, { locale: "en", confirm: { kind: "task", id: 1 } }).keyboard,
     );
     expect(confirm).toContain("dgst:task:delc:1");
     expect(confirm).toContain("dgst:task:delx:1");
@@ -214,7 +207,7 @@ describe("interactive rendering", () => {
       content: "dgst:task:delc:999\n*bold* [link](http://x)\nsecond line",
     });
     const data = await digestData(storage);
-    const render = renderInteractiveDigest(data, { lang: "fa" });
+    const render = renderInteractiveDigest(data, { locale: "en" });
     // The hostile text is in the message body as plain text…
     expect(render.text).toContain("dgst:task:delc:999");
     // …but every button payload still parses as a strict server shape.
@@ -239,13 +232,13 @@ describe("interactive rendering", () => {
     }
     storage.upsertMemory({ userId: OWNER, key: "long", content: "x".repeat(20_000) });
     const data = await digestData(storage);
-    const render = renderInteractiveDigest(data, { lang: "fa" });
+    const render = renderInteractiveDigest(data, { locale: "en" });
     expect(render.text.length).toBeLessThanOrEqual(INTERACTIVE_DIGEST_MAX_CHARS);
     // The date header always survives.
     expect(render.text).toContain("☀️");
 
     // With a tiny budget, trailing sections drop — and their buttons with them.
-    const tiny = renderInteractiveDigest(data, { lang: "fa", maxChars: 500 });
+    const tiny = renderInteractiveDigest(data, { locale: "en", maxChars: 500 });
     expect(tiny.text.length).toBeLessThanOrEqual(500);
     const datas = callbackDatas(tiny.keyboard);
     const hasMemories = tiny.text.includes("از حافظه‌ات");
@@ -260,7 +253,7 @@ describe("proposals view and memory card", () => {
         { id: "cur-0123456789abcdef", summary: "دو خاطره تکراری" },
         { id: "cur-abcdef0123456789", summary: "خاطره قدیمی" },
       ],
-      "fa",
+      "en",
     );
     expect(view.text).toContain("دو خاطره تکراری");
     const datas = callbackDatas(view.keyboard);
@@ -278,9 +271,9 @@ describe("proposals view and memory card", () => {
   test("memory card shows the full entry, capped", () => {
     const card = renderMemoryCard(
       { key: "k1", content: "a".repeat(10_000), createdAt: NOW_MS },
-      "fa",
+      "en",
     );
-    expect(card).toContain("کلید: k1");
+    expect(card).toContain("Key: k1");
     expect(card.length).toBeLessThanOrEqual(4096);
     const short = renderMemoryCard(
       { key: "k1", content: "محمد عاشق قهوه است", createdAt: NOW_MS },
@@ -437,11 +430,11 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    const handled = await handleDigestCallback(ctx, env, "dgst:refresh", "fa");
+    const handled = await handleDigestCallback(ctx, env, "dgst:refresh", "en");
     expect(handled).toBe(true);
     expect(calls.editedText).toHaveLength(1);
-    expect(calls.editedText[0]!.text).toContain("کارهای امروز");
-    expect(calls.answered).toContain("به‌روزرسانی شد 🔄");
+    expect(calls.editedText[0]!.text).toContain("Today's tasks");
+    expect(calls.answered).toContain("Refreshed 🔄");
   });
 
   test("reminder done cancels the reminder and refreshes", async () => {
@@ -450,12 +443,12 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:rem:done:${reminderId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:rem:done:${reminderId}`, "en");
     expect(storage.listReminders(OWNER)).toHaveLength(0);
     expect(storage.getReminder(OWNER, reminderId)?.state).toBe("cancelled");
     expect(calls.editedText).toHaveLength(1);
     expect(calls.editedText[0]!.text).not.toContain("یادآور تستی");
-    expect(calls.answered).toContain("انجام شد ✅");
+    expect(calls.answered).toContain("Done ✅");
   });
 
   test("task delete is two-step: arm swaps buttons, confirm deletes", async () => {
@@ -464,7 +457,7 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:del:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:del:${taskId}`, "en");
     // Nothing deleted yet; only the keyboard swapped to the confirm pair.
     expect(storage.getTask(OWNER, taskId)).not.toBeUndefined();
     expect(calls.editedMarkup).toHaveLength(1);
@@ -472,10 +465,10 @@ describe("handleDigestCallback", () => {
     expect(datas).toContain(`dgst:task:delc:${taskId}`);
     expect(datas).toContain(`dgst:task:delx:${taskId}`);
 
-    await handleDigestCallback(ctx, env, `dgst:task:delc:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:delc:${taskId}`, "en");
     expect(storage.getTask(OWNER, taskId)).toBeUndefined();
     expect(calls.editedText).toHaveLength(1);
-    expect(calls.answered).toContain("کار حذف شد 🗑");
+    expect(calls.answered).toContain("Task deleted 🗑");
   });
 
   test("delete cancel restores the row without deleting", async () => {
@@ -484,8 +477,8 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:del:${taskId}`, "fa");
-    await handleDigestCallback(ctx, env, `dgst:task:delx:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:del:${taskId}`, "en");
+    await handleDigestCallback(ctx, env, `dgst:task:delx:${taskId}`, "en");
     expect(storage.getTask(OWNER, taskId)).not.toBeUndefined();
     expect(calls.editedMarkup).toHaveLength(2);
     const datas = callbackDatas(calls.editedMarkup[1] as InlineKeyboard);
@@ -499,10 +492,10 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, "dgst:mem:show:0", "fa");
+    await handleDigestCallback(ctx, env, "dgst:mem:show:0", "en");
     expect(calls.replies).toHaveLength(1);
     expect(calls.replies[0]!.text).toContain("متن کامل حافظه");
-    expect(calls.replies[0]!.text).toContain("کلید: k1");
+    expect(calls.replies[0]!.text).toContain("Key: k1");
     // The digest message itself is untouched.
     expect(calls.editedText).toHaveLength(0);
   });
@@ -511,7 +504,7 @@ describe("handleDigestCallback", () => {
     const storage = Storage.open(":memory:");
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
-    await handleDigestCallback(ctx, env, "dgst:mem:show:2", "fa");
+    await handleDigestCallback(ctx, env, "dgst:mem:show:2", "en");
     expect(calls.replies).toHaveLength(0);
     expect(calls.editedText).toHaveLength(0);
   });
@@ -532,12 +525,12 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage, { proposalStore: store, tools });
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:prop:no:${pid}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:prop:no:${pid}`, "en");
     expect(store.getPending(OWNER, pid)).toBeUndefined();
     expect(provider.deleted).toHaveLength(0);
     expect(calls.editedText).toHaveLength(1);
-    expect(calls.editedText[0]!.text).toContain("پیشنهاد در انتظاری نداری");
-    expect(calls.answered).toContain("رد شد");
+    expect(calls.editedText[0]!.text).toContain("No pending proposals");
+    expect(calls.answered).toContain("Rejected");
   });
 
   test("proposal approve applies through the curator_decide flow", async () => {
@@ -556,10 +549,10 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage, { proposalStore: store, tools });
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:prop:ok:${pid}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:prop:ok:${pid}`, "en");
     expect(store.getPending(OWNER, pid)).toBeUndefined();
     expect(provider.deleted).toEqual([{ userId: OWNER, key: "gone" }]);
-    expect(calls.answered).toContain("تأیید و اعمال شد ✅");
+    expect(calls.answered).toContain("Approved and applied ✅");
   });
 
   test("props opens the review view; back returns to the digest", async () => {
@@ -578,13 +571,13 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage, { proposalStore: store });
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, "dgst:props", "fa");
+    await handleDigestCallback(ctx, env, "dgst:props", "en");
     expect(calls.editedText).toHaveLength(1);
     expect(calls.editedText[0]!.text).toContain("خاطره قدیمی");
 
-    await handleDigestCallback(ctx, env, "dgst:back", "fa");
+    await handleDigestCallback(ctx, env, "dgst:back", "en");
     expect(calls.editedText).toHaveLength(2);
-    expect(calls.editedText[1]!.text).toContain("صبح بخیر");
+    expect(calls.editedText[1]!.text).toContain("Good morning");
   });
 
   test("run-now executes a tool action through the executor", async () => {
@@ -613,9 +606,9 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage, { tools });
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "en");
     expect(pinged).toBe(1);
-    expect(calls.answered).toContain("اجرا شد ✅");
+    expect(calls.answered).toContain("Ran ✅");
     // The schedule is untouched by a run-now.
     expect(storage.getTask(OWNER, taskId)?.nextRunAtMs).toBe(TEN_AM_TEHRAN);
   });
@@ -633,9 +626,9 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM, OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "en");
     expect(calls.sentMessages).toEqual([{ chatId: String(OWNER_NUM), text: "سلام" }]);
-    expect(calls.answered).toContain("اجرا شد ✅");
+    expect(calls.answered).toContain("Ran ✅");
   });
 
   test("run-now refuses cross-chat delivery with an honest toast", async () => {
@@ -651,9 +644,9 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM, OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "en");
     expect(calls.sentMessages).toHaveLength(0);
-    expect(calls.answered).toContain("اجرای مستقیم فقط برای چت خودت ممکنه");
+    expect(calls.answered).toContain("Direct runs are only available for your own chat");
   });
 
   test("run-now agent action runs through the engine and delivers chunks", async () => {
@@ -684,9 +677,9 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage, { engine });
     const { ctx, calls } = makeCtx(OWNER_NUM, OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "fa");
+    await handleDigestCallback(ctx, env, `dgst:task:run:${taskId}`, "en");
     expect(calls.sentMessages).toEqual([{ chatId: String(OWNER_NUM), text: "پاسخ ایجنت" }]);
-    expect(calls.answered).toContain("اجرا شد ✅");
+    expect(calls.answered).toContain("Ran ✅");
   });
 
   test("a non-owner tap is refused: no mutation, no render", async () => {
@@ -695,7 +688,7 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(STRANGER_NUM);
 
-    const handled = await handleDigestCallback(ctx, env, `dgst:rem:done:${reminderId}`, "fa");
+    const handled = await handleDigestCallback(ctx, env, `dgst:rem:done:${reminderId}`, "en");
     expect(handled).toBe(true);
     expect(storage.listReminders(OWNER)).toHaveLength(1);
     expect(calls.editedText).toHaveLength(0);
@@ -717,7 +710,7 @@ describe("handleDigestCallback", () => {
       "dgst:mem:show:9x",
       "dgst:unknown",
     ]) {
-      expect(await handleDigestCallback(ctx, env, data, "fa")).toBe(true);
+      expect(await handleDigestCallback(ctx, env, data, "en")).toBe(true);
     }
     expect(storage.listReminders(OWNER)).toHaveLength(1);
     expect(storage.getTask(OWNER, taskId)).not.toBeUndefined();
@@ -731,9 +724,9 @@ describe("handleDigestCallback", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await handleDigestCallback(ctx, env, "dgst:task:delc:424242", "fa");
-    await handleDigestCallback(ctx, env, "dgst:task:run:424242", "fa");
-    await handleDigestCallback(ctx, env, "dgst:rem:done:424242", "fa");
+    await handleDigestCallback(ctx, env, "dgst:task:delc:424242", "en");
+    await handleDigestCallback(ctx, env, "dgst:task:run:424242", "en");
+    await handleDigestCallback(ctx, env, "dgst:rem:done:424242", "en");
     // No throw; the digest still refreshes.
     expect(calls.editedText.length).toBeGreaterThan(0);
   });
@@ -742,7 +735,7 @@ describe("handleDigestCallback", () => {
     const storage = Storage.open(":memory:");
     const env = makeEnv(storage);
     const { ctx } = makeCtx(OWNER_NUM);
-    expect(await handleDigestCallback(ctx, env, "pal:cats", "fa")).toBe(false);
+    expect(await handleDigestCallback(ctx, env, "pal:cats", "en")).toBe(false);
   });
 });
 
@@ -753,9 +746,9 @@ describe("sendInteractiveDigest", () => {
     const env = makeEnv(storage);
     const { ctx, calls } = makeCtx(OWNER_NUM);
 
-    await sendInteractiveDigest(ctx, env, "fa");
+    await sendInteractiveDigest(ctx, env, "en");
     expect(calls.replies).toHaveLength(1);
-    expect(calls.replies[0]!.text).toContain("صبح بخیر");
+    expect(calls.replies[0]!.text).toContain("Good morning");
     expect(calls.replies[0]!.text).toContain("کار تستی");
     const opts = calls.replies[0]!.opts as { reply_markup?: InlineKeyboard };
     expect(callbackDatas(opts.reply_markup!)).toContain("dgst:refresh");

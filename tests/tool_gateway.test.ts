@@ -7,7 +7,11 @@
  * the factories fill without touching their deps.
  */
 import { describe, expect, test } from "bun:test";
-import { buildSystemPrompt } from "../src/agent/prompt";
+import {
+  buildSystemPrompt,
+  CORE_TOOLS,
+  TOOL_DISCOVERY_THRESHOLD,
+} from "../src/agent/prompt";
 import type { ToolDescriptor } from "../src/tools/service";
 import { ToolService } from "../src/tools/service";
 import type { Tool, ToolActor } from "../src/tools/types";
@@ -510,15 +514,10 @@ describe("tool_search actor scoping", () => {
   });
 });
 
-// ---------- prompt discovery line ----------
+// ---------- prompt discovery line (diet semantics) ----------
 
-function descriptors(count: number): ToolDescriptor[] {
-  return Array.from({ length: count }, (_, i) => ({
-    name: `tool_${i}`,
-    description: `tool ${i}`,
-    enabled: true,
-    requires: [],
-  }));
+function descriptor(name: string, description = `${name} does things`): ToolDescriptor {
+  return { name, description, enabled: true, requires: [] };
 }
 
 const promptCtx = (tools: ToolDescriptor[]) => ({
@@ -528,18 +527,47 @@ const promptCtx = (tools: ToolDescriptor[]) => ({
 });
 
 describe("tool_search prompt hint", () => {
-  test("appears when more than 20 tools are visible", () => {
-    const prompt = buildSystemPrompt(promptCtx(descriptors(21)));
-    expect(prompt).toContain("tool_search");
+  test("core tools get full lines; the rest are counted with a tool_search pointer", () => {
+    const prompt = buildSystemPrompt(
+      promptCtx([
+        descriptor("calculator", "math"),
+        descriptor("schedule_task", "sched"),
+        descriptor("tool_search", "find tools"),
+      ]),
+    );
+    // Core tool: full name + description line.
+    expect(prompt).toContain("- calculator: math");
+    // Non-core tool: counted, not described — its definition lives in the
+    // request's tools field and one tool_search away.
+    expect(prompt).toContain("Plus 1 more");
+    expect(prompt).not.toContain("- schedule_task: sched");
+    // Discovery hint points at tool_search because it is visible to this actor.
+    expect(prompt).toContain("Call tool_search with a keyword");
   });
 
-  test("absent at exactly 20 tools", () => {
-    const prompt = buildSystemPrompt(promptCtx(descriptors(20)));
-    expect(prompt).not.toContain("tool_search");
+  test("no discovery section when every visible tool is core", () => {
+    const prompt = buildSystemPrompt(
+      promptCtx([descriptor("calculator", "math"), descriptor("tool_search", "find tools")]),
+    );
+    expect(prompt).not.toContain("Plus ");
+    expect(prompt).not.toContain("Call tool_search with a keyword");
+  });
+
+  test("falls back gracefully when tool_search itself is not visible", () => {
+    const prompt = buildSystemPrompt(
+      promptCtx([descriptor("calculator", "math"), descriptor("schedule_task", "sched")]),
+    );
+    expect(prompt).toContain("full definitions for all 2 tools are attached");
+    expect(prompt).not.toContain("Call tool_search");
   });
 
   test("absent with no tools", () => {
     const prompt = buildSystemPrompt(promptCtx([]));
     expect(prompt).not.toContain("tool_search");
+    expect(prompt).toContain("No tools available");
+  });
+
+  test("threshold caps the inline core listing", () => {
+    expect(TOOL_DISCOVERY_THRESHOLD).toBeGreaterThanOrEqual(CORE_TOOLS.size);
   });
 });

@@ -274,7 +274,7 @@ describe("generate_image failure mapping", () => {
       actor: FULL_ACTOR,
     });
     expect(r.status).toBe("error");
-    expect(r.message).toContain("شلوغ");
+    expect(r.message).toContain("busy");
   });
 
   test("a transport timeout becomes the timeout category", async () => {
@@ -299,7 +299,7 @@ describe("generate_image failure mapping", () => {
       actor: FULL_ACTOR,
     });
     expect(r.status).toBe("error");
-    expect(r.message).toContain("شلوغ");
+    expect(r.message).toContain("busy");
   });
 
   test("HTTP 401 maps to not_allowed without echoing the body", async () => {

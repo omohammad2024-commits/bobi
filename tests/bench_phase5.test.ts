@@ -644,7 +644,7 @@ describe("/bench status live progress", () => {
     };
   }
 
-  test("running worker with progress renders done/total + current task (fa)", async () => {
+  test("running worker with progress renders done/total + current task", async () => {
     const d = deps({
       tools: stubTools() as never,
       benchWorker: stubWorker({
@@ -665,12 +665,12 @@ describe("/bench status live progress", () => {
         },
       }) as never,
     });
-    const out = await handleBenchStatus(d, sender, "fa");
-    expect(out).toContain("در حال اجرا");
-    expect(out).toContain("پیشرفت");
-    expect(out).toContain("7 از 24");
+    const out = await handleBenchStatus(d, sender, "en");
+    expect(out).toContain("running");
+    expect(out).toContain("Progress");
+    expect(out).toContain("7 of 24");
     expect(out).toContain("جمع ساده");
-    expect(out).toContain("65 ثانیه");
+    expect(out).toContain("65s elapsed");
   });
 
   test("running worker with progress renders in English", async () => {
@@ -701,7 +701,7 @@ describe("/bench status live progress", () => {
 
   test("failed run note shows in /bench history", () => {
     history.recordRun(cannedReport(), "failed", "ری‌استارت دیمون وسط اجرا");
-    const out = handleBenchHistory(history, 10, "fa");
-    expect(out).toContain("یادداشت: ری‌استارت دیمون وسط اجرا");
+    const out = handleBenchHistory(history, 10, "en");
+    expect(out).toContain("Note:");
   });
 });

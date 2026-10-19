@@ -175,16 +175,16 @@ describe("parsing the one-line reply", () => {
 describe("the prompt tells the owner exactly what to send", () => {
   test("a simple service asks for the key and nothing else", () => {
     const text = setupPrompt(providerPreset("groq")!);
-    expect(text).toContain("کلید API");
+    expect(text).toContain("API key");
     // No URL, no label, no model id to type.
-    expect(text).not.toContain("نام نمایشی");
-    expect(text).not.toContain("آدرس سرویس:");
+    expect(text).not.toContain("Display name");
+    expect(text).not.toContain("Service URL:");
   });
 
   test("a service needing a placeholder says so and shows the format", () => {
     const text = setupPrompt(providerPreset("cloudflare")!);
     expect(text).toContain("ACCOUNT_ID");
-    expect(text).toContain("کاما");
+    expect(text).toContain("comma");
   });
 
   test("the suggested model is named, so the result is not a surprise", () => {

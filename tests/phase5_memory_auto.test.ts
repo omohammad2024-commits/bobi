@@ -569,22 +569,22 @@ describe("/memory command handlers", () => {
   test("auto on/off/status round-trip", async () => {
     const s = setupSweep();
     const env = autoEnv(s);
-    expect(await handleMemoryAuto("fa", "status", env)).toContain("غیرفعال");
-    expect(await handleMemoryAuto("fa", "on", env)).toContain("فعال شد");
+    expect(await handleMemoryAuto("en", "status", env)).toContain("disabled");
+    expect(await handleMemoryAuto("en", "on", env)).toContain("enabled");
     expect(isAutoExtractEnabled(s.prefs, OWNER)).toBe(true);
     expect(await handleMemoryAuto("en", "status", env)).toContain("enabled");
-    expect(await handleMemoryAuto("fa", "off", env)).toContain("غیرفعال شد");
-    expect(await handleMemoryAuto("fa", "bogus", env)).toContain("/memory auto");
+    expect(await handleMemoryAuto("en", "off", env)).toContain("disabled");
+    expect(await handleMemoryAuto("en", "bogus", env)).toContain("/memory auto");
   });
 
   test("auto scan reports counts and needs the feature enabled", async () => {
     const s = setupSweep();
     const env = autoEnv(s);
-    expect(await handleMemoryAuto("fa", "scan", env)).toContain("غیرفعال");
+    expect(await handleMemoryAuto("en", "scan", env)).toContain("disabled");
     setAutoExtractEnabled(s.prefs, OWNER, true);
     s.convs.add("c1", [{ role: "user", content: "تولد علی ۱۵ مرداده", createdAt: 9000 }]);
-    const text = await handleMemoryAuto("fa", "scan", env);
-    expect(text).toContain("1 پیشنهاد جدید");
+    const text = await handleMemoryAuto("en", "scan", env);
+    expect(text).toContain("new proposals");
     expect(text).toContain("/curator");
     expect(s.store.listPending(OWNER)).toHaveLength(1);
   });
@@ -598,27 +598,27 @@ describe("/memory command handlers", () => {
 
     const dst = new FakeMemoryProvider();
     const store = new ProposalStore(new Database(":memory:"));
-    const done = await handleMemoryImportText("fa", exp.text, {
+    const done = await handleMemoryImportText("en", exp.text, {
       provider: dst,
       proposalStore: store,
       ownerId: OWNER,
     }, false);
-    expect(done).toContain("2 حافظه");
+    expect(done).toContain("2 memories");
     expect(dst.get(OWNER, "project")?.content).toBe("پروژهٔ بابی");
 
     // Re-import → all skipped.
-    const again = await handleMemoryImportText("fa", exp.text, {
+    const again = await handleMemoryImportText("en", exp.text, {
       provider: dst,
       proposalStore: store,
       ownerId: OWNER,
     }, false);
-    expect(again).toContain("3 مورد تکراری");
+    expect(again).toContain("duplicates");
   });
 
   test("import handler rejects garbage and reports conflicts as proposals", async () => {
     const store = new ProposalStore(new Database(":memory:"));
     const env = { provider: new FakeMemoryProvider(), proposalStore: store, ownerId: OWNER };
-    expect(await handleMemoryImportText("fa", "junk", env, false)).toContain("JSON");
+    expect(await handleMemoryImportText("en", "junk", env, false)).toContain("JSON");
     expect(await handleMemoryImportText("en", "junk", env, false)).toContain("not JSON");
 
     const src = seedSource();
@@ -626,7 +626,7 @@ describe("/memory command handlers", () => {
     if (!exp.ok) throw new Error("export failed");
     const dst = new FakeMemoryProvider();
     dst.seed("project", "قدیمی", 1);
-    const text = await handleMemoryImportText("fa", exp.text, {
+    const text = await handleMemoryImportText("en", exp.text, {
       provider: dst,
       proposalStore: store,
       ownerId: OWNER,

@@ -201,7 +201,7 @@ describe("signed package export/verify", () => {
     expect(verified.ok).toBe(false);
     if (verified.ok) return;
     expect(verified.error.kind).toBe("bad_signature");
-    expect(renderImportError("fa", verified.error, "test")).toContain("امضای بسته نامعتبر");
+    expect(renderImportError("en", verified.error, "test")).toContain("Bad package signature");
     expect(renderImportError("en", verified.error, "test")).toContain("Bad package signature");
   });
 
@@ -243,8 +243,8 @@ describe("signed package export/verify", () => {
     expect(plan.ok).toBe(true);
     if (!plan.ok) return;
     expect(plan.plan.signature?.trusted).toBe(false);
-    const card = renderImportReviewCard("fa", plan.plan);
-    expect(card).toContain("کلید ناشناس");
+    const card = renderImportReviewCard("en", plan.plan);
+    expect(card).toContain("unknown key");
   });
 
   test("corrupt signer fails the export, never ships a bad package", () => {
@@ -314,12 +314,12 @@ describe("trusted-publisher registry", () => {
 describe("/skill keygen and keyexport", () => {
   test("keygen creates, refuses twice, regenerates with --force", () => {
     const s = memStorage();
-    const first = handleSkillKeygen("fa", s, false);
-    expect(first).toContain("جفت‌کلید");
+    const first = handleSkillKeygen("en", s, false);
+    expect(first).toContain("keypair");
     const keyId1 = s.getSkillSigningKey()!.keyId;
 
-    const again = handleSkillKeygen("fa", s, false);
-    expect(again).toContain("از قبل");
+    const again = handleSkillKeygen("en", s, false);
+    expect(again).toContain("already exists");
     expect(s.getSkillSigningKey()!.keyId).toBe(keyId1);
 
     const forced = handleSkillKeygen("en", s, true);
@@ -329,11 +329,11 @@ describe("/skill keygen and keyexport", () => {
 
   test("keyexport returns the private key as a document payload", () => {
     const s = memStorage();
-    const missing = handleSkillKeyExport("fa", s);
+    const missing = handleSkillKeyExport("en", s);
     expect(missing.ok).toBe(false);
 
-    handleSkillKeygen("fa", s, false);
-    const res = handleSkillKeyExport("fa", s);
+    handleSkillKeygen("en", s, false);
+    const res = handleSkillKeyExport("en", s);
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.fileName).toBe("bobi-skill-signing-key.json");
@@ -345,7 +345,7 @@ describe("/skill keygen and keyexport", () => {
   test("exportSigner reflects keygen state", () => {
     const s = memStorage();
     expect(exportSigner(s)).toBeUndefined();
-    handleSkillKeygen("fa", s, false);
+    handleSkillKeygen("en", s, false);
     const signer = exportSigner(s);
     expect(signer?.publicKeyB64).toBe(s.getSkillSigningKey()!.publicKey);
   });
@@ -355,9 +355,9 @@ describe("/skill trust, untrust, trusted", () => {
   test("trust by public key, then by key id", () => {
     const s = memStorage();
     const kp = generateSigningKeypair();
-    const added = handleSkillTrust("fa", s, kp.publicKeyB64, "دوستم");
+    const added = handleSkillTrust("en", s, kp.publicKeyB64, "دوستم");
     expect(added).toContain("دوستم");
-    expect(added).toContain("فهرست اعتماد");
+    expect(added).toContain("trust list");
     expect(s.getTrustedSkillPublisher(kp.keyId)?.publicKey).toBe(kp.publicKeyB64);
 
     const other = generateSigningKeypair();
@@ -368,28 +368,28 @@ describe("/skill trust, untrust, trusted", () => {
 
   test("trust rejects garbage input", () => {
     const s = memStorage();
-    expect(handleSkillTrust("fa", s, "nope", undefined)).toContain("معتبر نیست");
-    expect(handleSkillTrust("fa", s, undefined, undefined)).toContain("شناسهٔ ناشر را بده");
+    expect(handleSkillTrust("en", s, "nope", undefined)).toContain("Invalid input");
+    expect(handleSkillTrust("en", s, undefined, undefined)).toContain("Give a publisher id");
   });
 
   test("untrust revokes; unknown id reports missing", () => {
     const s = memStorage();
     const kp = generateSigningKeypair();
-    handleSkillTrust("fa", s, kp.keyId, "x");
-    const removed = handleSkillUntrust("fa", s, kp.keyId);
-    expect(removed).toContain("حذف شد");
-    expect(handleSkillUntrust("fa", s, kp.keyId)).toContain("فهرست اعتماد نیست");
+    handleSkillTrust("en", s, kp.keyId, "x");
+    const removed = handleSkillUntrust("en", s, kp.keyId);
+    expect(removed).toContain("removed from the trust list");
+    expect(handleSkillUntrust("en", s, kp.keyId)).toContain("not in the trust list");
     expect(handleSkillUntrust("en", s, undefined)).toContain("Give a publisher id");
   });
 
   test("trusted lists labels", () => {
     const s = memStorage();
-    expect(handleSkillTrustedList("fa", s)).toContain("خالی است");
+    expect(handleSkillTrustedList("en", s)).toContain("Trust list is empty");
     const a = generateSigningKeypair();
     const b = generateSigningKeypair();
-    handleSkillTrust("fa", s, a.keyId, "آلفا");
-    handleSkillTrust("fa", s, b.keyId, "بتا");
-    const list = handleSkillTrustedList("fa", s);
+    handleSkillTrust("en", s, a.keyId, "آلفا");
+    handleSkillTrust("en", s, b.keyId, "بتا");
+    const list = handleSkillTrustedList("en", s);
     expect(list).toContain("آلفا");
     expect(list).toContain("بتا");
     expect(list).toContain("(2)");
@@ -408,12 +408,12 @@ describe("signed import flows", () => {
   test("unsigned import still works with explicit approval", () => {
     const dir = tmpDir();
     const store = new PendingStore();
-    const outcome = planImportFromPackage("fa", buildSkillPackageSource(dir), "file", dir);
+    const outcome = planImportFromPackage("en", buildSkillPackageSource(dir), "file", dir);
     expect(outcome.outcome).toBe("review");
-    expect(outcome.text).toContain("بدون امضا");
+    expect(outcome.text).toContain("Unsigned");
     const token = store.createInstall(outcome.pending!);
-    const done = approvePendingImport("fa", store, token, dir);
-    expect(done).toContain("وارد شد");
+    const done = approvePendingImport("en", store, token, dir);
+    expect(done).toContain("imported");
     // Disabled by default.
     expect(listInstalledSkillNames(dir)).toEqual([{ name: "memory-coach", enabled: false }]);
   });
@@ -427,9 +427,9 @@ describe("signed import flows", () => {
     const trust: SkillTrust = storageSkillTrust(s);
 
     const pkg = signedPackage(dir, { publicKeyB64: kp.publicKeyB64, privateKeyJwk: kp.privateKeyJwk });
-    const outcome = planImportFromPackage("fa", pkg, "file", dir, trust);
+    const outcome = planImportFromPackage("en", pkg, "file", dir, trust);
     expect(outcome.outcome).toBe("review");
-    expect(outcome.text).toContain("ناشر مورداعتماد");
+    expect(outcome.text).toContain("trusted publisher");
     expect(outcome.text).toContain("ناشر خوب");
     // Compact card: the 6th body line is beyond the 5-line preview.
     expect(outcome.text).not.toContain("Sixth line.");
@@ -437,11 +437,11 @@ describe("signed import flows", () => {
     // Approve records provenance.
     const store = new PendingStore();
     const token = store.createInstall(outcome.pending!);
-    approvePendingImport("fa", store, token, dir, { storage: s, trust });
+    approvePendingImport("en", store, token, dir, { storage: s, trust });
     expect(s.getSkillInstallProvenance("memory-coach")?.keyId).toBe(kp.keyId);
 
     // /skill list shows the trusted publisher.
-    const list = handleSkillList("fa", dir, s);
+    const list = handleSkillList("en", dir, s);
     expect(list).toContain("ناشر خوب");
   });
 
@@ -455,15 +455,15 @@ describe("signed import flows", () => {
 
     const pkg = signedPackage(dir, { publicKeyB64: kp.publicKeyB64, privateKeyJwk: kp.privateKeyJwk });
     const store = new PendingStore();
-    const outcome = planImportFromPackage("fa", pkg, "file", dir, trust);
+    const outcome = planImportFromPackage("en", pkg, "file", dir, trust);
     const token = store.createInstall(outcome.pending!);
-    approvePendingImport("fa", store, token, dir, { storage: s, trust });
+    approvePendingImport("en", store, token, dir, { storage: s, trust });
 
     // Revoke…
     s.untrustSkillPublisher(kp.keyId);
-    const list = handleSkillList("fa", dir, s);
+    const list = handleSkillList("en", dir, s);
     expect(list).toContain("memory-coach");
-    expect(list).toContain("امضا معتبر ولی ناشر در فهرست اعتماد نیست");
+    expect(list).toContain("publisher not trusted");
     // …and the English twin renders too.
     expect(handleSkillList("en", dir, s)).toContain("publisher not trusted");
   });
@@ -474,9 +474,9 @@ describe("signed import flows", () => {
     const pkg = signedPackage(dir, keypair());
     const env = JSON.parse(pkg) as Record<string, { sig: string }>;
     env["signature"]!.sig = Buffer.alloc(64, 9).toString("base64");
-    const outcome = planImportFromPackage("fa", JSON.stringify(env), "file", dir);
+    const outcome = planImportFromPackage("en", JSON.stringify(env), "file", dir);
     expect(outcome.outcome).toBe("error");
-    expect(outcome.text).toContain("امضای بسته نامعتبر");
+    expect(outcome.text).toContain("Bad package signature");
   });
 
   test("approve re-verifies: a swapped packageText is rejected", () => {
@@ -484,13 +484,13 @@ describe("signed import flows", () => {
     writeSkill(dir, "memory-coach", SKILL);
     const pkg = signedPackage(dir, keypair());
     const store = new PendingStore();
-    const outcome = planImportFromPackage("fa", pkg, "file", dir);
+    const outcome = planImportFromPackage("en", pkg, "file", dir);
     expect(outcome.outcome).toBe("review");
     // Attacker swaps the pending envelope after the review card was shown.
     outcome.pending!.packageText = pkg.replace("memory-coach", "memory-evil");
     const token = store.createInstall(outcome.pending!);
-    const done = approvePendingImport("fa", store, token, dir);
-    expect(done).toContain("دست‌کاری");
+    const done = approvePendingImport("en", store, token, dir);
+    expect(done).toContain("tampered with");
   });
 
   test("renderSignatureStatus covers all three states", () => {
@@ -499,9 +499,9 @@ describe("signed import flows", () => {
       isTrusted: (id) => id === kp.keyId,
       labelOf: (id) => (id === kp.keyId ? "خودم" : undefined),
     };
-    expect(renderSignatureStatus("fa", undefined, trust)).toContain("بدون امضا");
+    expect(renderSignatureStatus("en", undefined, trust)).toContain("Unsigned");
     expect(
-      renderSignatureStatus("fa", { keyId: kp.keyId, publicKeyB64: kp.publicKeyB64, trusted: true }, trust),
+      renderSignatureStatus("en", { keyId: kp.keyId, publicKeyB64: kp.publicKeyB64, trusted: true }, trust),
     ).toContain("خودم");
     const other = generateSigningKeypair();
     expect(
@@ -511,7 +511,7 @@ describe("signed import flows", () => {
 
   test("/skill list on an empty dir", () => {
     const s = memStorage();
-    expect(handleSkillList("fa", tmpDir(), s)).toContain("نصب نشده");
+    expect(handleSkillList("en", tmpDir(), s)).toContain("No skills installed");
   });
 });
 

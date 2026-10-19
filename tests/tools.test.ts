@@ -252,7 +252,7 @@ describe("safe error handling", () => {
     const r = await ex.execute({ tool: "boom", input: {}, actor: granted("boom") });
     expect(r.status).toBe("error");
     // Generic message only — no secret, no path, no stack.
-    expect(r.message).toBe("خطای داخلی ابزار.");
+    expect(r.message).toBe("Internal tool error.");
     expect(JSON.stringify(r)).not.toContain("SECRET_TOKEN");
     expect(JSON.stringify(r)).not.toContain("/internal/path");
     expect(JSON.stringify(r)).not.toContain("abc123");
@@ -270,7 +270,7 @@ describe("safe error handling", () => {
       actor: { ...ALL, permissions: ["tools:void"] },
     });
     expect(r.status).toBe("error");
-    expect(r.message).toBe("نتیجهٔ ابزار نامعتبر بود.");
+    expect(r.message).toBe("The tool returned an invalid result.");
   });
 
   test("ToolError kinds map to safe user messages", async () => {
@@ -288,7 +288,7 @@ describe("safe error handling", () => {
     const ex = new ToolExecutor({ registry: reg });
     const r = await ex.execute({ tool: "k", input: {}, actor: ALL });
     expect(r.status).toBe("error");
-    expect(r.message).toBe("اجرای ابزار طول کشید و لغو شد.");
+    expect(r.message).toBe("The tool run timed out.");
   });
 
   test("execute never throws, whatever the input", async () => {
@@ -353,7 +353,7 @@ describe("concurrency and timeout", () => {
     const started = Date.now();
     const r = await ex.execute({ tool: "hanging", input: {}, actor: ALL });
     expect(r.status).toBe("error");
-    expect(r.message).toBe("اجرای ابزار طول کشید و لغو شد.");
+    expect(r.message).toBe("The tool run timed out.");
     // Returns promptly after the deadline, not after the tool's 5s expiry.
     expect(Date.now() - started).toBeLessThan(2000);
   });

@@ -13,7 +13,7 @@ import {
   EventStore,
   eventKeyFor,
   eventKindLabel,
-  eventWhenFa,
+  eventWhen,
   extractEvents,
   formatEventReminder,
   nextOccurrence,
@@ -352,24 +352,22 @@ describe("sweepEvents", () => {
 // ---------------------------------------------------------------------------
 
 describe("event formatting", () => {
-  test("eventWhenFa uses Persian digits", () => {
-    expect(eventWhenFa(0)).toBe("امروز");
-    expect(eventWhenFa(1)).toBe("فردا");
-    expect(eventWhenFa(19)).toBe("۱۹ روز دیگه");
+  test("eventWhen phrases in English", () => {
+    expect(eventWhen(0)).toBe("today");
+    expect(eventWhen(1)).toBe("tomorrow");
+    expect(eventWhen(19)).toBe("in 19 days");
   });
 
-  test("formatEventReminder is bilingual", () => {
+  test("formatEventReminder renders English with the Persian label intact", () => {
     const event = ev({ name: "علی", kind: "birthday", labelFa: "۱۵ مرداد" });
-    expect(formatEventReminder(event, 19, "fa")).toBe("🎉 ۱۹ روز دیگه تولد علی است (۱۵ مرداد).");
-    expect(formatEventReminder(event, 19, "en")).toBe("🎉 birthday of علی in 19 days (۱۵ مرداد).");
-    expect(formatEventReminder(event, 0, "fa")).toBe("🎉 امروز تولد علی است (۱۵ مرداد).");
+    expect(formatEventReminder(event, 19)).toBe("🎉 birthday of علی in 19 days (۱۵ مرداد).");
+    expect(formatEventReminder(event, 0)).toBe("🎉 birthday of علی today (۱۵ مرداد).");
   });
 
-  test("eventKindLabel covers every kind in both languages", () => {
+  test("eventKindLabel covers every kind in English", () => {
     const kinds: EventKind[] = ["birthday", "anniversary", "monthly", "once"];
     for (const kind of kinds) {
-      expect(eventKindLabel(kind, "fa").length).toBeGreaterThan(0);
-      expect(eventKindLabel(kind, "en").length).toBeGreaterThan(0);
+      expect(eventKindLabel(kind).length).toBeGreaterThan(0);
     }
   });
 });

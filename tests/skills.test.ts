@@ -237,7 +237,7 @@ describe("skills prompt injection", () => {
   test("buildSkillsContext renders matched skills with a delimiter header", () => {
     const skills = [mkSkill("memory-coach", "Coach.", ["memory"], "Remember to offer.")];
     const ctx = buildSkillsContext(skills, "help my memory");
-    expect(ctx).toContain("مهارت‌های فعال");
+    expect(ctx).toContain("Active skills");
     expect(ctx).toContain("### memory-coach");
     expect(ctx).toContain("Remember to offer.");
   });
@@ -282,9 +282,9 @@ describe("skills prompt injection", () => {
     });
     expect(prompt).toContain("### memory-coach");
     // Existing structure untouched: identity, tool rules, answer rule present.
-    expect(prompt).toContain("تو بابی هستی");
-    expect(prompt).toContain("قواعد کار با ابزار");
-    expect(prompt).toContain("بدون فراخوانی ابزار پاسخ نهایی را بنویس");
+    expect(prompt).toContain("You are Bobi");
+    expect(prompt).toContain("Tool rules:");
+    expect(prompt).toContain("answer directly without calling tools");
   });
 
   test("omitted skillContext leaves the prompt unchanged", () => {
@@ -293,6 +293,6 @@ describe("skills prompt injection", () => {
       now: new Date("2026-10-18T12:00:00Z"),
       timezone: "Asia/Tehran",
     });
-    expect(withNone).not.toContain("مهارت‌های فعال");
+    expect(withNone).not.toContain("Active skills");
   });
 });

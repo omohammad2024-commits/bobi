@@ -18,10 +18,10 @@ import {
 // ---------- /help ----------
 
 describe("/help visibility", () => {
-  test("non-owners see exactly the public surface: start, help, commands, voice, lang", () => {
+  test("non-owners see exactly the public surface: start, help, commands, voice", () => {
     const entries = visibleCommandHelp(false);
     const names = entries.map((c) => c.name);
-    expect(names).toEqual(["start", "help", "commands", "voice", "lang"]);
+    expect(names).toEqual(["start", "help", "commands", "voice"]);
     expect(names).not.toContain("admin");
     expect(names).not.toContain("ai");
     expect(names).not.toContain("model");
@@ -38,65 +38,63 @@ describe("/help visibility", () => {
     expect(names).toContain("skill");
     expect(names).toContain("bench");
     expect(names).toContain("gassistant");
-    expect(names).toHaveLength(74);
+    expect(names).toHaveLength(73);
   });
 
-  test("every entry has a Persian one-line description", () => {
+  test("every entry has an English one-line description", () => {
     for (const c of visibleCommandHelp(true)) {
-      expect(c.descriptionFa.trim().length).toBeGreaterThan(0);
-      expect(c.descriptionFa).not.toContain("\n");
+      expect(c.description.trim().length).toBeGreaterThan(0);
+      expect(c.description).not.toContain("\n");
     }
   });
 
   test("formatted help lists /name — description lines", () => {
     const text = formatCommandHelp(visibleCommandHelp(false));
-    expect(text).toContain("/help — راهنمای دستورها");
+    expect(text).toContain("/help — Command reference");
     expect(text).not.toContain("/admin");
   });
 
   test("public help shows only the general group — no session/automation/owner sections", () => {
     const text = formatCommandHelp(visibleCommandHelp(false));
-    expect(text).toContain("🔹 عمومی");
-    expect(text).not.toContain("🗂 نشست");
-    expect(text).not.toContain("⚡️ اتوماسیون");
-    expect(text).not.toContain("🔒 مالک");
-    expect(text).toContain("/lang — تغییر زبان رابط کاربری");
+    expect(text).toContain("🔹 General");
+    expect(text).not.toContain("🗂 Session");
+    expect(text).not.toContain("⚡️ Automation");
+    expect(text).not.toContain("🔒 Owner");
     expect(text).not.toContain("/history");
   });
 
   test("commands with examples render a one-line usage (owner help)", () => {
     const text = formatCommandHelp(visibleCommandHelp(true));
-    expect(text).toContain("/history 20 — نمایش تاریخچهٔ گفت‌وگو");
-    expect(text).toContain("/undo 2 — بازگشت و بازنویسی");
+    expect(text).toContain("/history 20 — Show conversation history");
+    expect(text).toContain("/undo 2 — Undo the last turns");
     const en = formatCommandHelp(visibleCommandHelp(true), "en");
     expect(en).toContain("/history 20 — Show conversation history");
   });
 
   test("owner help gains the owner section; sections render in a fixed order", () => {
     const text = formatCommandHelp(visibleCommandHelp(true));
-    expect(text).toContain("🔒 مالک");
-    expect(text).toContain("/admin — پنل مدیریت ربات");
-    expect(text.indexOf("🔹 عمومی")).toBeLessThan(text.indexOf("🗂 نشست"));
-    expect(text.indexOf("🗂 نشست")).toBeLessThan(text.indexOf("⚡️ اتوماسیون"));
-    expect(text.indexOf("⚡️ اتوماسیون")).toBeLessThan(text.indexOf("🔒 مالک"));
+    expect(text).toContain("🔒 Owner");
+    expect(text).toContain("/admin — Bot admin panel");
+    expect(text.indexOf("🔹 General")).toBeLessThan(text.indexOf("🗂 Session"));
+    expect(text.indexOf("🗂 Session")).toBeLessThan(text.indexOf("⚡️ Automation"));
+    expect(text.indexOf("⚡️ Automation")).toBeLessThan(text.indexOf("🔒 Owner"));
   });
 
-  test("every entry has a valid group; only the public five are visible to non-owners", () => {
+  test("every entry has a valid group; only the public four are visible to non-owners", () => {
     for (const c of COMMAND_HELP) {
       expect(["general", "session", "automation", "owner"]).toContain(c.group);
       // Two-tier model: owner-only entries keep their display group (the
       // owner's /help stays categorized); the tier flag is what gates.
       if (!c.ownerOnly) {
-        expect(["start", "help", "commands", "voice", "lang"]).toContain(c.name);
+        expect(["start", "help", "commands", "voice"]).toContain(c.name);
       }
     }
-    expect(COMMAND_HELP.length).toBe(74);
+    expect(COMMAND_HELP.length).toBe(73);
     expect(visibleCommandHelp(false).map((c) => c.name)).toEqual([
       "start",
       "help",
       "commands",
       "voice",
-      "lang",
     ]);
   });
 });
@@ -138,7 +136,7 @@ describe("/reset scoping", () => {
     expect(cancelled).toEqual(["100"]);
     // Exactly one clear, scoped to THIS user+chat — nothing broader.
     expect(cleared).toEqual([{ conversationId: "100", userId: "5" }]);
-    expect(replies[0]).toContain("پاک شد");
+    expect(replies[0]).toContain("history was cleared");
     // The in-flight registration is gone, so /stop finds nothing afterwards.
     expect(stopTurn("100")).toBe(false);
   });
@@ -200,7 +198,7 @@ describe("/reset scoping", () => {
 // ---------- /compress ----------
 
 describe("/compress", () => {
-  test("each seam outcome maps to its Persian reply", async () => {
+  test("each seam outcome maps to its English reply", async () => {
     for (const result of ["compressed", "nothing_to_compress", "failed", "unavailable"] as const) {
       const engine = {
         async compressNow(): Promise<CompressResult> {
@@ -328,7 +326,7 @@ describe("/stop registry", () => {
 });
 
 describe("/stop command", () => {
-  test("aborts the in-flight turn and confirms in Persian", async () => {
+  test("aborts the in-flight turn and confirms in English", async () => {
     const cancelled: string[] = [];
     const engine = { cancel: (id: string) => cancelled.push(id) };
     const controller = enterTurn("55");
@@ -336,7 +334,7 @@ describe("/stop command", () => {
     await handleStopCommand(ctx, { engine });
     expect(controller.signal.aborted).toBe(true);
     expect(cancelled).toEqual(["55"]);
-    expect(replies).toEqual(["متوقف شد ✅"]);
+    expect(replies).toEqual(["Stopped ✅"]);
   });
 
   test("reports when nothing is running", async () => {
@@ -344,7 +342,7 @@ describe("/stop command", () => {
     const engine = { cancel: (id: string) => cancelled.push(id) };
     const { ctx, replies } = stubCtx(66, 7);
     await handleStopCommand(ctx, { engine });
-    expect(replies).toEqual(["چیزی در حال اجرا نبود."]);
+    expect(replies).toEqual(["Nothing was running."]);
     expect(cancelled).toEqual([]);
   });
 });

@@ -150,7 +150,7 @@ describe("consult_models tool", () => {
     const synthReq = provider.requests[provider.requests.length - 1]!;
     expect(synthReq.model).toBe("model-synth");
     const prompt = synthReq.messages.map((m: ChatMessage) => m.content).join("\n");
-    expect(prompt).toContain("بهترین ترکیب");
+    expect(prompt).toContain("best synthesis");
     expect(prompt).toContain("پاسخ الف");
     expect(prompt).toContain("پاسخ ب");
     expect(prompt).toContain("بهترین زبان برنامه‌نویسی کدام است؟");

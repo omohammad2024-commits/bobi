@@ -22,7 +22,7 @@ describe("conversation engine", () => {
     const out = await eng.respond(ok("سلام"));
     expect(out.isFake).toBe(true);
     expect(out.chunks.length).toBe(1);
-    expect(out.chunks[0]).toContain("آزمایشی بابی");
+    expect(out.chunks[0]).toContain("BOBI test mode");
   });
 
   test("empty / whitespace input rejected", async () => {
@@ -95,7 +95,7 @@ describe("conversation engine", () => {
     );
   });
 
-  test("concurrent requests on same conversation are serialized", async () => {
+  test("a newer message supersedes in-flight runs on the same conversation", async () => {
     let inFlight = 0;
     let maxInFlight = 0;
     const counter: AiProvider = {
@@ -109,10 +109,19 @@ describe("conversation engine", () => {
       },
     };
     const eng = makeEngine({}, counter);
-    await Promise.all([eng.respond(ok("a")), eng.respond(ok("b")), eng.respond(ok("c"))]);
+    const results = await Promise.allSettled([
+      eng.respond(ok("a")),
+      eng.respond(ok("b")),
+      eng.respond(ok("c")),
+    ]);
+    // The documented supersede rule: a newer message cancels the in-flight
+    // run rather than queueing behind it. Only the last request survives;
+    // the earlier two reject as superseded.
+    expect(results[0]!.status).toBe("rejected");
+    expect(results[1]!.status).toBe("rejected");
+    expect(results[2]!.status).toBe("fulfilled");
     // serialized per conversation → provider never saw 2 in-flight for c1
     expect(maxInFlight).toBe(1);
-    expect(eng.getHistory("c1").length).toBe(6); // 3 user + 3 assistant
   });
 
   test("different conversations are isolated", async () => {

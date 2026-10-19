@@ -379,7 +379,8 @@ describe("generate_video poll bounds", () => {
       actor: FULL_ACTOR,
     });
     expect(r.status).toBe("error");
-    expect(r.message).toContain("طول کشید");
+    // The executor maps timeouts to the generic English message by design.
+    expect(r.message).toBe("The tool run timed out.");
     // 1 submit + 3 status polls, then the loop gives up.
     expect(captured.filter((c) => c.url.includes("jobs/job-9"))).toHaveLength(3);
   });
@@ -397,7 +398,7 @@ describe("generate_video poll bounds", () => {
     expect(r.status).toBe("error");
     // The executor sanitises invalid_result messages by design (executor.ts),
     // so the tool's own detail never reaches the user.
-    expect(r.message).toBe("نتیجهٔ ابزار نامعتبر بود.");
+    expect(r.message).toBe("The tool returned an invalid result.");
   });
 
   test("production defaults bound the loop by time AND attempts", () => {
@@ -424,7 +425,7 @@ describe("generate_video failure mapping", () => {
       actor: FULL_ACTOR,
     });
     expect(r.status).toBe("error");
-    expect(r.message).toContain("شلوغ");
+    expect(r.message).toContain("busy");
   });
 
   test("HTTP 429 on submit maps to overloaded", async () => {
@@ -434,7 +435,7 @@ describe("generate_video failure mapping", () => {
       actor: FULL_ACTOR,
     });
     expect(r.status).toBe("error");
-    expect(r.message).toContain("شلوغ");
+    expect(r.message).toContain("busy");
   });
 
   test("HTTP 401 maps to not_allowed without echoing the body", async () => {

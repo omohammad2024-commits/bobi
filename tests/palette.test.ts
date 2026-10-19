@@ -145,8 +145,8 @@ describe("parsePaletteCallback", () => {
 
 describe("palette grouping", () => {
   test("renders from COMMAND_HELP, owner-filtered like /help", () => {
-    const ownerRender = paletteCategoriesRender(true, "fa");
-    const userRender = paletteCategoriesRender(false, "fa");
+    const ownerRender = paletteCategoriesRender(true, "en");
+    const userRender = paletteCategoriesRender(false, "en");
     const ownerCounts = paletteGroupCounts(visibleCommandHelp(true));
     const userCounts = paletteGroupCounts(visibleCommandHelp(false));
     expect(ownerCounts.owner).toBeGreaterThan(0);
@@ -160,9 +160,9 @@ describe("palette grouping", () => {
     ]);
     expect(callbackData(userRender.keyboard)).toEqual([
       "pal:cat:general:0",
-      "pal:cat:session:0",
-      "pal:cat:automation:0",
     ]);
+    // The public sees no dead category buttons: session/automation have
+    // zero visible entries for non-owners, so they are skipped entirely.
     // Counts on the buttons match the visible entries.
     const texts = (
       ownerRender.keyboard as {
@@ -171,8 +171,8 @@ describe("palette grouping", () => {
     ).inline_keyboard
       .flat()
       .map((b) => b.text);
-    expect(texts[0]).toContain(formatCount(ownerCounts.general, "fa"));
-    expect(texts[3]).toContain(formatCount(ownerCounts.owner, "fa"));
+    expect(texts[0]).toContain(formatCount(ownerCounts.general, "en"));
+    expect(texts[3]).toContain(formatCount(ownerCounts.owner, "en"));
   });
 
   test("every COMMAND_HELP entry appears in exactly one group", () => {
@@ -182,9 +182,9 @@ describe("palette grouping", () => {
     expect(total).toBe(COMMAND_HELP.length);
   });
 
-  test("bilingual titles", () => {
-    expect(paletteCategoriesText("fa")).toContain("مرورگر دستورها");
+  test("english-only titles", () => {
     expect(paletteCategoriesText("en")).toContain("Command browser");
+    expect(paletteCategoriesText("en")).not.toMatch(/[\u0600-\u06FF]/);
   });
 });
 
@@ -221,7 +221,7 @@ describe("palette pagination", () => {
   test("category keyboard: command buttons, nav, back", () => {
     const entries = visibleCommandHelp(true);
     const { pageEntries, totalPages } = palettePageEntries(entries, "session", 0);
-    const kb = buildCategoryKeyboard("session", pageEntries, 0, totalPages, "fa");
+    const kb = buildCategoryKeyboard("session", pageEntries, 0, totalPages, "en");
     const data = callbackData(kb);
     // 8 command buttons, then next-page, then back to categories.
     expect(data.slice(0, 8)).toEqual(
@@ -237,7 +237,7 @@ describe("palette pagination", () => {
       last.pageEntries,
       1,
       last.totalPages,
-      "fa",
+      "en",
     );
     const dataLast = callbackData(kbLast);
     expect(dataLast).toContain("pal:cat:session:0");
@@ -245,12 +245,12 @@ describe("palette pagination", () => {
 
     // Single-page group: no prev/next at all.
     const tiny: CommandHelpEntry[] = [
-      { name: "a", descriptionFa: "x", ownerOnly: false, group: "general" },
-      { name: "b", descriptionFa: "y", ownerOnly: false, group: "general" },
+      { name: "a", description: "x", ownerOnly: false, group: "general" },
+      { name: "b", description: "y", ownerOnly: false, group: "general" },
     ];
     const one = palettePageEntries(tiny, "general", 0);
     expect(one.totalPages).toBe(1);
-    const kbOne = buildCategoryKeyboard("general", one.pageEntries, 0, 1, "fa");
+    const kbOne = buildCategoryKeyboard("general", one.pageEntries, 0, 1, "en");
     expect(callbackData(kbOne)).toEqual(["pal:cmd:a", "pal:cmd:b", "pal:cats"]);
   });
 
@@ -259,8 +259,8 @@ describe("palette pagination", () => {
     // owner view still renders one line per entry.
     const entries = visibleCommandHelp(true);
     const { pageEntries, totalPages } = palettePageEntries(entries, "session", 0);
-    const text = paletteCategoryText("session", pageEntries, 0, totalPages, "fa");
-    expect(text).toContain("/history 20 — نمایش تاریخچهٔ گفت‌وگو");
+    const text = paletteCategoryText("session", pageEntries, 0, totalPages, "en");
+    expect(text).toContain("/history 20 — Show conversation history");
     const en = paletteCategoryText("session", pageEntries, 0, totalPages, "en");
     expect(en).toContain("/history 20 — Show conversation history");
   });
@@ -273,16 +273,16 @@ describe("palette pagination", () => {
 describe("palette usage cards", () => {
   test("card shows the description and the one-line example", () => {
     const entry = COMMAND_HELP.find((e) => e.name === "title")!;
-    const text = paletteUsageCardText(entry, "fa");
-    expect(text).toContain("/title — تنظیم عنوان گفت‌وگو");
-    expect(text).toContain("/title ایده‌ها");
+    const text = paletteUsageCardText(entry, "en");
+    expect(text).toContain("/title — Set the conversation title");
+    expect(text).toContain("/title ideas");
     const en = paletteUsageCardText(entry, "en");
     expect(en).toContain("/title ideas");
   });
 
   test("card back button returns to the entry's category", () => {
     const entry = COMMAND_HELP.find((e) => e.name === "bg")!;
-    const data = callbackData(buildUsageCardKeyboard(entry, "fa"));
+    const data = callbackData(buildUsageCardKeyboard(entry, "en"));
     expect(data).toEqual(["pal:cat:automation:0"]);
   });
 
@@ -292,7 +292,7 @@ describe("palette usage cards", () => {
       expect(names.has(name), name).toBe(true);
     }
     for (const e of COMMAND_HELP) {
-      const text = paletteUsageCardText(e, "fa");
+      const text = paletteUsageCardText(e, "en");
       expect(text, e.name).toContain(`/${e.name}`);
     }
   });
@@ -305,17 +305,17 @@ describe("palette usage cards", () => {
 describe("runPaletteCommand", () => {
   test("unknown names are ignored silently", async () => {
     const { ctx, sent, edits } = fakeCbCtx(NON_OWNER);
-    await runPaletteCommand("nope", ctx, envFor(NON_OWNER), "fa");
-    await runPaletteCommand("", ctx, envFor(NON_OWNER), "fa");
+    await runPaletteCommand("nope", ctx, envFor(NON_OWNER), "en");
+    await runPaletteCommand("", ctx, envFor(NON_OWNER), "en");
     expect(sent).toEqual([]);
     expect(edits).toEqual([]);
   });
 
   test("a forged owner-only tap by a non-owner is rejected, never run", async () => {
     const { ctx, sent } = fakeCbCtx(NON_OWNER);
-    await runPaletteCommand("snapshot", ctx, envFor(NON_OWNER), "fa");
+    await runPaletteCommand("snapshot", ctx, envFor(NON_OWNER), "en");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("فقط برای مالک");
+    expect(sent[0]).toContain("owner-only");
     // …and in English when the sender prefers it.
     const en = fakeCbCtx(NON_OWNER);
     await runPaletteCommand("usage", en.ctx, envFor(NON_OWNER), "en");
@@ -325,19 +325,19 @@ describe("runPaletteCommand", () => {
   test("the owner can run owner-only commands", async () => {
     const { ctx, sent } = fakeCbCtx(OWNER);
     // /pause with no args reports its usage — the point is it RAN.
-    await runPaletteCommand("pause", ctx, envFor(OWNER), "fa");
+    await runPaletteCommand("pause", ctx, envFor(OWNER), "en");
     expect(sent.length).toBeGreaterThan(0);
   });
 
   test("direct commands behave like the bare typed command", async () => {
     const { ctx, sent } = fakeCbCtx(OWNER);
-    await runPaletteCommand("version", ctx, envFor(OWNER), "fa");
+    await runPaletteCommand("version", ctx, envFor(OWNER), "en");
     expect(sent).toHaveLength(1);
 
     const storage = Storage.open(":memory:");
     try {
       const h = fakeCbCtx(OWNER);
-      await runPaletteCommand("history", h.ctx, envFor(OWNER, storage), "fa");
+      await runPaletteCommand("history", h.ctx, envFor(OWNER, storage), "en");
       expect(h.sent.length).toBeGreaterThan(0);
     } finally {
       storage.close();
@@ -346,16 +346,16 @@ describe("runPaletteCommand", () => {
 
   test("a non-owner tap on an owner-only direct command is refused, never run", async () => {
     const { ctx, sent } = fakeCbCtx(NON_OWNER);
-    await runPaletteCommand("version", ctx, envFor(NON_OWNER), "fa");
+    await runPaletteCommand("version", ctx, envFor(NON_OWNER), "en");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("فقط برای مالک");
+    expect(sent[0]).toContain("owner-only");
   });
 
   test("missing storage degrades honestly, never crashes", async () => {
     const { ctx, sent } = fakeCbCtx(OWNER);
-    await runPaletteCommand("history", ctx, envFor(OWNER), "fa");
+    await runPaletteCommand("history", ctx, envFor(OWNER), "en");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("ذخیره‌سازی");
+    expect(sent[0]).toContain("Storage is unavailable");
   });
 });
 
@@ -366,8 +366,8 @@ describe("runPaletteCommand", () => {
 describe("handlePaletteCallback", () => {
   test("non-palette data is not claimed", async () => {
     const { ctx } = fakeCbCtx(NON_OWNER);
-    expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), "menu:help", "fa")).toBe(false);
-    expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), "lang:fa", "fa")).toBe(false);
+    expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), "menu:help", "en")).toBe(false);
+    expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), "lang:fa", "en")).toBe(false);
   });
 
   test("forged data is consumed but changes nothing", async () => {
@@ -379,7 +379,7 @@ describe("handlePaletteCallback", () => {
     ];
     for (const data of forged) {
       const { ctx, sent, edits } = fakeCbCtx(NON_OWNER);
-      expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), data, "fa"), data).toBe(true);
+      expect(await handlePaletteCallback(ctx, envFor(NON_OWNER), data, "en"), data).toBe(true);
       expect(sent, data).toEqual([]);
       expect(edits, data).toEqual([]);
     }
@@ -391,7 +391,7 @@ describe("handlePaletteCallback", () => {
       ctx,
       envFor(NON_OWNER),
       "pal:cat:owner:0",
-      "fa",
+      "en",
     );
     expect(handled).toBe(true);
     expect(sent).toEqual([]);
@@ -400,45 +400,45 @@ describe("handlePaletteCallback", () => {
 
   test("a forged owner-only command tap by a non-owner gets the owner-only reply", async () => {
     const { ctx, sent, edits } = fakeCbCtx(NON_OWNER);
-    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cmd:snapshot", "fa");
+    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cmd:snapshot", "en");
     expect(sent).toHaveLength(1);
-    expect(sent[0]).toContain("فقط برای مالک");
+    expect(sent[0]).toContain("owner-only");
     expect(edits).toEqual([]);
   });
 
   test("categories screen edits the message in place", async () => {
     const { ctx, edits } = fakeCbCtx(NON_OWNER);
-    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cats", "fa");
+    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cats", "en");
     expect(edits).toHaveLength(1);
-    expect(edits[0]!.text).toContain("مرورگر دستورها");
+    expect(edits[0]!.text).toContain("Command browser");
   });
 
   test("category page edits the message in place", async () => {
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cat:session:1", "fa");
+    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cat:session:1", "en");
     expect(edits).toHaveLength(1);
     expect(edits[0]!.text).toContain("/new");
   });
 
   test("tapping a command that needs args shows its usage card", async () => {
     const { ctx, sent, edits } = fakeCbCtx(OWNER);
-    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cmd:bg", "fa");
+    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cmd:bg", "en");
     expect(sent).toEqual([]);
     expect(edits).toHaveLength(1);
     expect(edits[0]!.text).toContain("/bg");
-    expect(edits[0]!.text).toContain("خلاصهٔ اخبار");
+    expect(edits[0]!.text).toContain("news summary");
   });
 
   test("tapping a no-arg command runs it as a new message", async () => {
     const { ctx, sent, edits } = fakeCbCtx(NON_OWNER);
-    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cmd:version", "fa");
+    await handlePaletteCallback(ctx, envFor(NON_OWNER), "pal:cmd:version", "en");
     expect(sent).toHaveLength(1);
     expect(edits).toEqual([]);
   });
 
   test("the owner category opens for the owner", async () => {
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cat:owner:0", "fa");
+    await handlePaletteCallback(ctx, envFor(OWNER), "pal:cat:owner:0", "en");
     expect(edits).toHaveLength(1);
     expect(edits[0]!.text).toContain("/snapshot");
   });
@@ -463,12 +463,14 @@ describe("palette namespace", () => {
     }
   });
 
-  test("unused imports stay clean: categories keyboard is built from counts", () => {
+  test("categories keyboard skips zero-count groups (no dead buttons)", () => {
     const kb = buildCategoriesKeyboard(
       { general: 1, session: 0, automation: 0, owner: 0 },
-      "fa",
+      "en",
     );
-    // Zero-count groups still render (the count is honest).
-    expect(callbackData(kb)).toContain("pal:cat:session:0");
+    // Zero-count groups are skipped entirely — the public never sees a
+    // dead "Session (0)" button. Only groups with visible commands render.
+    expect(callbackData(kb)).toEqual(["pal:cat:general:0"]);
+    expect(callbackData(kb)).not.toContain("pal:cat:session:0");
   });
 });

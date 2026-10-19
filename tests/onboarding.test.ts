@@ -155,7 +155,7 @@ describe("parseOnboardingCallback", () => {
     expect(parseOnboardingCallback("onb:step:demos")).toEqual({ kind: "step", step: "demos" });
     expect(parseOnboardingCallback("onb:preset:openrouter")).toEqual({ kind: "preset", presetId: "openrouter" });
     expect(parseOnboardingCallback("onb:preset:groq")).toEqual({ kind: "preset", presetId: "groq" });
-    expect(parseOnboardingCallback("onb:lang:fa")).toEqual({ kind: "lang", value: "fa" });
+    expect(parseOnboardingCallback("onb:lang:fa")).toEqual({ kind: "lang", value: "en" });
     expect(parseOnboardingCallback("onb:lang:en")).toEqual({ kind: "lang", value: "en" });
     expect(parseOnboardingCallback("onb:pers:concise")).toEqual({ kind: "pers", name: "concise" });
     expect(parseOnboardingCallback("onb:demo:0")).toEqual({ kind: "demo", index: 0 });
@@ -248,18 +248,18 @@ describe("wizard renders", () => {
   test("every screen carries a progress indicator and a cancel button", () => {
     const get = (_k: string) => undefined;
     const screens = [
-      renderIntro("fa"),
-      renderProvider("fa", {}),
-      renderProviderKey("fa", "openrouter", false),
-      renderProfile("fa", get),
-      renderDemos("fa"),
+      renderIntro("en"),
+      renderProvider("en", {}),
+      renderProviderKey("en", "openrouter", false),
+      renderProfile("en", get),
+      renderDemos("en"),
     ];
     const bodies = screens.map((s) => s.text);
-    expect(bodies[0]).toContain("قدم ۱ از ۴");
-    expect(bodies[1]).toContain("قدم ۲ از ۴");
-    expect(bodies[2]).toContain("قدم ۲ از ۴");
-    expect(bodies[3]).toContain("قدم ۳ از ۴");
-    expect(bodies[4]).toContain("قدم ۴ از ۴");
+    expect(bodies[0]).toContain("Step 1 of 4");
+    expect(bodies[1]).toContain("Step 2 of 4");
+    expect(bodies[2]).toContain("Step 2 of 4");
+    expect(bodies[3]).toContain("Step 3 of 4");
+    expect(bodies[4]).toContain("Step 4 of 4");
     for (const s of screens) {
       const labels = JSON.stringify(s.keyboard);
       expect(labels).toContain("onb:cancel");
@@ -269,9 +269,9 @@ describe("wizard renders", () => {
   });
 
   test("intro starts the wizard; provider lists presets when unconfigured", () => {
-    const intro = renderIntro("fa");
+    const intro = renderIntro("en");
     expect(JSON.stringify(intro.keyboard)).toContain("onb:step:provider");
-    const provider = renderProvider("fa", {});
+    const provider = renderProvider("en", {});
     const kb = JSON.stringify(provider.keyboard);
     expect(kb).toContain("onb:preset:openrouter");
     expect(kb).toContain("onb:preset:groq");
@@ -279,7 +279,7 @@ describe("wizard renders", () => {
   });
 
   test("provider shows a checkmark and continue when already configured", () => {
-    const screen = renderProvider("fa", { configuredLabel: "OpenRouter" });
+    const screen = renderProvider("en", { configuredLabel: "OpenRouter" });
     expect(screen.text).toContain("OpenRouter");
     const kb = JSON.stringify(screen.keyboard);
     expect(kb).toContain("onb:step:profile");
@@ -287,7 +287,7 @@ describe("wizard renders", () => {
   });
 
   test("demos expose three runnable prompts plus finish", () => {
-    const screen = renderDemos("fa");
+    const screen = renderDemos("en");
     const kb = JSON.stringify(screen.keyboard);
     expect(kb).toContain("onb:demo:0");
     expect(kb).toContain("onb:demo:1");
@@ -296,7 +296,7 @@ describe("wizard renders", () => {
   });
 
   test("done screen carries the main menu plus a re-run row", () => {
-    const screen = renderDone("fa");
+    const screen = renderDone("en");
     const kb = JSON.stringify(screen.keyboard);
     expect(kb).toContain("menu:chat");
     expect(kb).toContain("onb:restart");
@@ -312,19 +312,18 @@ describe("wizard renders", () => {
   });
 
   test("provider_key shows the group hint only in groups", () => {
-    expect(renderProviderKey("fa", "openrouter", false).text).not.toContain("چت خصوصی");
-    expect(renderProviderKey("fa", "openrouter", true).text).toContain("چت خصوصی");
+    expect(renderProviderKey("en", "openrouter", false).text).not.toContain("private chat");
+    expect(renderProviderKey("en", "openrouter", true).text).toContain("private chat");
   });
 
-  test("dynamic demo keys resolve in both languages", () => {
+  test("dynamic demo keys resolve in English", () => {
     for (let i = 0; i < 3; i++) {
-      for (const lang of ["fa", "en"] as const) {
-        const p = t(`onb.demo.p${i}`, lang);
-        const l = t(`onb.demo.l${i}`, lang);
-        expect(p).not.toBe(`onb.demo.p${i}`);
-        expect(l).not.toBe(`onb.demo.l${i}`);
-        expect(p.length).toBeGreaterThan(0);
-      }
+      const p = t(`onb.demo.p${i}`, "en");
+      const l = t(`onb.demo.l${i}`, "en");
+      expect(p).not.toBe(`onb.demo.p${i}`);
+      expect(l).not.toBe(`onb.demo.l${i}`);
+      expect(p.length).toBeGreaterThan(0);
+      expect(p).not.toMatch(/[\u0600-\u06FF]/);
     }
   });
 });
@@ -335,17 +334,17 @@ describe("maybeStartOnboarding", () => {
   test("non-owners never get the wizard", async () => {
     const { env } = fakeEnv({ isOwner: false });
     const { ctx } = fakeCbCtx(NON_OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(false);
   });
 
   test("fresh owner starts at the intro and the step persists", async () => {
     const { env, prefs } = fakeEnv();
     const { ctx, edits } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(true);
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("intro");
-    expect(edits[0]!.text).toContain(t("onb.intro.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.intro.title", "en"));
   });
 
   test("returning owner (done + provider) keeps the normal /start", async () => {
@@ -353,7 +352,7 @@ describe("maybeStartOnboarding", () => {
     const ai = fakeAi({ hasConfiguredProvider: () => true });
     const { env } = fakeEnv({ prefs, ai });
     const { ctx } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(false);
   });
 
@@ -361,18 +360,18 @@ describe("maybeStartOnboarding", () => {
     const prefs = fakePrefs({ [`${OWNER}:${ONBOARDING_DONE_KEY}`]: "1" });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(true);
-    expect(edits[0]!.text).toContain(t("onb.provider.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.provider.title", "en"));
   });
 
   test("mid-wizard owner resumes at the persisted step", async () => {
     const prefs = fakePrefs({ [`${OWNER}:${ONBOARDING_STEP_KEY}`]: "profile" });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(true);
-    expect(edits[0]!.text).toContain(t("onb.profile.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.profile.title", "en"));
   });
 
   test("explicit /start onboarding restarts from the top", async () => {
@@ -383,16 +382,16 @@ describe("maybeStartOnboarding", () => {
     const ai = fakeAi({ hasConfiguredProvider: () => true });
     const { env } = fakeEnv({ prefs, ai });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", "onboarding");
+    const r = await maybeStartOnboarding(ctx, env, "en", "onboarding");
     expect(r.handled).toBe(true);
-    expect(edits[0]!.text).toContain(t("onb.intro.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.intro.title", "en"));
     expect(prefOf(prefs, OWNER, ONBOARDING_DONE_KEY)).toBe("");
   });
 
   test("wizard is unavailable without the AI seams (falls through to /start)", async () => {
     const { env } = fakeEnv({ ai: undefined });
     const { ctx } = fakeCbCtx(OWNER);
-    const r = await maybeStartOnboarding(ctx, env, "fa", undefined);
+    const r = await maybeStartOnboarding(ctx, env, "en", undefined);
     expect(r.handled).toBe(false);
   });
 });
@@ -403,9 +402,9 @@ describe("handleOnboardingCallback", () => {
   test("non-owner callbacks are ignored: no state change, no reply", async () => {
     const { env, prefs } = fakeEnv({ isOwner: false });
     const { ctx, sent, edits } = fakeCbCtx(NON_OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:step:provider", "fa");
-    await handleOnboardingCallback(ctx, env, "onb:preset:openrouter", "fa");
-    await handleOnboardingCallback(ctx, env, "onb:demo:0", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:step:provider", "en");
+    await handleOnboardingCallback(ctx, env, "onb:preset:openrouter", "en");
+    await handleOnboardingCallback(ctx, env, "onb:demo:0", "en");
     expect(sent).toEqual([]);
     expect(edits).toEqual([]);
     expect(prefs.raw.size).toBe(0);
@@ -422,7 +421,7 @@ describe("handleOnboardingCallback", () => {
       "onb:demo:9",
       "onb:bogus",
     ]) {
-      await handleOnboardingCallback(ctx, env, d, "fa");
+      await handleOnboardingCallback(ctx, env, d, "en");
     }
     expect(sent).toEqual([]);
     expect(edits).toEqual([]);
@@ -436,10 +435,10 @@ describe("handleOnboardingCallback", () => {
     });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:cancel", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:cancel", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("");
     expect(prefOf(prefs, OWNER, ONBOARDING_PRESET_KEY)).toBe("");
-    expect(edits[0]!.text).toContain(t("onb.cancelled", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.cancelled", "en"));
     expect(JSON.stringify(edits[0]!.keyboard)).toContain("menu:chat");
   });
 
@@ -447,9 +446,9 @@ describe("handleOnboardingCallback", () => {
     const prefs = fakePrefs({ [`${OWNER}:${ONBOARDING_STEP_KEY}`]: "intro" });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:skip", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:skip", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("provider");
-    await handleOnboardingCallback(ctx, env, "onb:back", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:back", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("intro");
     expect(edits.length).toBe(2);
   });
@@ -458,31 +457,33 @@ describe("handleOnboardingCallback", () => {
     const prefs = fakePrefs({ [`${OWNER}:${ONBOARDING_STEP_KEY}`]: "demos" });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:skip", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:skip", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_DONE_KEY)).toBe("1");
-    expect(edits[0]!.text).toContain(t("onb.done.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.done.title", "en"));
   });
 
   test("personality tap persists the canonical skin name", async () => {
     const { env, prefs } = fakeEnv();
     const { ctx } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:pers:concise", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:pers:concise", "en");
     expect(prefOf(prefs, OWNER, PERSONALITY_PREF_KEY)).toBe("concise");
   });
 
-  test("language tap persists and re-renders the wizard in the new language", async () => {
+  test("language tap is a harmless no-op: re-renders the current step in English", async () => {
     const prefs = fakePrefs({ [`${OWNER}:${ONBOARDING_STEP_KEY}`]: "profile" });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:lang:en", "fa");
-    expect(prefOf(prefs, OWNER, LANG_PREF_KEY)).toBe("en");
+    // In-flight keyboards from before the English-only switch still carry
+    // onb:lang taps; they re-render the step instead of switching language.
+    await handleOnboardingCallback(ctx, env, "onb:lang:en", "en");
+    expect(prefOf(prefs, OWNER, LANG_PREF_KEY)).toBeUndefined();
     expect(edits[0]!.text).toContain("Step 3 of 4");
   });
 
   test("preset pick stores the preset and asks for the key", async () => {
     const { env, prefs } = fakeEnv();
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:preset:deepseek", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:preset:deepseek", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_PRESET_KEY)).toBe("deepseek");
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("provider_key");
     expect(edits[0]!.text).toContain("DeepSeek");
@@ -491,10 +492,10 @@ describe("handleOnboardingCallback", () => {
   test("demo tap runs the prompt and finishes the wizard", async () => {
     const { env, prefs, demos } = fakeEnv();
     const { ctx, sent } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:demo:1", "fa");
-    expect(demos).toEqual([t("onb.demo.p1", "fa")]);
+    await handleOnboardingCallback(ctx, env, "onb:demo:1", "en");
+    expect(demos).toEqual([t("onb.demo.p1", "en")]);
     expect(prefOf(prefs, OWNER, ONBOARDING_DONE_KEY)).toBe("1");
-    expect(sent.some((s) => s.includes(t("onb.done.title", "fa")))).toBe(true);
+    expect(sent.some((s) => s.includes(t("onb.done.title", "en")))).toBe(true);
   });
 
   test("restart clears progress and shows the intro", async () => {
@@ -504,17 +505,17 @@ describe("handleOnboardingCallback", () => {
     });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:restart", "fa");
+    await handleOnboardingCallback(ctx, env, "onb:restart", "en");
     expect(prefOf(prefs, OWNER, ONBOARDING_DONE_KEY)).toBe("");
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("intro");
-    expect(edits[0]!.text).toContain(t("onb.intro.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.intro.title", "en"));
   });
 
   test("retest with no pending provider falls back to the provider step", async () => {
     const { env } = fakeEnv();
     const { ctx, edits } = fakeCbCtx(OWNER);
-    await handleOnboardingCallback(ctx, env, "onb:retest", "fa");
-    expect(edits[0]!.text).toContain(t("onb.provider.title", "fa"));
+    await handleOnboardingCallback(ctx, env, "onb:retest", "en");
+    expect(edits[0]!.text).toContain(t("onb.provider.title", "en"));
   });
 });
 
@@ -532,11 +533,11 @@ describe("handleOnboardingText (provider key)", () => {
   test("ignores non-owners and non-key states", async () => {
     const { env } = keyEnv({ isOwner: false });
     const { ctx } = fakeCbCtx(NON_OWNER);
-    expect(await handleOnboardingText(ctx, env, "sk-abc", "fa")).toBe(false);
+    expect(await handleOnboardingText(ctx, env, "sk-abc", "en")).toBe(false);
 
     const idle = fakeEnv();
     const { ctx: ctx2 } = fakeCbCtx(OWNER);
-    expect(await handleOnboardingText(ctx2, idle.env, "sk-abc", "fa")).toBe(false);
+    expect(await handleOnboardingText(ctx2, idle.env, "sk-abc", "en")).toBe(false);
   });
 
   test("junk input re-prompts without calling setup", async () => {
@@ -545,9 +546,9 @@ describe("handleOnboardingText (provider key)", () => {
     const { ctx, sent } = fakeCbCtx(OWNER);
     // Cloudflare-style preset needs "key, ACCOUNT_ID"; use it for the junk case.
     prefs.raw.set(`${OWNER}:${ONBOARDING_PRESET_KEY}`, "cloudflare");
-    const consumed = await handleOnboardingText(ctx, env, "just-a-key", "fa");
+    const consumed = await handleOnboardingText(ctx, env, "just-a-key", "en");
     expect(consumed).toBe(true);
-    expect(sent.some((s) => s.includes(t("onb.key.junk", "fa")))).toBe(true);
+    expect(sent.some((s) => s.includes(t("onb.key.junk", "en")))).toBe(true);
     expect(ai.calls).toEqual([]);
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("provider_key");
   });
@@ -556,13 +557,13 @@ describe("handleOnboardingText (provider key)", () => {
     const { env, prefs } = keyEnv();
     const ai = env.ai as WizardAi & { calls: string[] };
     const { ctx, apiEdits } = fakeCbCtx(OWNER);
-    const consumed = await handleOnboardingText(ctx, env, "sk-live-key", "fa");
+    const consumed = await handleOnboardingText(ctx, env, "sk-live-key", "en");
     expect(consumed).toBe(true);
     expect(ai.calls).toEqual(["setup", "probe"]);
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("profile");
     expect(prefOf(prefs, OWNER, ONBOARDING_PRESET_KEY)).toBe("");
     // The progress note was edited into the profile screen.
-    expect(apiEdits[0]!.text).toContain(t("onb.profile.title", "fa"));
+    expect(apiEdits[0]!.text).toContain(t("onb.profile.title", "en"));
   });
 
   test("setup failure stays in provider_key without echoing the key", async () => {
@@ -571,7 +572,7 @@ describe("handleOnboardingText (provider key)", () => {
     });
     const { env, prefs } = keyEnv({ ai });
     const { ctx, apiEdits } = fakeCbCtx(OWNER);
-    const consumed = await handleOnboardingText(ctx, env, "sk-bad", "fa");
+    const consumed = await handleOnboardingText(ctx, env, "sk-bad", "en");
     expect(consumed).toBe(true);
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("provider_key");
     expect(apiEdits[0]!.text).toContain("bad key");
@@ -584,7 +585,7 @@ describe("handleOnboardingText (provider key)", () => {
     });
     const { env, prefs } = keyEnv({ ai });
     const { ctx, apiEdits } = fakeCbCtx(OWNER);
-    const consumed = await handleOnboardingText(ctx, env, "sk-live-key", "fa");
+    const consumed = await handleOnboardingText(ctx, env, "sk-live-key", "en");
     expect(consumed).toBe(true);
     // Setup ran once; the failure path does not ask for the key again.
     const setupCalls = (ai.calls as string[]).filter((c) => c === "setup");
@@ -602,10 +603,10 @@ describe("handleOnboardingText (provider key)", () => {
     });
     const { env } = fakeEnv({ prefs });
     const { ctx, edits } = fakeCbCtx(OWNER);
-    const consumed = await handleOnboardingText(ctx, env, "sk-x", "fa");
+    const consumed = await handleOnboardingText(ctx, env, "sk-x", "en");
     expect(consumed).toBe(true);
     expect(prefOf(prefs, OWNER, ONBOARDING_STEP_KEY)).toBe("provider");
-    expect(edits[0]!.text).toContain(t("onb.provider.title", "fa"));
+    expect(edits[0]!.text).toContain(t("onb.provider.title", "en"));
   });
 });
 

@@ -278,19 +278,18 @@ const ALL_KNOWN_TOOLS = [
 ];
 
 describe("TOOL_PROGRESS_LABELS", () => {
-  test("covers every known tool in fa and en", () => {
+  test("covers every known tool in English", () => {
     for (const name of ALL_KNOWN_TOOLS) {
-      expect(TOOL_PROGRESS_LABELS.fa[name], `fa:${name}`).toBeTruthy();
       expect(TOOL_PROGRESS_LABELS.en[name], `en:${name}`).toBeTruthy();
     }
   });
 
   test("toolProgressLabel falls back to the raw name for dynamic tools", () => {
-    expect(toolProgressLabel("fa", "mcp_server__some_tool")).toBe(
+    expect(toolProgressLabel("mcp_server__some_tool")).toBe(
       "mcp_server__some_tool",
     );
-    expect(toolProgressLabel("en", "calculator")).toBe("calculating");
-    expect(toolProgressLabel("fa", "delegate")).toBe("سپردن به ایجنت");
+    expect(toolProgressLabel("calculator")).toBe("calculating");
+    expect(toolProgressLabel("delegate")).toBe("delegating to agent");
   });
 });
 
@@ -372,8 +371,8 @@ function callbackDataOf(kb: {
 describe("keyboard builders", () => {
   test("sessions keyboard: sess: namespace, ▶ buttons", () => {
     const kb = buildSessionsKeyboard(
-      [{ id: "123", title: "گفتگوی اول دربارهٔ همه‌چیز" }],
-      "fa",
+      [{ id: "123", title: "first chat about everything" }],
+      "en",
     );
     const btns = callbackDataOf(kb);
     expect(btns).toHaveLength(1);
@@ -387,7 +386,7 @@ describe("keyboard builders", () => {
         { id: 7, label: "GPT", isActive: true },
         { id: 8, label: "Claude", isActive: false },
       ],
-      "fa",
+      "en",
     );
     const btns = callbackDataOf(kb);
     expect(btns.map((b) => b.data)).toEqual(["mdl:switch:7", "mdl:switch:8"]);
@@ -398,11 +397,11 @@ describe("keyboard builders", () => {
   test("personality keyboard: pers: namespace", () => {
     const kb = buildPersonalityKeyboard(
       [
-        { name: "default", label: "معمولی" },
-        { name: "playful", label: "شوخ‌طبع" },
+        { name: "default", label: "Standard" },
+        { name: "playful", label: "Playful" },
       ],
       "playful",
-      "fa",
+      "en",
     );
     const btns = callbackDataOf(kb);
     expect(btns.map((b) => b.data)).toEqual(["pers:default", "pers:playful"]);
@@ -464,10 +463,10 @@ describe("handleSessionResumeCallback", () => {
       ctx,
       { storage: sessionStorage(["111"]) },
       "sess:resume:222",
-      "fa",
+      "en",
     );
     expect(answered).toHaveLength(1);
-    expect(replies.join("\n")).toContain("پیدا نشد");
+    expect(replies.join("\n")).toContain("No session with that name or id");
   });
 
   test("junk callback data is rejected", async () => {
@@ -476,9 +475,9 @@ describe("handleSessionResumeCallback", () => {
       ctx,
       { storage: sessionStorage(["111"]) },
       "sess:resume:../../etc",
-      "fa",
+      "en",
     );
-    expect(replies.join("\n")).toContain("پیدا نشد");
+    expect(replies.join("\n")).toContain("No session with that name or id");
   });
 
   test("an owned id resumes: pref stored + honest note", async () => {
@@ -494,7 +493,7 @@ describe("handleSessionResumeCallback", () => {
       ctx,
       { storage: sessionStorage(["111"]), prefs },
       "sess:resume:111",
-      "fa",
+      "en",
     );
     expect(
       stored.some(
@@ -502,7 +501,7 @@ describe("handleSessionResumeCallback", () => {
           u === "999" && k === "active_conversation:10" && v === "111",
       ),
     ).toBe(true);
-    expect(replies.join("\n")).toContain("نشست فعال");
+    expect(replies.join("\n")).toContain("active session");
   });
 });
 
@@ -549,7 +548,7 @@ describe("handleModelSwitchCallback", () => {
   test("an enabled model switches", async () => {
     const { storage, switched } = modelStorage();
     const { ctx, replies } = modelCallbackCtx();
-    await handleModelSwitchCallback(ctx, storage, "mdl:switch:7", "fa");
+    await handleModelSwitchCallback(ctx, storage, "mdl:switch:7", "en");
     expect(switched).toEqual([{ providerId: 1, modelId: 7 }]);
     expect(replies.join("\n")).toContain("Model One");
   });
@@ -557,33 +556,33 @@ describe("handleModelSwitchCallback", () => {
   test("a disabled model is rejected", async () => {
     const { storage, switched } = modelStorage();
     const { ctx, replies } = modelCallbackCtx();
-    await handleModelSwitchCallback(ctx, storage, "mdl:switch:8", "fa");
+    await handleModelSwitchCallback(ctx, storage, "mdl:switch:8", "en");
     expect(switched).toHaveLength(0);
-    expect(replies.join("\n")).toContain("غیرفعال");
+    expect(replies.join("\n")).toContain("disabled");
   });
 
   test("a model on a disabled provider is rejected", async () => {
     const { storage, switched } = modelStorage();
     const { ctx, replies } = modelCallbackCtx();
-    await handleModelSwitchCallback(ctx, storage, "mdl:switch:9", "fa");
+    await handleModelSwitchCallback(ctx, storage, "mdl:switch:9", "en");
     expect(switched).toHaveLength(0);
-    expect(replies.join("\n")).toContain("غیرفعال");
+    expect(replies.join("\n")).toContain("disabled");
   });
 
   test("an unknown id is rejected", async () => {
     const { storage, switched } = modelStorage();
     const { ctx, replies } = modelCallbackCtx();
-    await handleModelSwitchCallback(ctx, storage, "mdl:switch:4242", "fa");
+    await handleModelSwitchCallback(ctx, storage, "mdl:switch:4242", "en");
     expect(switched).toHaveLength(0);
-    expect(replies.join("\n")).toContain("پیدا نشد");
+    expect(replies.join("\n")).toContain("No model");
   });
 
   test("junk callback data is rejected", async () => {
     const { storage, switched } = modelStorage();
     const { ctx, replies } = modelCallbackCtx();
-    await handleModelSwitchCallback(ctx, storage, "mdl:switch:abc", "fa");
+    await handleModelSwitchCallback(ctx, storage, "mdl:switch:abc", "en");
     expect(switched).toHaveLength(0);
-    expect(replies.join("\n")).toContain("پیدا نشد");
+    expect(replies.join("\n")).toContain("No model");
   });
 });
 
@@ -599,20 +598,20 @@ describe("/queue clear confirmation", () => {
   test("bare clear shows the confirm; --confirm wipes", () => {
     const sender = { userId: "u1", telegramId: 1, chatId: "c1" };
     const deps = {} as never;
-    expect(handleQueue(deps, sender, "کار اول", "fa")).toContain("مورد 1");
-    const confirm = handleQueue(deps, sender, "clear", "fa");
+    expect(handleQueue(deps, sender, "first task", "en")).toContain("item 1");
+    const confirm = handleQueue(deps, sender, "clear", "en");
     expect(confirm).toContain("/queue clear --confirm");
-    expect(confirm).toContain("کار اول");
+    expect(confirm).toContain("first task");
     // Not cleared yet.
-    expect(handleQueue(deps, sender, "list", "fa")).toContain("کار اول");
-    const done = handleQueue(deps, sender, "clear --confirm", "fa");
-    expect(done).toContain("1 مورد حذف شد");
-    expect(handleQueue(deps, sender, "list", "fa")).toContain("خالی");
+    expect(handleQueue(deps, sender, "list", "en")).toContain("first task");
+    const done = handleQueue(deps, sender, "clear --confirm", "en");
+    expect(done).toContain("1 items removed");
+    expect(handleQueue(deps, sender, "list", "en")).toContain("empty");
   });
 
   test("clear on an empty queue reports empty, not a wipe", () => {
     const sender = { userId: "u2", telegramId: 2, chatId: "c1" };
-    expect(handleQueue({} as never, sender, "clear", "fa")).toContain("خالی");
+    expect(handleQueue({} as never, sender, "clear", "en")).toContain("empty");
   });
 });
 
@@ -632,12 +631,12 @@ describe("/whoami", () => {
         },
       },
       false,
-      "fa",
+      "en",
     );
     const text = replies.join("\n");
     // Two-tier: a non-owner sees exactly the public surface (voice is public:
     // it is conversation, not administration).
-    for (const cmd of ["/start", "/help", "/commands", "/lang", "/voice"]) {
+    for (const cmd of ["/start", "/help", "/commands", "/voice"]) {
       expect(text, cmd).toContain(cmd);
     }
     for (const cmd of ["/history", "/new", "/bg", "/review", "/bundles", "/snapshot", "/goal"]) {

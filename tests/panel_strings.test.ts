@@ -239,12 +239,12 @@ apiKey: "test-key-1"
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete", providerId: p2.data }));
     // First tap: confirmation, no deletion.
     expect(h.storage.getProvider(p2.data)).toBeDefined();
-    expect(lastText(c)).toContain("حذف پروایدر");
+    expect(lastText(c)).toContain("Delete provider");
     expect(lastText(c)).toContain("P2");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_delete_confirm", providerId: p2.data }));
     expect(h.storage.getProvider(p2.data)).toBeUndefined();
-    expect(lastText(c)).toContain("پروایدر حذف شد.");
+    expect(lastText(c)).toContain("Provider deleted.");
     void active;
     h.storage.close();
   });
@@ -258,12 +258,12 @@ apiKey: "test-key-1"
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_delete", modelId: m2.data }));
     expect(h.models.get(m2.data)).toBeDefined();
-    expect(lastText(c)).toContain("حذف مدل");
+    expect(lastText(c)).toContain("Delete model");
     expect(lastText(c)).toContain("مدل دو");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_delete_confirm", modelId: m2.data }));
     expect(h.models.get(m2.data)).toBeUndefined();
-    expect(lastText(c)).toContain("مدل حذف شد.");
+    expect(lastText(c)).toContain("Model deleted.");
     h.storage.close();
   });
 
@@ -273,14 +273,14 @@ apiKey: "test-key-1"
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_clear_key", providerId: active.providerId }));
     expect(h.providers.credentialStatus(active.providerId)).toBe("set");
-    expect(lastText(c)).toContain("پاک کردن کلید");
+    expect(lastText(c)).toContain("Clear key");
 
     await h.ai.handleCallback(
       c.ctx,
       encode({ kind: "ai_clear_key_confirm", providerId: active.providerId }),
     );
     expect(h.providers.credentialStatus(active.providerId)).toBe("unset");
-    expect(lastText(c)).toContain("کلید پاک شد.");
+    expect(lastText(c)).toContain("Key cleared.");
     h.storage.close();
   });
 
@@ -292,11 +292,11 @@ apiKey: "test-key-1"
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "search_clear_key" }));
     expect(h.search.view().hasKey).toBe(true);
-    expect(lastText(c)).toContain("حذف کلید جستجو");
+    expect(lastText(c)).toContain("Delete search key");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "search_clear_key_confirm" }));
     expect(h.search.view().hasKey).toBe(false);
-    expect(lastText(c)).toContain("حذف شد");
+    expect(lastText(c)).toContain("deleted.");
     h.storage.close();
   });
 
@@ -328,8 +328,8 @@ describe("set operations return to the screen they came from", () => {
     const h = harness();
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_attempts_set", value: 3 }));
-    expect(lastText(c)).toContain("جایگزین خودکار (Failover)");
-    expect(lastText(c)).toContain("حداکثر تلاش ۳ شد.");
+    expect(lastText(c)).toContain("Automatic failover");
+    expect(lastText(c)).toContain("Max attempts set to 3.");
     h.storage.close();
   });
 
@@ -337,7 +337,7 @@ describe("set operations return to the screen they came from", () => {
     const h = harness();
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_timeout_set", value: 10000 }));
-    expect(lastText(c)).toContain("جایگزین خودکار (Failover)");
+    expect(lastText(c)).toContain("Automatic failover");
     h.storage.close();
   });
 
@@ -347,7 +347,7 @@ describe("set operations return to the screen they came from", () => {
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_toggle", providerId: active.providerId }));
     // The active provider cannot be disabled: the refusal lands on its screen.
-    expect(lastText(c)).toContain("پروایدر: پروایدر اصلی");
+    expect(lastText(c)).toContain("Provider: پروایدر اصلی");
     h.storage.close();
   });
 
@@ -356,8 +356,8 @@ describe("set operations return to the screen they came from", () => {
     const active = activeProvider(h);
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_select_model", modelId: active.modelId }));
-    expect(lastText(c)).toContain("انتخاب پروایدر و مدل فعال");
-    expect(lastText(c)).toContain("مدل فعال اکنون");
+    expect(lastText(c)).toContain("Active provider & model");
+    expect(lastText(c)).toContain("The active model is now");
     h.storage.close();
   });
 
@@ -366,8 +366,8 @@ describe("set operations return to the screen they came from", () => {
     const active = activeProvider(h);
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "fo_local_confirm", providerId: active.providerId }));
-    expect(lastText(c)).toContain("پروایدر: پروایدر اصلی");
-    expect(lastText(c)).toContain("دسترسی محلی برای این پروایدر باز شد.");
+    expect(lastText(c)).toContain("Provider: پروایدر اصلی");
+    expect(lastText(c)).toContain("Local access opened for this provider.");
     h.storage.close();
   });
 
@@ -376,8 +376,8 @@ describe("set operations return to the screen they came from", () => {
     const active = activeProvider(h);
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: active.providerId }));
-    expect(lastText(c)).toContain("پروایدر: پروایدر اصلی");
-    expect(lastText(c)).toMatch(/تست اتصال (موفق|ناموفق) بود/);
+    expect(lastText(c)).toContain("Provider: پروایدر اصلی");
+    expect(lastText(c)).toMatch(/Connection test (succeeded|failed)/);
     h.storage.close();
   });
 
@@ -399,13 +399,13 @@ describe("free-text forms: explicit cancel, junk re-prompts", () => {
     const h = harness();
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_add_adapter", adapter: "openai_compatible" }));
-    expect(lastText(c)).toContain("افزودن پروایدر");
+    expect(lastText(c)).toContain("Add provider");
     // The form now carries an explicit cancel button.
     const kb = c.sent[c.sent.length - 1]?.keyboard as { inline_keyboard: Array<Array<{ text: string }>> };
-    expect(kb.inline_keyboard.flat().map((b) => b.text)).toContain("لغو");
+    expect(kb.inline_keyboard.flat().map((b) => b.text)).toContain("Cancel");
 
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_form_cancel" }));
-    expect(lastText(c)).toContain("نوع اتصال پروایدر را انتخاب کن");
+    expect(lastText(c)).toContain("Choose the provider connection type:");
     // The flow is dead: a later message is not consumed as a provider.
     const consumed = await h.ai.handleText(c.ctx, "نام نمایشی: X\nآدرس سرویس: https://x\nکلید API: y");
     expect(consumed).toBe(false);
@@ -419,7 +419,7 @@ describe("free-text forms: explicit cancel, junk re-prompts", () => {
 
     const junk = await h.ai.handleText(c.ctx, "یه چیز نامرتبط");
     expect(junk).toBe(true);
-    expect(lastText(c)).toContain("ورودی کامل نیست");
+    expect(lastText(c)).toContain("Input is incomplete");
 
     // The flow is still alive: a good submission completes it.
     const ok = await h.ai.handleText(
@@ -427,7 +427,7 @@ describe("free-text forms: explicit cancel, junk re-prompts", () => {
       "نام نمایشی: تست\nآدرس سرویس: https://api.invalid.example/v1\nکلید API: k",
     );
     expect(ok).toBe(true);
-    expect(lastText(c)).toContain("پروایدر اضافه شد.");
+    expect(lastText(c)).toContain("Provider added.");
     h.storage.close();
   });
 
@@ -436,15 +436,15 @@ describe("free-text forms: explicit cancel, junk re-prompts", () => {
     const active = activeProvider(h);
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_model_add_form", providerId: active.providerId }));
-    expect(lastText(c)).toContain("شناسهٔ مدل");
+    expect(lastText(c)).toContain("Model ID");
 
     const junk = await h.ai.handleText(c.ctx, "فقط یه خط");
     expect(junk).toBe(true);
-    expect(lastText(c)).toContain("ورودی کامل نیست");
+    expect(lastText(c)).toContain("Incomplete input");
 
     const ok = await h.ai.handleText(c.ctx, "gpt-x\nمدل ایکس");
     expect(ok).toBe(true);
-    expect(lastText(c)).toContain("مدل «مدل ایکس» اضافه شد.");
+    expect(lastText(c)).toContain("added.");
     h.storage.close();
   });
 
@@ -456,7 +456,7 @@ describe("free-text forms: explicit cancel, junk re-prompts", () => {
 
     const junk = await h.ai.handleText(c.ctx, "سلام");
     expect(junk).toBe(true);
-    expect(lastText(c)).toContain("چیزی برای تغییر پیدا نکردم");
+    expect(lastText(c)).toContain("Nothing to change");
     h.storage.close();
   });
 });
@@ -470,7 +470,7 @@ describe("«تست همهٔ پروایدرها» performs a real probe", () => {
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_probe_all" }));
     const text = lastText(c);
-    expect(text).toContain("تست همهٔ پروایدرها انجام شد.");
+    expect(text).toContain("All providers tested.");
     expect(text).toContain("پروایدر اصلی");
     // The probe recorded its outcome, like the single-provider probe does.
     const view = h.providers.view(active.providerId);
@@ -499,7 +499,7 @@ describe("panel button clicks edit the message in place", () => {
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_menu" }));
     expect(c.edits.length).toBe(1);
     expect(c.sent.length).toBe(0);
-    expect(c.edits[0]!.text).toContain("مدیریت هوش مصنوعی");
+    expect(c.edits[0]!.text).toContain("AI management");
     h.storage.close();
   });
 

@@ -1,11 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { tr } from "../src/bot/menu_strings";
 
-// Every key in the local menu table. The i18n_parity test already guards
-// fa/en pairing by globbing *_strings.ts; these are the behavioral spot
-// checks for this table.
+// Every key in the local menu table. The UI is English-only (owner
+// direction, Oct 2026): tr() accepts the lang argument for signature
+// compatibility but always renders English.
 const KEYS = [
   "menu.start.text",
+  "menu.start.text_public",
   "menu.screen.chat",
   "menu.screen.tools_fallback",
   "menu.screen.commands",
@@ -19,6 +20,7 @@ const KEYS = [
   "menu.label.about",
   "menu.label.help",
   "menu.label.back",
+  "menu.label.miniapp",
   "menu.help.group.general",
   "menu.help.group.session",
   "menu.help.group.automation",
@@ -27,18 +29,27 @@ const KEYS = [
   "menu.help.entry_example",
 ] as const;
 
+const ARABIC_RE = /[\u0600-\u06FF]/;
+
 describe("menu_strings", () => {
-  test("every key has a non-empty fa and en translation", () => {
+  test("every key has a non-empty English translation", () => {
     for (const k of KEYS) {
-      expect(tr("fa", k).length, `${k} fa`).toBeGreaterThan(0);
       expect(tr("en", k).length, `${k} en`).toBeGreaterThan(0);
       expect(tr("en", k), `${k} en`).not.toBe(k);
     }
   });
 
-  test("English strings contain no Persian script", () => {
+  test("the lang argument is ignored: fa renders the same English text", () => {
     for (const k of KEYS) {
-      expect(tr("en", k), `surface ${k} leaks Persian`).not.toMatch(/[\u0600-\u06FF]/);
+      expect(tr("fa", k), `${k} fa`).toBe(tr("en", k));
+    }
+  });
+
+  test("no string contains Persian script", () => {
+    for (const k of KEYS) {
+      for (const lang of ["fa", "en"] as const) {
+        expect(tr(lang, k), `surface ${k} leaks Persian`).not.toMatch(ARABIC_RE);
+      }
     }
   });
 
@@ -48,7 +59,7 @@ describe("menu_strings", () => {
   });
 
   test("interpolates {vars}", () => {
-    expect(tr("fa", "menu.help.entry", { name: "start", description: "x" })).toBe(
+    expect(tr("en", "menu.help.entry", { name: "start", description: "x" })).toBe(
       "/start — x",
     );
     expect(
@@ -60,10 +71,24 @@ describe("menu_strings", () => {
     ).toBe("/history 20 — y");
   });
 
-  test("fa and en carry the same placeholders", () => {
-    const vars = (s: string) => [...s.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).sort();
-    for (const k of KEYS) {
-      expect(vars(tr("en", k)), k).toEqual(vars(tr("fa", k)));
+  test("the welcome screens follow the reference aesthetic", () => {
+    const owner = tr("en", "menu.start.text");
+    const pub = tr("en", "menu.start.text_public");
+    for (const text of [owner, pub]) {
+      expect(text).toContain("👋");
+      expect(text).toContain("📌");
+      expect(text).toContain("👥");
+      // Short: at most 6 command lines, never a wall of commands.
+      const commands = text.split("\n").filter((l) => l.startsWith("/"));
+      expect(commands.length).toBeGreaterThan(0);
+      expect(commands.length).toBeLessThanOrEqual(6);
     }
+    // The owner variant adds the two owner-only essentials; the public
+    // variant never mentions commands the public cannot use.
+    expect(owner).toContain("/reset");
+    expect(owner).toContain("/digest");
+    expect(pub).not.toContain("/reset");
+    expect(pub).not.toContain("/digest");
+    expect(pub).not.toContain("/model");
   });
 });

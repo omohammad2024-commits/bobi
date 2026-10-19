@@ -91,7 +91,7 @@ describe("selection problem diagnostics", () => {
   test("says plainly when nothing was ever selected", () => {
     const { storage } = seeded();
     const msg = gatewayFor(storage).describeSelectionProblem();
-    expect(msg).toContain("هیچ پروایدر");
+    expect(msg).toContain("No provider");
     storage.close();
   });
 
@@ -102,7 +102,7 @@ describe("selection problem diagnostics", () => {
     providers.clearCredential(providerId);
     const msg = gatewayFor(storage).describeSelectionProblem();
     expect(msg).toContain("9Router");
-    expect(msg).toContain("اعتبارنامه");
+    expect(msg).toContain("credential");
     storage.close();
   });
 
@@ -115,7 +115,7 @@ describe("selection problem diagnostics", () => {
     storage.setProviderEnabled(providerId, false);
     const msg = gatewayFor(storage).describeSelectionProblem();
     expect(msg).toContain("DeepSeek");
-    expect(msg).toContain("غیرفعال");
+    expect(msg).toContain("disabled");
     storage.close();
   });
 });

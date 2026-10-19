@@ -586,6 +586,6 @@ describe("engine hook emission", () => {
       summariseHistory: false,
     });
     const out = await engine.respond({ conversationId: "c1", userText: "سلام" });
-    expect(out.chunks[0]).toContain("آزمایشی بابی");
+    expect(out.chunks[0]).toContain("BOBI test mode");
   });
 });
