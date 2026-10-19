@@ -1406,7 +1406,7 @@ export async function handleStopCommand(
 async function runTurn(
   ctx: Context,
   deps: BotDeps,
-  input: { text: string },
+  input: { text: string; groupAssistantApproved?: boolean },
 ): Promise<void> {
   const { engine } = deps;
 
@@ -1420,7 +1420,16 @@ async function runTurn(
   if (!(await takeMessageBudget(ctx, deps))) return;
 
   if (!ctx.message || !ctx.from || !ctx.chat) return;
-  if (!shouldHandleMessage(ctx, ctx.me.id)) return;
+  // Legacy privacy-mode filter: in groups, only replies-to-the-bot and
+  // commands pass. Skipped when the group assistant already approved this
+  // message (wake-word / reply-to-bot) — re-filtering would silently discard
+  // the exact message the assistant just green-lit.
+  if (!input.groupAssistantApproved && !shouldHandleMessage(ctx, ctx.me.id)) {
+    console.error(
+      `[bobi] runTurn: message filtered by shouldHandleMessage (chat=${ctx.chat.type}, text="${ctx.message.text?.slice(0, 30) ?? ""}")`,
+    );
+    return;
+  }
 
   const userId = String(ctx.from.id);
 
@@ -2080,6 +2089,12 @@ export function createBot(token: string, deps: BotDeps): Bot {
     // Records group chatter for /gsummary and enforces reply-only-when-called
     // silence. Inert unless the owner enabled the mode for this group.
     // Commands ("/...") always fall through to their handlers below.
+    //
+    // When the assistant approves a reply (wake-word / reply-to-bot), that
+    // decision is carried into runTurn via groupAssistantApproved so the
+    // legacy shouldHandleMessage filter (replies-and-commands only) does not
+    // silently discard the very message the assistant just approved.
+    let groupAssistantApproved = false;
     if (
       (ctx.chat.type === "group" || ctx.chat.type === "supergroup") &&
       deps.groupAssistant !== undefined
@@ -2120,6 +2135,9 @@ export function createBot(token: string, deps: BotDeps): Bot {
           if (!shouldReply) {
             return; // assistant mode: silent unless called
           }
+          // The assistant approved this message — runTurn must not re-filter
+          // it out via the legacy replies-and-commands-only rule.
+          groupAssistantApproved = true;
         }
       }
     }
@@ -2159,7 +2177,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
     // via next() so those handlers run; a truly unknown command matches
     // nothing downstream and stays silent.
     if (text.startsWith("/")) return await next();
-    await runTurn(ctx, deps, { text });
+    await runTurn(ctx, deps, { text, groupAssistantApproved });
   });
 
   // ---- media messages → conversation engine ----
