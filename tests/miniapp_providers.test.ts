@@ -653,4 +653,90 @@ describe("miniapp models api", () => {
     expect(status).toBe(404);
     expect(typeof json["error"]).toBe("string");
   });
+
+  test("models.discoverDraft lists models from a preset key without saving", async () => {
+    const { deps } = makeDeps();
+    deps.adapters = {
+      describes: () => ({
+        label: "x",
+        listModels: true,
+        audioInput: false,
+        documentInput: false,
+        embeddings: false,
+      }),
+      create: () => ({
+        listModels: async () => [
+          { id: "gpt-4o-mini", label: "GPT-4o mini" },
+          { id: "gpt-4o" },
+        ],
+      }),
+    } as unknown as AdapterRegistry;
+    const handler = createMiniAppHandler(deps);
+    const { status, json } = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "preset",
+      preset: "openrouter",
+      key: "sk-draft",
+    });
+    expect(status).toBe(200);
+    const models = json["models"] as { modelId: string; label: string }[];
+    expect(models.map((m) => m.modelId).sort()).toEqual(["gpt-4o", "gpt-4o-mini"]);
+    expect(models.find((m) => m.modelId === "gpt-4o-mini")?.label).toBe("GPT-4o mini");
+    // Nothing was saved: the provider list is still empty.
+    const list = await apiJson(handler, "providers.list", { initData: initData() });
+    expect((list.json["providers"] as unknown[]).length).toBe(0);
+  });
+
+  test("models.discoverDraft works for custom base URLs and validates input", async () => {
+    const { deps } = makeDeps();
+    deps.adapters = {
+      describes: () => ({
+        label: "x",
+        listModels: true,
+        audioInput: false,
+        documentInput: false,
+        embeddings: false,
+      }),
+      create: () => ({ listModels: async () => [{ id: "m1" }] }),
+    } as unknown as AdapterRegistry;
+    const handler = createMiniAppHandler(deps);
+
+    const ok = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "custom",
+      baseUrl: "https://api.example.com/v1",
+      key: "sk-draft",
+    });
+    expect(ok.status).toBe(200);
+
+    const noKey = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "custom",
+      baseUrl: "https://api.example.com/v1",
+    });
+    expect(noKey.status).toBe(400);
+
+    const badUrl = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "custom",
+      baseUrl: "http://insecure.example.com/v1",
+      key: "sk-draft",
+    });
+    expect(badUrl.status).toBe(400);
+
+    const badPreset = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "preset",
+      preset: "nope-not-a-preset",
+      key: "sk-draft",
+    });
+    expect(badPreset.status).toBe(400);
+
+    const badKind = await apiJson(handler, "models.discoverDraft", {
+      initData: initData(),
+      kind: "nine_router",
+      key: "sk-draft",
+    });
+    expect(badKind.status).toBe(400);
+  });
 });
