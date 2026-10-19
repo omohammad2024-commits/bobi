@@ -60,6 +60,13 @@ export interface ConversationInput {
   /** Optional per-request timeout override. */
   timeoutMs?: number;
   /**
+   * Whether the current user is the verified owner (resolved server-side
+   * from the Telegram ID by the bot). When true, the system prompt tells
+   * the model it is talking to its verified creator — so the agent
+   * recognizes the owner instead of treating them as an unverified claimant.
+   */
+  isOwner?: boolean;
+  /**
    * Trusted identity the tools run as, resolved by the bot from `from.id`.
    *
    * Absent means "no tool access at all" — the run still answers from the
@@ -735,6 +742,8 @@ export class ConversationEngine {
         ...(contextFiles !== undefined ? { contextFiles } : {}),
         ...(personality?.systemAddition ? { personality: personality.systemAddition } : {}),
         ...(this.extraPrompt !== undefined ? { extra: this.extraPrompt } : {}),
+        // Owner recognition: the bot verified this user from the Telegram ID.
+        ...(input.isOwner === true ? { isOwner: true as const } : {}),
       }),
       actor,
       signal,

@@ -45,6 +45,13 @@ export interface PromptContext {
   lang?: Lang;
   /** How many memories this user has stored, if memory is available. */
   memoryCount?: number;
+  /**
+   * Whether the current user is the verified owner (system-verified from
+   * the Telegram ID, never from chat text). When true, the prompt states
+   * the model is talking to its verified creator Mohammad, so it
+   * recognizes him instead of challenging his identity.
+   */
+  isOwner?: boolean;
   /** Owner-supplied instructions appended last, so they can override defaults. */
   extra?: string;
   /**
@@ -132,8 +139,8 @@ function languageBlock(_lang: Lang | undefined): string {
  * identity, access, or language rules, which are all stated above it.
  */
 const PERSONALITY = [
-  "Personality: playful, confident, cheeky — never sycophantic. Default 1-3 lines for chit-chat (match the user's energy).",
-  "Long only on explicit ask: wrap it in markdown blockquotes ('> ' per line, intro/outro outside) so the client collapses it.",
+  "Personality: sharp, bold, quick-witted — playful and cheeky with real attitude, never sycophantic or bland. Talk like a clever friend: punchy comebacks, playful roasts when the user starts it, zero cringe. Smart first, funny second. Default 1-3 lines for chit-chat (match the user's energy).",
+  "Long only on explicit ask (8+ lines): wrap the long part in markdown blockquotes — '> ' at the START of every line, intro/outro stay plain. Example: Short intro.\n> detail line one\n> detail two\nTelegram collapses the quote.",
 ].join("\n");
 
 const TOOL_RULES = [
@@ -218,6 +225,15 @@ export function estimatePromptTokens(text: string): number {
  */
 export function buildSystemPrompt(ctx: PromptContext): string {
   const blocks: string[] = [IDENTITY];
+
+  // Verified owner: when the system has confirmed this user is Mohammad
+  // (from the Telegram ID, never from chat claims), say so plainly — the
+  // agent must recognize its creator, not challenge him like a stranger.
+  if (ctx.isOwner === true) {
+    blocks.push(
+      "The user you are talking to right now IS Mohammad — your verified creator and owner (identity confirmed by the system from his Telegram ID). Greet him like family, not a stranger. Never ask him to prove who he is.",
+    );
+  }
 
   // Language comes before the personality skin: tone is subordinate to the
   // language rule, so a skin can never reword it into an option.

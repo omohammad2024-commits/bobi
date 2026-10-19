@@ -49,6 +49,7 @@ import {
   replyExpandable,
   stripBlockquoteMarkers,
 } from "./expandable_quote";
+import type { MessageEntity } from "@grammyjs/types";
 import type { ConversationEngine } from "../conversation/engine";
 import { EngineError } from "../conversation/engine";
 import type { AgentStep } from "../agent/transcript";
@@ -717,7 +718,16 @@ export const VOICE_TRUNCATED_NOTE = t("voice.truncated");
 
 /** The context deliverReply needs: sending plus, optionally, chat actions. */
 export interface DeliverCtx {
-  reply(text: string): Promise<unknown>;
+  /**
+   * Send a text reply. The optional `extra.entities` is load-bearing: when
+   * the reply contains markdown blockquotes, replyExpandable passes the
+   * expandable_blockquote entities through it. A reply() that ignores the
+   * second argument silently drops the quotes, so callers must forward it.
+   */
+  reply(
+    text: string,
+    extra?: { entities?: MessageEntity[] },
+  ): Promise<unknown>;
   replyWithVoice(voice: InputFile): Promise<unknown>;
   chat?: { id: number | string } | undefined;
   api?:
@@ -1678,6 +1688,9 @@ async function runTurnInner(
         // English-only agent output (v1.0): the turn's language is always
         // English, so the agent's replies are English.
         lang,
+        // Owner recognition: verified server-side from the Telegram ID, so
+        // the agent knows it is talking to its creator Mohammad.
+        ...(isOwnerSender(ctx, deps) ? { isOwner: true as const } : {}),
         ...(actor !== undefined ? { actor } : {}),
         ...(finalParts.length > 0 ? { parts: finalParts } : {}),
         onProgress: (step) => {
