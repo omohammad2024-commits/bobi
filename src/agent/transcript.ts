@@ -93,11 +93,11 @@ function jsonForModel(data: unknown): string {
   } catch {
     // A circular or otherwise unserialisable result is reported as such rather
     // than throwing inside the loop.
-    return "(نتیجه قابل نمایش نبود)";
+    return "(result could not be displayed)";
   }
   return text.length <= MAX_RESULT_CHARS
     ? text
-    : `${text.slice(0, MAX_RESULT_CHARS)}…(کوتاه شد)`;
+    : `${text.slice(0, MAX_RESULT_CHARS)}…(truncated)`;
 }
 
 /** Ceiling on a single tool result as seen by the model. */

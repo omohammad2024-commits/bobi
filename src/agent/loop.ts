@@ -34,16 +34,23 @@ import { AiError } from "../ai/provider";
 import type {
   AiProvider,
   ChatMessage,
+  CompletionRequest,
   CompletionResponse,
   ContentPart,
+  StreamEvent,
+  TokenUsage,
   ToolCall,
   ToolSpec,
 } from "../ai/provider";
 import type { ToolActor, ToolRunResult } from "../tools/types";
 import type { ToolService } from "../tools/service";
 import { raceDeadline, withDeadline } from "../core/deadline";
+import type { Deadline } from "../core/deadline";
+import { t } from "../i18n";
 import type { AgentStep, AgentRunResult, StopReason } from "./transcript";
 import { serialiseToolResult, wrapToolResult } from "./transcript";
+import { currentStreamSink, streamingEnabled } from "./stream";
+import type { AgentStreamEvent, StreamEventSink } from "./stream";
 
 export interface AgentBudgets {
   /** Model turns per run, including the first. */
@@ -211,7 +218,7 @@ export class AgentLoop {
           // surfacing a provider error for a run that did real work.
           if (outOfTime && !input.signal.aborted) {
             return {
-              text: "برای این پاسخ وقت کافی نداشتم؛ اگر لازم است دقیق‌تر بپرس.",
+              text: t("agent.time_exhausted"),
               model: this.model,
               stopReason: "budget_exhausted",
               steps,
@@ -269,7 +276,7 @@ export class AgentLoop {
             role: "tool",
             toolCallId: call.id,
             toolName: call.name,
-            content: wrapToolResult(call.name, "status=error: سقف تعداد فراخوانی ابزار پر شد."),
+            content: wrapToolResult(call.name, "status=error: tool call budget exhausted."),
           });
           continue;
         }
@@ -283,7 +290,7 @@ export class AgentLoop {
             toolName: call.name,
             content: wrapToolResult(
               call.name,
-              "status=not_allowed: سقف استفاده از ابزار برای امروز پر شده است.",
+              "status=not_allowed: daily tool usage budget exhausted.",
             ),
           });
           continue;
@@ -344,6 +351,12 @@ export class AgentLoop {
   /**
    * One provider call, bounded by whichever is sooner: the per-call timeout, or
    * the run's remaining wall-clock budget.
+   *
+   * When streaming is enabled (kill switch BOBI_STREAMING), a stream sink is
+   * installed for this turn, and the provider streams, the call consumes the
+   * token stream and forwards it to the sink as AgentStreamEvents so the bot
+   * can render the answer progressively. Everything else — budgets, the
+   * tool loop, the final tool-free call — is unchanged.
    */
   private async call(
     input: AgentRunInput,
@@ -360,6 +373,182 @@ export class AgentLoop {
     // here too — a provider that ignores `timeoutMs` cannot hang the run. The
     // race matters as much as the abort: a promise that never settles would
     // otherwise hold this semaphore slot forever.
+    //
+    // Note: withDeadline's `expired` only rejects when the TIMER fires, never
+    // when the caller aborts. A provider that also ignores the abort signal
+    // would therefore hang the race below forever, so the caller's abort is
+    // raced explicitly as well.
+    const deadline = withDeadline(input.signal, timeoutMs);
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(new AgentCancelled());
+      if (input.signal.aborted) onAbort();
+      else input.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      // Streaming needs three things: the kill switch on, a sink installed
+      // for this turn (the bot installs one around engine.respond(); nothing
+      // else does), and a provider that actually streams. Otherwise the
+      // single-shot path below runs exactly as before.
+      const sink = currentStreamSink();
+      const stream =
+        sink !== undefined && streamingEnabled() && this.provider.completeStream !== undefined
+          ? this.provider.completeStream.bind(this.provider)
+          : undefined;
+      const work =
+        stream !== undefined
+          ? this.callStream(input, messages, tools, startedAt, graceMs, timeoutMs, deadline, sink!, stream)
+          : raceDeadline(
+              this.provider.complete({
+                messages,
+                model: this.model,
+                timeoutMs,
+                signal: deadline.signal,
+                ...(tools.length > 0 ? { tools } : {}),
+              }),
+              deadline,
+            );
+      return await Promise.race([work, aborted]);
+    } catch (err) {
+      // The caller's own cancellation is not a provider failure; report it as
+      // such so it is not surfaced to the user as an error.
+      if (input.signal.aborted) throw new AgentCancelled();
+      if (deadline.timedOut()) throw new AiError("timeout", "Provider response timed out.");
+      throw err;
+    } finally {
+      if (onAbort !== undefined) input.signal.removeEventListener("abort", onAbort);
+      deadline.dispose();
+    }
+  }
+
+  /**
+   * One provider call via the token stream.
+   *
+   * Token deltas are forwarded to the sink as they arrive; the terminal event
+   * carries the authoritative text, tool calls, and usage. Failures follow
+   * the StreamEvent contract (see ai/provider.ts):
+   *
+   * - Error BEFORE the first text delta: nothing was shown, so a single-shot
+   *   retry is invisible to the user.
+   * - Error AFTER text was shown: tell the sink (`restart`), make ONE
+   *   single-shot attempt for the full answer, and on its failure tell the
+   *   sink (`error`) and rethrow the ORIGINAL stream error.
+   * - A stream that resolves into tool calls: tell the sink (`toolcall`) so
+   *   the partial render is aborted cleanly, then continue the agentic loop.
+   *
+   * A spent deadline or a caller abort never falls back: there is no budget
+   * left to spend, or nobody left to show the answer to.
+   */
+  private async callStream(
+    input: AgentRunInput,
+    messages: ChatMessage[],
+    tools: readonly ToolSpec[],
+    startedAt: number,
+    graceMs: number,
+    timeoutMs: number,
+    deadline: Deadline,
+    sink: StreamEventSink,
+    stream: (req: CompletionRequest) => AsyncGenerator<StreamEvent, void, undefined>,
+  ): Promise<CompletionResponse> {
+    const emit = (ev: AgentStreamEvent): void => {
+      // A sink whose turn was aborted gets nothing: UI events for a dead
+      // turn would touch a message the turn no longer owns.
+      if (input.signal.aborted) return;
+      try {
+        sink(ev);
+      } catch {
+        // The sink is UI-only; it must never break the turn.
+      }
+    };
+
+    let text = "";
+    let toolCalls: readonly ToolCall[] = [];
+    let usage: TokenUsage | undefined;
+    let model = this.model;
+    let sawText = false;
+
+    const consume = (async (): Promise<void> => {
+      const events = stream({
+        messages,
+        model: this.model,
+        timeoutMs,
+        signal: deadline.signal,
+        ...(tools.length > 0 ? { tools } : {}),
+      });
+      for await (const ev of events) {
+        if (input.signal.aborted) throw new AgentCancelled();
+        if (ev.type === "text") {
+          if (ev.delta.length === 0) continue;
+          text += ev.delta;
+          sawText = true;
+          emit({ type: "token", delta: ev.delta });
+        } else if (ev.type === "usage") {
+          usage = ev.usage;
+        } else {
+          // The terminal event: its text is authoritative (it equals the
+          // concatenation of the deltas, but the adapter owns that truth),
+          // and its tool calls decide whether the loop continues.
+          text = ev.text;
+          toolCalls = ev.toolCalls;
+          model = ev.model;
+          if (ev.usage !== undefined) usage = ev.usage;
+        }
+      }
+    })();
+
+    try {
+      // The deadline is raced as well as aborted into the signal: a provider
+      // that ignores the abort cannot hang the run (the same guarantee
+      // raceDeadline gives the single-shot path). The no-op catch keeps a
+      // late rejection from surfacing as unhandled after the caller moved on.
+      await raceDeadline(consume, deadline);
+    } catch (err) {
+      if (input.signal.aborted) throw new AgentCancelled();
+      if (deadline.timedOut()) throw err;
+      if (!sawText) {
+        return await raceDeadline(
+          this.singleCall(input, messages, tools, startedAt, graceMs),
+          deadline,
+        );
+      }
+      emit({ type: "restart" });
+      try {
+        return await raceDeadline(
+          this.singleCall(input, messages, tools, startedAt, graceMs),
+          deadline,
+        );
+      } catch {
+        emit({ type: "error" });
+        throw err;
+      }
+    }
+
+    if (toolCalls.length > 0) emit({ type: "toolcall" });
+    return {
+      text,
+      model,
+      ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      ...(usage !== undefined ? { usage } : {}),
+    };
+  }
+
+  /**
+   * One single-shot provider call with a freshly computed budget.
+   *
+   * Used for the non-streaming path and as the streaming fallback. The
+   * budget is recomputed from `startedAt` (rather than reusing the outer
+   * call's) because a failed stream may already have spent most of it.
+   */
+  private async singleCall(
+    input: AgentRunInput,
+    messages: ChatMessage[],
+    tools: readonly ToolSpec[],
+    startedAt: number,
+    graceMs: number,
+  ): Promise<CompletionResponse> {
+    const remaining = this.budgets.totalTimeoutMs - (this.now() - startedAt);
+    const allowance = remaining > 0 ? remaining : graceMs;
+    const timeoutMs = Math.max(1, Math.min(this.callTimeoutMs, allowance));
     const deadline = withDeadline(input.signal, timeoutMs);
     try {
       return await raceDeadline(
@@ -372,12 +561,6 @@ export class AgentLoop {
         }),
         deadline,
       );
-    } catch (err) {
-      // The caller's own cancellation is not a provider failure; report it as
-      // such so it is not surfaced to the user as an error.
-      if (input.signal.aborted) throw new AgentCancelled();
-      if (deadline.timedOut()) throw new AiError("timeout", "پاسخ سرویس به‌موقع نرسید.");
-      throw err;
     } finally {
       deadline.dispose();
     }
@@ -440,7 +623,7 @@ function addUsage(
  */
 function nonEmpty(text: string): string {
   const trimmed = text.trim();
-  return trimmed.length > 0 ? trimmed : "پاسخی تولید نشد؛ دوباره تلاش کن.";
+  return trimmed.length > 0 ? trimmed : t("error.empty_response");
 }
 
 /** True when the error means the provider could not be reached at all. */
