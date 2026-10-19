@@ -527,7 +527,18 @@ async function main(): Promise<void> {
   const providerSvc = new ProviderService(storage, secrets, adapters);
   const modelSvc = new ModelService(storage);
   const healthSvc = new ProviderHealthService(storage, providerSvc, secrets, adapters);
-  const gateway = new AiGateway({ storage, adapters, secrets });
+  const gateway = new AiGateway({
+    storage,
+    adapters,
+    secrets,
+    // Diagnostic: a non-AiError mapped to "unknown" hides its cause from the
+    // user message; log the original here so the real failure is debuggable.
+    onUnknownError: (err, where) =>
+      log.error(`[gateway] non-AiError mapped to unknown (${where})`, {
+        error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        stack: err instanceof Error ? err.stack?.split("\n").slice(0, 5).join(" | ") : undefined,
+      }),
+  });
 
   // Per-run token/cost accounting (usage ledger). Diagnostic only: recording
   // never fails a turn — UsageTracker.record() swallows its own errors and

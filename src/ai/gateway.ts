@@ -69,6 +69,13 @@ export interface GatewayOptions {
   onUsage?: (info: UsageAttemptInfo) => void;
   /** Injectable clock, for deterministic tests. */
   now?: () => number;
+  /**
+   * Optional diagnostic hook, fired when a non-AiError is mapped to
+   * AiError("unknown"). The original error is passed so the real cause
+   * (which the user-safe "unknown" category hides) reaches the logs.
+   * Never throws: invoked inside try/catch.
+   */
+  onUnknownError?: (err: unknown, where: string) => void;
 }
 
 /** The provider/model pair a request actually used. Never includes a key. */
@@ -106,6 +113,7 @@ export class AiGateway implements AiProvider {
    * in try/catch, so a throwing listener can never break a turn.
    */
   private readonly onUsage: GatewayOptions["onUsage"];
+  private readonly onUnknownError: GatewayOptions["onUnknownError"];
 
   /**
    * Cooldowns for keys that failed with auth, keyed by "p:<providerId>" for
@@ -135,6 +143,20 @@ export class AiGateway implements AiProvider {
     this.now = opts.now ?? Date.now;
     this.pool = new CredentialPoolStore(opts.storage, opts.secrets);
     this.onUsage = opts.onUsage;
+    this.onUnknownError = opts.onUnknownError;
+  }
+
+  /**
+   * Report a non-AiError that is about to be mapped to AiError("unknown").
+   * The user-safe category hides the real cause; this hook lets it reach
+   * the logs. Never throws.
+   */
+  private reportUnknown(err: unknown, where: string): void {
+    try {
+      this.onUnknownError?.(err, where);
+    } catch {
+      // Diagnostics must never break a turn.
+    }
   }
 
   /**
@@ -273,7 +295,10 @@ export class AiGateway implements AiProvider {
         // Report the model that actually answered, as the engine expects.
         return { text: res.text, model: res.model };
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        const mapped =
+          err instanceof AiError
+            ? err
+            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
         lastError = mapped;
         // Only a retryable class advances to the next candidate. An auth,
         // validation, or configuration failure must NOT be retried through
@@ -327,7 +352,10 @@ export class AiGateway implements AiProvider {
         }
         return;
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        const mapped =
+          err instanceof AiError
+            ? err
+            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
         lastError = mapped;
         // Committed: the consumer already saw events, so failing over to
         // another candidate would DUPLICATE text the user already read.
@@ -478,7 +506,10 @@ export class AiGateway implements AiProvider {
       try {
         return await this.attempt(candidate, req, timeoutMs, key.apiKey);
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        const mapped =
+          err instanceof AiError
+            ? err
+            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
         lastError = mapped;
         if (mapped.kind === "auth") {
           this.coolDown(key.id);
@@ -525,7 +556,10 @@ export class AiGateway implements AiProvider {
         }
         return;
       } catch (err) {
-        const mapped = err instanceof AiError ? err : new AiError("unknown", "Unknown service error.");
+        const mapped =
+          err instanceof AiError
+            ? err
+            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
         lastError = mapped;
         // Committed: the consumer already saw events, so no key rotation and
         // no failover — the partial stream is the caller's to handle.
