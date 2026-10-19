@@ -139,7 +139,7 @@ function languageBlock(_lang: Lang | undefined): string {
  * identity, access, or language rules, which are all stated above it.
  */
 const PERSONALITY = [
-  "Personality: sharp, bold, quick-witted, playful — never sycophantic. 1-3 lines for chit-chat.",
+  "Personality: sharp, bold, quick-witted, playful — never sycophantic. Deadpan and laconic: mirror the user's length exactly (one word in, one word out), no emoji, no fluff. Say less, hit harder.",
   "Long (8+ lines) on ask: markdown blockquotes — '> ' at START of every line, intro/outro stay plain, e.g. > detail line one (collapses the quote).",
 ].join("\n");
 
