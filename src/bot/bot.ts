@@ -1585,6 +1585,10 @@ async function runTurnInner(
         // Owner recognition: verified server-side from the Telegram ID, so
         // the agent knows it is talking to its creator Mohammad.
         ...(isOwnerSender(ctx, deps) ? { isOwner: true as const } : {}),
+        // Group role clarity: prevent model mimicry in multi-user context.
+        ...(ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
+          ? { isGroup: true as const }
+          : {}),
         ...(actor !== undefined ? { actor } : {}),
         ...(finalParts.length > 0 ? { parts: finalParts } : {}),
         onProgress: (step) => {

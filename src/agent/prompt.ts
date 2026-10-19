@@ -52,6 +52,11 @@ export interface PromptContext {
    * recognizes him instead of challenging his identity.
    */
   isOwner?: boolean;
+  /**
+   * Whether this turn is in a group chat. Adds explicit role clarity so
+   * the model doesn't mimic the user in multi-user context.
+   */
+  isGroup?: boolean;
   /** Owner-supplied instructions appended last, so they can override defaults. */
   extra?: string;
   /**
@@ -232,6 +237,14 @@ export function buildSystemPrompt(ctx: PromptContext): string {
   if (ctx.isOwner === true) {
     blocks.push(
       "The user you are talking to right now IS Mohammad — your verified creator and owner (identity confirmed by the system from his Telegram ID). Greet him like family, not a stranger. Never ask him to prove who he is.",
+    );
+  }
+
+  // Group chat role clarity: some models mimic the user in multi-user
+  // context. State the role explicitly.
+  if (ctx.isGroup === true) {
+    blocks.push(
+      "You are in a Telegram group. You are Bobi, the bot — not a group member. Someone called you by name. Reply TO them directly. Never repeat their message back. Never pretend to be the user.",
     );
   }
 

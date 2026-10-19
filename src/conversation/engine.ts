@@ -60,6 +60,12 @@ export interface ConversationInput {
   /** Optional per-request timeout override. */
   timeoutMs?: number;
   /**
+   * Whether this turn is in a group chat. When true, the prompt adds
+   * explicit role clarity (you are the bot, not the user) because some
+   * models get confused by multi-user group context and start mimicking.
+   */
+  isGroup?: boolean;
+  /**
    * Whether the current user is the verified owner (resolved server-side
    * from the Telegram ID by the bot). When true, the system prompt tells
    * the model it is talking to its verified creator — so the agent
@@ -744,6 +750,8 @@ export class ConversationEngine {
         ...(this.extraPrompt !== undefined ? { extra: this.extraPrompt } : {}),
         // Owner recognition: the bot verified this user from the Telegram ID.
         ...(input.isOwner === true ? { isOwner: true as const } : {}),
+        // Group role clarity.
+        ...(input.isGroup === true ? { isGroup: true as const } : {}),
       }),
       actor,
       signal,
