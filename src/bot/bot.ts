@@ -1644,10 +1644,10 @@ async function runTurnInner(
       await deliverReply(ctx, deps, userId, out.chunks, synthesizeSpeech, {
         inputWasVoice,
         chatType: ctx.chat?.type ?? "private",
-        // In groups, visibly reply to the user's message so it's clear
-        // who the bot is answering.
-        ...(ctx.chat?.type === "group" || ctx.chat?.type === "supergroup"
-          ? { replyToMessageId: ctx.message?.message_id }
+        // Visibly reply to the user's message so it's clear what the bot
+        // is answering — in groups and in private chats alike.
+        ...(ctx.message?.message_id !== undefined
+          ? { replyToMessageId: ctx.message.message_id }
           : {}),
       });
     }
