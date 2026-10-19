@@ -2,7 +2,7 @@ import { bootstrapMessage } from "./core/app";
 import { fileURLToPath } from "node:url";
 import { loadConfig, requireBotToken } from "./config/config";
 import { createBot, PERSONALITY_PREF_KEY } from "./bot/bot";
-import { publicMenuCommands, ownerMenuCommands } from "./bot/menu";
+import { publicMenuCommands, ownerMenuCommands, miniAppUrl } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
 import { resolveLang } from "./i18n";
 import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
@@ -1075,6 +1075,24 @@ async function main(): Promise<void> {
       const ownerScope: BotCommandScope = { type: "chat", chat_id: identity.ownerId };
       void setMenu(toMenu(ownerDefs, true), { scope: ownerScope });
       void setMenu(toMenu(ownerDefs, false), { scope: ownerScope, language_code: "en" });
+    }
+
+    // One-tap Mini App access: the persistent menu button next to the message
+    // input opens the owner Mini App directly as a Web App. Owner chat only
+    // (two-tier: invisible to everyone else). Fail-closed: no public URL → no
+    // button override, the default menu button stays.
+    const miniUrl = miniAppUrl();
+    if (miniUrl !== undefined && identity.ownerId !== undefined) {
+      void bot.api
+        .setChatMenuButton({
+          chat_id: identity.ownerId,
+          menu_button: {
+            type: "web_app",
+            text: "🛠️ مدیریت",
+            web_app: { url: miniUrl },
+          },
+        })
+        .catch((err) => log.warn("[commands] setChatMenuButton failed", { error: errToLog(err) }));
     }
   }
 
