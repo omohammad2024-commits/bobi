@@ -691,6 +691,133 @@
       }
     }
 
+    // Draft model picker for the add forms (preset + custom): fetch the
+    // provider's model list with the just-typed key/URL, tick to select,
+    // "all/none" shortcuts, and a manual ID input for IDs not in the list.
+    // opts.getParams() returns { kind, preset?, baseUrl?, key } or throws
+    // an Error with a user-facing message.
+    function draftModelsPicker(container, opts) {
+      const seen = new Set();
+      const card = document.createElement("div");
+      card.className = "card";
+      card.style.marginTop = "12px";
+      card.innerHTML =
+        '<div style="font-weight:700;margin-bottom:6px">🤖 ' + ctx.esc(ctx.t("prov.models")) + "</div>" +
+        '<div class="hint-text" style="margin-bottom:10px;white-space:normal">' + ctx.esc(ctx.t("prov.draftModelsHint")) + "</div>" +
+        '<button type="button" class="btn btn-ghost btn-block" id="dmFetch">' + ctx.esc(ctx.t("prov.fetchModels")) + "</button>" +
+        '<div class="error" id="dmErr" hidden style="margin-top:8px"></div>' +
+        '<div id="dmList" style="margin-top:8px"></div>' +
+        '<div id="dmFoot" hidden style="margin-top:10px">' +
+        '<div style="display:flex;gap:8px;margin-bottom:10px">' +
+        '<button type="button" class="btn btn-ghost" id="dmAll" style="flex:1">' + ctx.esc(ctx.t("prov.selectAll")) + "</button>" +
+        '<button type="button" class="btn btn-ghost" id="dmNone" style="flex:1">' + ctx.esc(ctx.t("prov.selectNone")) + "</button>" +
+        "</div>" +
+        '<div class="field" style="margin-bottom:0"><label>' + ctx.esc(ctx.t("prov.manualModelId")) + "</label>" +
+        '<div style="display:flex;gap:8px">' +
+        '<input id="dmManual" type="text" dir="ltr" placeholder="gpt-4o-mini" style="flex:1;min-width:0">' +
+        '<button type="button" class="btn btn-ghost" id="dmAdd">' + ctx.esc(ctx.t("prov.addManual")) + "</button>" +
+        "</div>" +
+        '<div class="hint-text">' + ctx.esc(ctx.t("prov.manualModelHint")) + "</div></div>" +
+        '<div class="list-sub" id="dmCount" style="margin-top:8px"></div>' +
+        "</div>";
+      container.appendChild(card);
+
+      const errEl = card.querySelector("#dmErr");
+      const listEl = card.querySelector("#dmList");
+      const footEl = card.querySelector("#dmFoot");
+      const countEl = card.querySelector("#dmCount");
+      const fetchBtn = card.querySelector("#dmFetch");
+
+      function updateCount() {
+        let n = 0;
+        const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+        for (let i = 0; i < boxes.length; i++) if (boxes[i].checked) n++;
+        countEl.textContent = n + " " + ctx.t("prov.modelsSelected");
+      }
+
+      function addRow(id, label, checked) {
+        if (!id || seen.has(id)) return;
+        seen.add(id);
+        const row = document.createElement("label");
+        row.style.cssText = "display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--border,#eee);cursor:pointer";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = checked !== false;
+        cb.setAttribute("data-mid", id);
+        cb.addEventListener("change", updateCount);
+        const span = document.createElement("span");
+        span.className = "mono";
+        span.dir = "ltr";
+        span.style.cssText = "word-break:break-all";
+        span.textContent = label && label !== id ? label + " (" + id + ")" : id;
+        row.appendChild(cb);
+        row.appendChild(span);
+        listEl.appendChild(row);
+        updateCount();
+      }
+
+      fetchBtn.addEventListener("click", async function () {
+        errEl.hidden = true;
+        let p;
+        try {
+          p = opts.getParams();
+        } catch (e) {
+          errEl.textContent = (e && e.message) || ctx.t("toast.failed");
+          errEl.hidden = false;
+          return;
+        }
+        fetchBtn.disabled = true;
+        const old = fetchBtn.textContent;
+        fetchBtn.textContent = ctx.t("prov.fetchingModels");
+        try {
+          const r = await ctx.api("models.discoverDraft", p);
+          const models = (r && r.models) || [];
+          if (!models.length) {
+            errEl.textContent = ctx.t("prov.noModelsFound");
+            errEl.hidden = false;
+          }
+          for (const m of models) addRow(m.modelId, m.label, true);
+          footEl.hidden = false;
+        } catch (e) {
+          errEl.textContent = (e && e.message) || ctx.t("toast.failed");
+          errEl.hidden = false;
+        } finally {
+          fetchBtn.disabled = false;
+          fetchBtn.textContent = old;
+        }
+      });
+
+      card.querySelector("#dmAll").addEventListener("click", function () {
+        const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+        for (let i = 0; i < boxes.length; i++) boxes[i].checked = true;
+        updateCount();
+      });
+      card.querySelector("#dmNone").addEventListener("click", function () {
+        const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+        for (let i = 0; i < boxes.length; i++) boxes[i].checked = false;
+        updateCount();
+      });
+      card.querySelector("#dmAdd").addEventListener("click", function () {
+        const inp = card.querySelector("#dmManual");
+        const id = inp.value.trim();
+        if (!id) return;
+        addRow(id, id, true);
+        inp.value = "";
+        footEl.hidden = false;
+      });
+
+      return {
+        selectedIds: function () {
+          const ids = [];
+          const boxes = listEl.querySelectorAll('input[type="checkbox"]');
+          for (let i = 0; i < boxes.length; i++) {
+            if (boxes[i].checked) ids.push(boxes[i].getAttribute("data-mid"));
+          }
+          return ids;
+        },
+      };
+    }
+
     function presetForm(body, pr) {
       st.view.sub = "preset:" + pr.id;
       const needsPlaceholder = !!pr.hasPlaceholder && !!pr.requiredPlaceholder;
@@ -725,6 +852,20 @@
         upd();
       }
 
+      const picker = draftModelsPicker(body, {
+        getParams: function () {
+          const key = body.querySelector("#pfKey").value;
+          if (!key) throw new Error(ctx.t("prov.keyRequired"));
+          const p = { kind: "preset", preset: pr.id, key: key };
+          if (needsPlaceholder) {
+            const phVal = phInput.value.trim();
+            if (!phVal) throw new Error(ctx.t("prov.accountIdRequired"));
+            p.baseUrl = pr.baseUrl.replace("{" + phKey + "}", phVal);
+          }
+          return p;
+        },
+      });
+
       body.querySelector("#pfSave").addEventListener("click", async function () {
         const label = body.querySelector("#pfLabel").value.trim() || pr.label;
         const key = body.querySelector("#pfKey").value;
@@ -750,6 +891,12 @@
             payload.baseUrl = pr.baseUrl.replace("{" + phKey + "}", phVal);
           }
           const r = await ctx.api("providers.add", payload);
+          const ids = picker.selectedIds();
+          if (ids.length) {
+            try {
+              await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+            } catch (e) { /* provider is saved; models can be added later */ }
+          }
           ctx.toast(ctx.t("prov.justAdded"));
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {
@@ -771,9 +918,6 @@
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.key")) + "</label>" +
         '<input id="cfKey" type="password" autocomplete="new-password" dir="ltr">' +
         '<div class="hint-text">' + ctx.esc(ctx.t("prov.customKeyHint")) + "</div></div>" +
-        '<div class="field"><label>' + ctx.esc(ctx.t("prov.modelId")) + ' <span class="badge">' + ctx.esc(ctx.t("prov.optional")) + "</span></label>" +
-        '<input id="cfModel" type="text" dir="ltr" placeholder="gpt-4o-mini">' +
-        '<div class="hint-text">' + ctx.esc(ctx.t("prov.customModelHint")) + "</div></div>" +
         '<button type="button" class="btn btn-primary btn-block" id="cfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
         "</div>";
       const urlInput = body.querySelector("#cfUrl");
@@ -783,11 +927,19 @@
         if (v && !urlOk(v)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; }
         else errEl.hidden = true;
       });
+      const picker = draftModelsPicker(body, {
+        getParams: function () {
+          const url = urlInput.value.trim();
+          if (!urlOk(url)) throw new Error(ctx.t("prov.urlInvalid"));
+          const key = body.querySelector("#cfKey").value;
+          if (!key) throw new Error(ctx.t("prov.keyRequired"));
+          return { kind: "custom", baseUrl: url, key: key };
+        },
+      });
       body.querySelector("#cfSave").addEventListener("click", async function () {
         const label = body.querySelector("#cfLabel").value.trim();
         const url = urlInput.value.trim();
         const key = body.querySelector("#cfKey").value;
-        const modelId = body.querySelector("#cfModel").value.trim();
         if (!urlOk(url)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; return; }
         errEl.hidden = true;
         const btn = body.querySelector("#cfSave");
@@ -795,8 +947,14 @@
         try {
           const r = await ctx.api("providers.add", {
             kind: "custom", label: label || url, baseUrl: url,
-            key: key || undefined, model: modelId || undefined,
+            key: key || undefined,
           });
+          const ids = picker.selectedIds();
+          if (ids.length) {
+            try {
+              await ctx.api("models.import", { providerId: r.id, modelIds: ids });
+            } catch (e) { /* provider is saved; models can be added later */ }
+          }
           ctx.toast(ctx.t("prov.justAdded"));
           setView({ name: "detail", id: r.id, justAdded: true });
         } catch (e) {

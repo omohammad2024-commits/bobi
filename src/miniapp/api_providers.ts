@@ -107,6 +107,8 @@ export async function handleProviderApi(
       return { models: listModels(params, deps) };
     case "models.discover":
       return discoverModels(params, deps, adapters);
+    case "models.discoverDraft":
+      return discoverDraftModels(params, deps, adapters);
     case "models.import":
       return importModels(params, deps);
     case "models.add":
@@ -615,6 +617,73 @@ async function discoverModels(
       label: r.label ?? r.id,
       imported: known.has(r.id),
     })),
+  };
+}
+
+/**
+ * Draft discovery: list a provider's models BEFORE it is saved, from the
+ * key + base URL the owner just typed in the add form. Same SSRF posture as
+ * discoverModels (validateTarget + the adapter's DNS guard); the key is used
+ * once for this call and never stored or logged.
+ */
+async function discoverDraftModels(
+  params: Record<string, unknown>,
+  deps: ProviderApiDeps,
+  adapters: AdapterRegistry,
+): Promise<Record<string, unknown>> {
+  const kind = params["kind"];
+  let baseUrl: string;
+  if (kind === "preset") {
+    const presetId = asNonEmptyString(params["preset"], 64);
+    const preset = presetId !== undefined ? providerPreset(presetId) : undefined;
+    if (!preset) {
+      throw new ProviderApiError(400, "این سرویس شناخته نشده است.");
+    }
+    // The form may send a placeholder-resolved base URL (e.g. Cloudflare).
+    const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
+    baseUrl = validateProviderUrl(override ?? preset.baseUrl);
+  } else if (kind === "custom") {
+    baseUrl = validateProviderUrl(params["baseUrl"]);
+  } else {
+    throw new ProviderApiError(400, "نوع پروایدر برای کشف مدل نامعتبر است.");
+  }
+
+  const apiKey = asNonEmptyString(params["key"], 1024);
+  if (apiKey === undefined) {
+    throw new ProviderApiError(400, "برای دریافت مدل‌ها کلید API لازم است.");
+  }
+
+  if (!adapters.describes("openai_compatible").listModels) {
+    throw new ProviderApiError(400, "این نوع پروایدر کشف مدل را پشتیبانی نمی‌کند.");
+  }
+  const adapter = adapters.create("openai_compatible", {
+    baseUrl,
+    apiKey,
+    model: "discover",
+  });
+  if (!adapter.listModels) {
+    throw new ProviderApiError(400, "این پروایدر کشف مدل را پشتیبانی نمی‌کند.");
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  let remote: readonly { id: string; label?: string }[];
+  try {
+    remote = await adapter.listModels({
+      target: { baseUrl, apiKey },
+      timeoutMs: 15_000,
+      signal: controller.signal,
+    });
+  } catch {
+    throw new ProviderApiError(
+      502,
+      "کشف مدل‌ها ناموفق بود؛ کلید یا آدرس را بررسی کن.",
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+  return {
+    models: remote.map((r) => ({ modelId: r.id, label: r.label ?? r.id })),
   };
 }
 
