@@ -110,20 +110,20 @@ function ownerNotifyTextFa(
   reason: CheckReason,
   action: ModAction,
 ): string {
-  const reasonFa: Record<CheckReason, string> = {
-    flood: "ارسال پیام‌های پیاپی",
-    link: "ارسال لینک",
-    profanity: "الفاظ نامناسب",
-    spam: "رفتار اسپم‌گونه",
+  const reasonEn: Record<CheckReason, string> = {
+    flood: "Sending messages in a row",
+    link: "Sending a link",
+    profanity: "Inappropriate language",
+    spam: "Spam-like behavior",
   };
-  const actionFa = action === "delete" ? "حذف پیام" : "هشدار";
+  const actionEn = action === "delete" ? "Delete message" : "Warning";
   return (
-    `🛡 گزارش مدیریت خودکار گروه\n` +
-    `گروه: ${chatId}\n` +
-    `کاربر: ${userId}\n` +
-    `دلیل: ${reasonFa[reason]}\n` +
-    `اقدام: ${actionFa} (تخلف سوم در ۱۰ دقیقه)\n` +
-    `تصمیم نهایی (بن/محدودیت) با شماست.`
+    `🛡 Auto-moderation report\n` +
+    `Group: ${chatId}\n` +
+    `User: ${userId}\n` +
+    `Reason: ${reasonEn[reason]}\n` +
+    `Action: ${actionEn} (3rd violation in 10 minutes)\n` +
+    `Final decision (ban/restrict) is yours.`
   );
 }
 
@@ -164,7 +164,7 @@ export function createModerator(deps: ModeratorDeps): Moderator {
       action: "allow",
       notifyOwner: false,
       reason: null,
-      warnTextFa: null,
+      warnText: null,
       handled: false,
     };
 

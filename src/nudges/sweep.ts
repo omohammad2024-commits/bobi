@@ -114,7 +114,7 @@ export async function sweepNudges(deps: SweepNudgesDeps): Promise<NudgeDelivery[
  */
 export function formatNudgeMessage(nudge: NudgeRecord): string {
   return (
-    `🔔 یادآوری پیگیری:\n«${nudge.text}»\n` +
-    `این را برای پیگیری ثبت کرده بودی. وقتی انجام شد بگو «انجام شد» تا ببندمش.`
+    `🔔 Follow-up reminder:\n"${nudge.text}"\n` +
+    `You saved this for follow-up. When it's done, say "done" and I'll close it.`
   );
 }

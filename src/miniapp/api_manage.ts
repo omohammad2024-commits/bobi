@@ -125,7 +125,7 @@ const BENCH_TASK_NAME = "bench: scheduled run";
 const DIGEST_TASK_NAME = "blueprint: morning_digest";
 /** Like /blueprint's default morning prompt (dashboard mirrors the same). */
 const DIGEST_PROMPT =
-  "خلاصهٔ صبحگاهی به فارسی: مهم‌ترین کارهای امروز، یادآورهای نزدیک و هدف‌های فعال را کوتاه خلاصه کن.";
+  "Morning briefing: briefly summarize today's most important tasks, upcoming reminders, and active goals.";
 
 const MIN_BENCH_CRON_GAP_MS = 60 * 60 * 1000;
 const MIN_DIGEST_CRON_GAP_MS = 15 * 60 * 1000;

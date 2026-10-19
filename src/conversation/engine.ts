@@ -967,7 +967,7 @@ export class ConversationEngine {
   /** Transcript marker for a turn that was attachments only. */
   private describeAttachmentsOnly(input: ConversationInput): string {
     const count = input.parts?.length ?? 0;
-    return count > 0 ? `[${count} پیوست]` : "[پیام بدون متن]";
+    return count > 0 ? `[${count} attachment(s)]` : "[message with no text]";
   }
 
   /** Read history — memory or storage depending on configuration. */

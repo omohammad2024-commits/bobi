@@ -99,7 +99,7 @@ describe("delegate tool", () => {
     expect(out.ok).toBe(true);
     if (out.ok) {
       expect(out.summary.length).toBeLessThanOrEqual(DELEGATE_SUMMARY_MAX_CHARS);
-      expect(out.summary).toContain("یادداشت");
+      expect(out.summary).toContain("note");
     }
   });
 

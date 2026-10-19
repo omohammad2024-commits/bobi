@@ -38,22 +38,18 @@ export interface UsageReportOutput {
 const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 
-/** Persian digits for display; keeps the report in the bot's register. */
-function fa(n: number): string {
-  const digits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
-  const grouped = Math.round(n)
+/** Latin digits with thousands separators for display. */
+function en(n: number): string {
+  return Math.round(n)
     .toString()
-    .replace(/\B(?=(\d{3})+(?!\d))/g, "٬");
-  return grouped.replace(/[0-9]/g, (d) => digits[Number(d)]!);
+    .replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 }
 
-/** Format an approximate USD amount in Persian. */
-function faCost(usd: number): string {
-  if (usd <= 0) return "۰ دلار";
-  if (usd < 0.01) return "کمتر از ۰٫۰۱ دلار";
-  const raw = usd.toFixed(2);
-  const digits = ["۰", "۱", "۲", "۳", "۴", "۵", "۶", "۷", "۸", "۹"];
-  return `${raw.replace(/[0-9]/g, (d) => digits[Number(d)]!).replace(".", "٫")} دلار`;
+/** Format an approximate USD amount. */
+function enCost(usd: number): string {
+  if (usd <= 0) return "$0";
+  if (usd < 0.01) return "less than $0.01";
+  return `$${usd.toFixed(2)}`;
 }
 
 export function createUsageReportTool(deps: UsageReportToolDeps): Tool<Record<string, never>, UsageReportOutput> {
@@ -88,31 +84,31 @@ export function createUsageReportTool(deps: UsageReportToolDeps): Tool<Record<st
       const topModels = tracker.byModelAll(weekStart).slice(0, 5);
 
       const lines: string[] = [];
-      lines.push("📊 گزارش مصرف");
+      lines.push("📊 Usage Report");
       lines.push("");
-      lines.push("امروز:");
-      lines.push(`• درخواست‌ها: ${fa(today.runs)}`);
-      lines.push(`• توکن ورودی: ${fa(today.inputTokens)} — توکن خروجی: ${fa(today.outputTokens)}`);
-      lines.push(`• هزینهٔ تقریبی: ${faCost(today.estimatedUsd)}`);
+      lines.push("Today:");
+      lines.push(`• Requests: ${en(today.runs)}`);
+      lines.push(`• Input tokens: ${en(today.inputTokens)} — Output tokens: ${en(today.outputTokens)}`);
+      lines.push(`• Estimated cost: ${enCost(today.estimatedUsd)}`);
       lines.push("");
-      lines.push("۷ روز اخیر:");
-      lines.push(`• درخواست‌ها: ${fa(week.runs)}`);
-      lines.push(`• توکن ورودی: ${fa(week.inputTokens)} — توکن خروجی: ${fa(week.outputTokens)}`);
-      lines.push(`• هزینهٔ تقریبی: ${faCost(week.estimatedUsd)}`);
+      lines.push("Last 7 days:");
+      lines.push(`• Requests: ${en(week.runs)}`);
+      lines.push(`• Input tokens: ${en(week.inputTokens)} — Output tokens: ${en(week.outputTokens)}`);
+      lines.push(`• Estimated cost: ${enCost(week.estimatedUsd)}`);
 
       if (topModels.length > 0) {
         lines.push("");
-        lines.push("پرمصرف‌ترین مدل‌ها (۷ روز اخیر):");
+        lines.push("Top models (last 7 days):");
         topModels.forEach((m, i) => {
           lines.push(
-            `${fa(i + 1)}. ${m.modelId} — ${fa(m.inputTokens)} ورودی، ${fa(m.outputTokens)} خروجی، ${fa(m.runs)} بار اجرا (~${faCost(m.estimatedUsd)})`,
+            `${en(i + 1)}. ${m.modelId} — ${en(m.inputTokens)} input, ${en(m.outputTokens)} output, ${en(m.runs)} runs (~${enCost(m.estimatedUsd)})`,
           );
         });
       }
 
       lines.push("");
       lines.push(
-        "⚠️ این هزینه‌ها تقریبی‌اند و صورتحساب واقعی نیستند؛ قیمت‌ها ممکن است تغییر کرده باشند.",
+        "⚠️ These costs are approximate and not a real bill; prices may have changed.",
       );
 
       return { text: lines.join("\n") };

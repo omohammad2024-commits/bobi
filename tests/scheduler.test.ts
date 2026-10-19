@@ -207,7 +207,7 @@ describe("catch-up after downtime", () => {
     }
 
     await h.scheduler.tick();
-    expect(h.sent.map((s) => s.text.replace("⏰ یادآوری: ", ""))).toEqual([
+    expect(h.sent.map((s) => s.text.replace("⏰ Reminder: ", ""))).toEqual([
       "اول",
       "دوم",
       "سوم",

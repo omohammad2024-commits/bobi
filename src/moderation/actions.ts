@@ -48,7 +48,7 @@ export interface ActionDecision {
   notifyOwner: boolean;
   reason: CheckReason | null;
   /** Static Persian warning text, or null when no warning is sent. */
-  warnTextFa: string | null;
+  warnText: string | null;
 }
 
 /** Strikes older than this do not count toward escalation. */
@@ -67,16 +67,16 @@ const REASON_PRIORITY: readonly CheckReason[] = [
   "flood",
 ];
 
-/** Static Persian warnings, keyed by reason code. No message content inside. */
+/** Static English warnings, keyed by reason code. No message content inside. */
 const WARN_TEXT: Record<CheckReason, string> = {
   flood:
-    "⚠️ پیام‌های پیاپی زیادی فرستادید؛ لطفاً کمی مکث کنید. تکرارش باعث حذف پیام می‌شود.",
-  link: "⚠️ ارسال لینک در این گروه مجاز نیست.",
-  profanity: "⚠️ لطفاً از الفاظ نامناسب استفاده نکنید.",
-  spam: "⚠️ این پیام شبیه اسپم تشخیص داده شد؛ لطفاً رعایت کنید.",
+    "⚠️ You're sending too many messages in a row; please slow down. Repeating this will get messages deleted.",
+  link: "⚠️ Sending links is not allowed in this group.",
+  profanity: "⚠️ Please avoid inappropriate language.",
+  spam: "⚠️ This message was flagged as spam; please follow the rules.",
 };
 
-const DELETE_NOTE_FA = "پیام به دلیل تکرار تخلف حذف شد.";
+const DELETE_NOTE = "Message deleted for repeated violations.";
 
 export interface DecideOptions {
   /** Last time the owner was notified for this group (ms); enforces cooldown. */
@@ -103,7 +103,7 @@ export function decideAction(
 ): ActionDecision {
   const fired = hits.filter((h) => h.hit);
   if (fired.length === 0) {
-    return { action: "allow", notifyOwner: false, reason: null, warnTextFa: null };
+    return { action: "allow", notifyOwner: false, reason: null, warnText: null };
   }
 
   let reason: CheckReason = fired[0]?.reason ?? "flood";
@@ -122,7 +122,7 @@ export function decideAction(
       action: "warn",
       notifyOwner: false,
       reason,
-      warnTextFa: WARN_TEXT[reason],
+      warnText: WARN_TEXT[reason],
     };
   }
 
@@ -131,7 +131,7 @@ export function decideAction(
       action: "delete",
       notifyOwner: false,
       reason,
-      warnTextFa: DELETE_NOTE_FA,
+      warnText: DELETE_NOTE,
     };
   }
 
@@ -143,7 +143,7 @@ export function decideAction(
     action: "delete",
     notifyOwner,
     reason,
-    warnTextFa: DELETE_NOTE_FA,
+    warnText: DELETE_NOTE,
   };
 }
 

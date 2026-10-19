@@ -229,7 +229,7 @@ export class ReminderScheduler {
       return await this.deliver({
         chatId: reminder.chatId,
         userId: reminder.userId,
-        text: `⏰ یادآوری: ${reminder.text}`,
+        text: `⏰ Reminder: ${reminder.text}`,
       });
     } catch (err) {
       this.report(`reminder delivery threw: id=${reminder.id} ${msg(err)}`);

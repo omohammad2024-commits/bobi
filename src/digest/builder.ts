@@ -505,7 +505,7 @@ async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undef
   const timer = setTimeout(() => controller.abort(), 12_000);
   let hits: readonly DigestHeadline[];
   try {
-    hits = await deps.searchHeadlines("سرخط خبرهای امروز", 3, controller.signal);
+    hits = await deps.searchHeadlines("today's top headlines", 3, controller.signal);
   } finally {
     clearTimeout(timer);
   }
@@ -541,10 +541,10 @@ function shortErr(err: unknown): string {
 // Per-language rendering
 // ---------------------------------------------------------------------------
 
-/** Render one section's title + body in the owner's language. Pure. */
+/** Render one section's title + body in English. Pure. */
 export function renderDigestSection(
   section: DigestSectionData,
-  locale: DigestLocale = "fa",
+  locale: DigestLocale = "en",
 ): { title: string; body: string } {
   switch (section.kind) {
     case "date": {
@@ -688,7 +688,7 @@ function joinDigestParts(
  */
 export function renderDigestText(
   sections: readonly DigestSectionData[],
-  locale: DigestLocale = "fa",
+  locale: DigestLocale = "en",
   maxChars: number = MAX_DIGEST_CHARS,
 ): string {
   return joinDigestParts(
@@ -699,14 +699,14 @@ export function renderDigestText(
 }
 
 // ---------------------------------------------------------------------------
-// Legacy Persian API (byte-identical, on top of the new core)
+// Legacy API (byte-identical shape, on top of the new core)
 // ---------------------------------------------------------------------------
 
-/** Compose the digest sections (Persian rendering, legacy shape). */
+/** Compose the digest sections (English rendering, legacy shape). */
 export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
   const data = await buildDigestData(deps);
   return data.map((s) => {
-    const r = renderDigestSection(s, "fa");
+    const r = renderDigestSection(s, "en");
     return { titleFa: r.title, bodyFa: r.body };
   });
 }
@@ -722,7 +722,7 @@ export async function buildDigest(deps: DigestDeps): Promise<DigestSection[]> {
 export function formatDigest(sections: DigestSection[]): string {
   return joinDigestParts(
     sections.map((s) => ({ title: s.titleFa, body: s.bodyFa })),
-    "fa",
+    "en",
     MAX_DIGEST_CHARS,
   );
 }

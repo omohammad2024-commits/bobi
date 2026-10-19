@@ -307,15 +307,15 @@ describe("decideAction", () => {
     const d = decideAction([], cfg, [], NOW);
     expect(d.action).toBe("allow");
     expect(d.notifyOwner).toBe(false);
-    expect(d.warnTextFa).toBeNull();
+    expect(d.warnText).toBeNull();
   });
 
   test("1st strike → warn with Persian text, never delete", () => {
     const d = decideAction([hit()], cfg, [], NOW);
     expect(d.action).toBe("warn");
     expect(d.notifyOwner).toBe(false);
-    expect(typeof d.warnTextFa).toBe("string");
-    expect((d.warnTextFa as string).length).toBeGreaterThan(0);
+    expect(typeof d.warnText).toBe("string");
+    expect((d.warnText as string).length).toBeGreaterThan(0);
   });
 
   test("2nd strike within 10 min → delete, no owner notify", () => {
@@ -395,8 +395,8 @@ describe("decideAction", () => {
   test("warning text never echoes message content", () => {
     const evil = "<script>alert(1)</script> @owner hi";
     const d = decideAction([hit("spam")], cfg, [], NOW);
-    expect(d.warnTextFa).not.toContain(evil);
-    expect(d.warnTextFa).not.toContain("script");
+    expect(d.warnText).not.toContain(evil);
+    expect(d.warnText).not.toContain("script");
   });
 });
 
@@ -480,7 +480,7 @@ describe("createModerator.handleMessage", () => {
     expect(notes).toHaveLength(1);
     // Owner notification carries no message content.
     expect(notes[0]).not.toContain("https://z.example");
-    expect(notes[0]).toMatch(/گروه/);
+    expect(notes[0]).toMatch(/Group/);
 
     const log = mod.getModLog();
     expect(log).toHaveLength(3);

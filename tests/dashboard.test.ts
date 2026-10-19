@@ -1342,7 +1342,7 @@ describe("dashboard digest prompt & destination (phase 5)", () => {
   }
 
   const DEFAULT_PROMPT =
-    "خلاصهٔ صبحگاهی به فارسی: مهم‌ترین کارهای امروز، یادآورهای نزدیک و هدف‌های فعال را کوتاه خلاصه کن.";
+    "Morning briefing: briefly summarize today's most important tasks, upcoming reminders, and active goals.";
 
   async function createDigest(storage: Storage): Promise<number> {
     const res = await handleDashboardRequest(

@@ -143,7 +143,7 @@ export class HeartbeatService {
       // is still logged, so the trail stays an honest record of what the
       // heartbeat did.
       this.storage.logHeartbeat({
-        summary: "رد شد: مدل واقعی تنظیم نشده است.",
+        summary: "Skipped: no real model configured.",
         toolCalls: 0,
         status: "skipped",
       });
@@ -174,14 +174,14 @@ export class HeartbeatService {
     const recent = this.storage.recentHeartbeats(RECENT_BEATS_FOR_PROMPT).reverse();
 
     const lines: string[] = [
-      "این یک «ضربان» (heartbeat) است: بررسی دوره‌ای و مستقل بات، بدون اینکه مالک پیامی فرستاده باشد.",
-      "تو دستیار مالک هستی و با اختیارات او عمل می‌کنی. وضعیت هدف‌های فعال را بررسی کن و در صورت نیاز، برای پیشبردشان اقدام کن.",
-      "می‌توانی از ابزارها استفاده کنی — از جمله schedule_task برای زمان‌بندی اقدام‌های بعدی، و add_goal و complete_goal برای مدیریت هدف‌ها.",
+      "This is a heartbeat: a periodic, autonomous check by the bot, without the owner having sent a message.",
+      "You are the owner's assistant acting with their authority. Review the active goals and take action to advance them if needed.",
+      "You can use tools — including schedule_task for scheduling follow-ups, and add_goal and complete_goal for managing goals.",
       "",
-      "هدف‌های فعال:",
+      "Active goals:",
     ];
     if (goals.length === 0) {
-      lines.push("— هدفی ثبت نشده است.");
+      lines.push("— No goals registered.");
     } else {
       for (const g of goals) lines.push(`— ${describeGoal(g)}`);
     }

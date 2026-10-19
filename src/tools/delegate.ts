@@ -55,7 +55,7 @@ const DELEGATE_CALL_TIMEOUT_MS = 20_000;
 export const DELEGATE_SUMMARY_MAX_CHARS = 2000;
 
 /** Named note appended when the child's answer is truncated. */
-const TRUNCATION_NOTE = "… [یادداشت: پاسخ فرزند بلند بود و کوتاه شد]";
+const TRUNCATION_NOTE = "… [note: child response was long and was shortened]";
 
 export interface DelegateInput {
   /** The subtask, self-contained. */

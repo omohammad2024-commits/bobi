@@ -203,7 +203,7 @@ const BENCH_CADENCES: Readonly<Record<string, string>> = {
 const DIGEST_DEFAULT_TIME = "08:00";
 /** Digest prompt, mirroring the morning_digest blueprint in cmd_auto.ts. */
 const DIGEST_PROMPT =
-  "خلاصهٔ صبحگاهی به فارسی: مهم‌ترین کارهای امروز، یادآورهای نزدیک و هدف‌های فعال را کوتاه خلاصه کن.";
+  "Morning briefing: briefly summarize today's most important tasks, upcoming reminders, and active goals.";
 
 /** Bench mode/model selector values. */
 const MODE_MODEL_RE = /^[A-Za-z0-9_.\-/]{1,64}$/;

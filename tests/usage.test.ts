@@ -469,21 +469,21 @@ describe("usage_report tool", () => {
     const out = await tool.run({}, ctxFor("owner-1"));
     const text = out.text;
 
-    // Persian sections.
-    expect(text).toContain("امروز");
-    expect(text).toContain("۷ روز اخیر");
-    // Today has exactly the one row (۱ run); the 8-day-old row is excluded.
-    expect(text).toContain("توکن ورودی: ۱٬۰۰۰٬۰۰۰");
+    // English sections.
+    expect(text).toContain("Today");
+    expect(text).toContain("Last 7 days");
+    // Today has exactly the one row (1 run); the 8-day-old row is excluded.
+    expect(text).toContain("Input tokens: 1,000,000");
     // Top models over the week include both model ids.
     expect(text).toContain("gpt-4o-mini");
     expect(text).toContain("claude-sonnet-4-5");
     // The approximate-cost disclaimer is always present.
-    expect(text).toContain("تقریبی");
-    expect(text).toContain("صورتحساب واقعی نیست");
+    expect(text).toContain("approximate");
+    expect(text).toContain("not a real bill");
     storage.close();
   });
 
-  test("an empty ledger still reports zeros in Persian", async () => {
+  test("an empty ledger still reports zeros", async () => {
     const storage = Storage.open(":memory:");
     const tool = createUsageReportTool({
       storage,
@@ -491,8 +491,8 @@ describe("usage_report tool", () => {
       now: () => Date.UTC(2026, 9, 18, 12, 0, 0),
     });
     const out = await tool.run({}, ctxFor("owner-1"));
-    expect(out.text).toContain("۰");
-    expect(out.text).toContain("تقریبی");
+    expect(out.text).toContain("0");
+    expect(out.text).toContain("approximate");
     storage.close();
   });
 });

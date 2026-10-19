@@ -2138,9 +2138,9 @@ export function createBot(token: string, deps: BotDeps): Bot {
           // Already gone, or the bot lacks delete rights — best effort.
         }
       }
-      if (decision.action !== "allow" && decision.warnTextFa) {
+      if (decision.action !== "allow" && decision.warnText) {
         try {
-          await ctx.reply(decision.warnTextFa, {
+          await ctx.reply(decision.warnText, {
             reply_to_message_id: ctx.message.message_id,
           });
         } catch {

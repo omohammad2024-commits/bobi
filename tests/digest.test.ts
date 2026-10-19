@@ -170,15 +170,15 @@ describe("buildDigest", () => {
     expect(text).toContain("☀️");
   });
 
-  test("Persian date renders with fa-IR digits", async () => {
+  test("English date renders with Latin digits", async () => {
     const d = deps();
     const text = formatDigest(await buildDigest(d));
-    expect(text).toContain("مهر");
-    expect(text).toContain("۱۴۰۵");
+    expect(text).toContain("October");
+    expect(text).toContain("2026");
     expect(text).toContain("Good morning");
-    // No Latin digits in the date line.
-    const dateLine = text.split("\n").find((l) => l.includes("امروز")) ?? "";
-    expect(/[0-9]/.test(dateLine)).toBe(false);
+    // Latin digits in the date line.
+    const dateLine = text.split("\n").find((l) => l.includes("Today")) ?? "";
+    expect(/[0-9]/.test(dateLine)).toBe(true);
   });
 
   test("an empty day still produces a valid digest", async () => {

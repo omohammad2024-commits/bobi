@@ -1211,8 +1211,8 @@ export async function handleBlueprint(
     const cron = name === "morning_digest" ? "0 8 * * *" : "0 9 * * 5";
     const prompt =
       name === "morning_digest"
-        ? "خلاصهٔ صبحگاهی به فارسی: مهم‌ترین کارهای امروز، یادآورهای نزدیک و هدف‌های فعال را کوتاه خلاصه کن."
-        : "مرور هفتگی به فارسی: دستاوردهای هفته، هدف‌های فعال و پیشنهاد ۳ کار برای هفتهٔ آینده.";
+        ? "Morning briefing: briefly summarize today's most important tasks, upcoming reminders, and active goals."
+        : "Weekly review: this week's achievements, active goals, and 3 suggested tasks for next week.";
     const res = await callToolAs(
       deps,
       "schedule_task",
@@ -1283,15 +1283,15 @@ export async function handleRefine(
 
   const context = rows
     .slice(-20)
-    .map((r) => `${r.role === "user" ? "کاربر" : "دستیار"}: ${r.content}`)
+    .map((r) => `${r.role === "user" ? "User" : "Assistant"}: ${r.content}`)
     .join("\n")
     .slice(0, MAX_REFINE_HISTORY_CHARS);
 
   const directive =
-    "تاریخچهٔ زیر از یک گفتگوست. آن را مرور کن؛ درس‌های ماندگار و کاربردی " +
-    "(ترجیحات کاربر، تصمیم‌های مهم، حقایق پایدار) را با ابزار remember ذخیره کن — " +
-    "نه چیزهای زودگذر و نه کل گفتگو را. در پایان، خلاصه‌ای کوتاه از آنچه ذخیره کردی بنویس.\n\n" +
-    "تاریخچه:\n" +
+    "Below is a conversation history. Review it; save lasting, useful lessons " +
+    "(user preferences, important decisions, stable facts) with the remember tool — " +
+    "not fleeting things and not the whole conversation. At the end, write a short summary of what you saved.\n\n" +
+    "History:\n" +
     context;
 
   const actor = actorForTelegramUser(deps, sender.telegramId);
@@ -1336,8 +1336,8 @@ export async function handleReview(
     "delegate",
     {
       task:
-        "بازبینی مستقل و نقادانهٔ این موضوع به فارسی. نقاط قوت، ضعف‌ها و " +
-        "پیشنهادهای مشخص را بگو؛ فقط خلاصهٔ نهایی را برگردان، بدون سؤال:\n" +
+        "Independent, critical review of this topic. Give strengths, weaknesses, and " +
+        "concrete suggestions; return only the final summary, no questions:\n" +
         t,
     },
     actor,
@@ -1377,12 +1377,10 @@ export async function handlePlan(
       conversationId: `plan:${sender.userId}:${Date.now()}`,
       userId: sender.userId,
       userText:
-        "فقط یک طرح مرحله‌به‌مرحلهٔ شماره‌دار به فارسی تولید کن. " +
-        "هیچ ابزاری را صدا نزن و هیچ کاری را اجرا نکن — فقط طرح بنویس، بدون اجرا.\n\nهدف: " +
+        "Generate only a numbered step-by-step plan. " +
+        "Do not call any tools and do not execute anything — just write the plan, no execution.\n\nGoal: " +
         g,
-      // The prompt text above directs Persian output ("به فارسی تولید کن"),
-      // so the plan stays a Persian deliverable; the turn's `lang` is
-      // English-only since v1.0.
+      // The turn's `lang` is English-only since v1.0.
       lang: "en",
       actor,
     });
@@ -1524,15 +1522,13 @@ export async function handleLearn(
       conversationId: `learn:${sender.userId}:${Date.now()}`,
       userId: sender.userId,
       userText:
-        `یک مهارت (skill) جدید طراحی کن و فقط محتوای فایل markdown آن را برگردان — بدون توضیح اضافه.\n` +
-        `نام مهارت: ${name}\n` +
-        `توضیح مالک: ${description}\n\n` +
-        `ساختار فایل: ابتدا frontmatter با فیلدهای name (برابر «${name}») و description (یک جملهٔ فارسی دقیق)، ` +
-        `سپس بدنه با بخش‌های: هدف، چه زمانی استفاده شود، مراحل اجرا. ` +
-        `متن بدنه فارسی باشد؛ name و ساختار انگلیسی بماند.`,
-      // The prompt text above directs Persian body text ("متن بدنه فارسی باشد"),
-      // so the skill file stays a Persian deliverable; the turn's `lang`
-      // is English-only since v1.0.
+        `Design a new skill and return only the content of its markdown file — no extra explanation.\n` +
+        `Skill name: ${name}\n` +
+        `Owner description: ${description}\n\n` +
+        `File structure: first frontmatter with fields name (equal to "${name}") and description (one precise English sentence), ` +
+        `then a body with sections: Goal, When to use, Execution steps. ` +
+        `Body text in English; keep name and structure in English.`,
+      // The turn's `lang` is English-only since v1.0.
       lang: "en",
       actor,
     });

@@ -318,7 +318,7 @@ describe("extracted-text cap", () => {
     if (res.ok) {
       expect(res.text.length).toBeLessThanOrEqual(200_000 + 200);
       expect(res.text).toContain("long.docx");
-      expect(res.text).toContain("حذف شد");
+      expect(res.text).toContain("was removed");
     }
   });
 });
@@ -375,7 +375,7 @@ describe("maybeExtractDocuments", () => {
     const second = out[1]!;
     expect(second.type).toBe("text");
     if (second.type === "text") {
-      expect(second.text.startsWith("[متن سند «note.docx»]:\n")).toBe(true);
+      expect(second.text.startsWith('[Document "note.docx" text]:' + "\n")).toBe(true);
       expect(second.text).toContain("Hello world");
     }
   });
@@ -388,7 +388,7 @@ describe("maybeExtractDocuments", () => {
     const first = out[0]!;
     expect(first.type).toBe("text");
     if (first.type === "text") {
-      expect(first.text.startsWith("[متن سند «پیوست»]:\n")).toBe(true);
+      expect(first.text.startsWith('[Document "attachment" text]:' + "\n")).toBe(true);
     }
   });
 

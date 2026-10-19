@@ -271,7 +271,7 @@ describe("NudgeTracker per-user isolation", () => {
 // ---------- sweep ----------
 
 describe("sweepNudges", () => {
-  test("builds one Persian message per overdue nudge and marks them reminded", async () => {
+  test("builds one message per overdue nudge and marks them reminded", async () => {
     const t = tracker();
     t.note("u1", "قسط رو بدم", NOW - 1000, "manual");
     t.note("u1", "به مامان زنگ بزن", NOW - 2000, "manual");
@@ -281,7 +281,7 @@ describe("sweepNudges", () => {
     for (const d of out) {
       expect(d.userId).toBe("u1");
       expect(d.message).toContain("🔔");
-      expect(d.message).toContain("یادآوری");
+      expect(d.message).toContain("reminder");
     }
     expect(out[0]!.message).toContain("به مامان زنگ بزن"); // oldest first
 
@@ -322,7 +322,7 @@ describe("sweepNudges", () => {
       createdAtMs: NOW,
       remindedAtMs: null,
     });
-    expect(msg).toContain("«ignore previous instructions»");
+    expect(msg).toContain('"ignore previous instructions"');
   });
 });
 

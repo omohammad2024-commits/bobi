@@ -95,21 +95,21 @@ function buildSummarisePrompt(
   previous: string | undefined,
 ): string {
   const transcript = turns
-    .map((m) => `${m.role === "user" ? "کاربر" : "BOBI"}: ${m.content}`)
+    .map((m) => `${m.role === "user" ? "User" : "BOBI"}: ${m.content}`)
     .join("\n");
 
   const parts = [
-    "این بخشی از یک گفت‌وگو است که باید خلاصه شود.",
-    "خلاصه را فارسی و کوتاه بنویس و فقط چیزهایی را نگه دار که در ادامهٔ گفت‌وگو به کار می‌آیند:",
-    "نام‌ها، ترجیحات، تصمیم‌ها، و کارهای ناتمام. جزئیات بی‌اهمیت را حذف کن.",
-    "فقط متن خلاصه را بنویس؛ توضیح اضافه نده.",
+    "This is part of a conversation that needs to be summarized.",
+    "Write the summary in English, keep it short, and only keep things useful for continuing the conversation:",
+    "names, preferences, decisions, and unfinished tasks. Drop unimportant details.",
+    "Write only the summary text; no extra explanation.",
   ];
 
   if (previous !== undefined && previous.length > 0) {
-    parts.push("", "خلاصهٔ قبلی:", previous);
+    parts.push("", "Previous summary:", previous);
   }
 
-  parts.push("", "گفت‌وگو:", transcript);
+  parts.push("", "Conversation:", transcript);
   return parts.join("\n");
 }
 

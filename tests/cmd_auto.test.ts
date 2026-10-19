@@ -807,14 +807,14 @@ describe("/plan", () => {
       engine: stubEngine({
         respond: async (input) => {
           seenText = input.userText;
-          return fakeOutput("۱. ...");
+          return fakeOutput("1. ...");
         },
       }),
     });
-    const out = await handlePlan(deps, A, "یادگیری شنا");
-    expect(out).toContain("۱.");
-    expect(seenText).toContain("هیچ ابزاری");
-    expect(seenText).toContain("یادگیری شنا");
+    const out = await handlePlan(deps, A, "learn swimming");
+    expect(out).toContain("1.");
+    expect(seenText).toContain("Do not call any tools");
+    expect(seenText).toContain("learn swimming");
   });
 
   test("empty goal rejected", async () => {

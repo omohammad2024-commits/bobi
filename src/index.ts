@@ -591,7 +591,7 @@ async function main(): Promise<void> {
       // "not configured". The gateway diagnoses the stored selection.
       const why = gateway.describeSelectionProblem();
       return {
-        text: `بابی فعلاً نمی‌تواند جواب بدهد: ${why}`,
+        text: `BOBI can't reply right now: ${why}`,
         model: "fake",
       };
     },

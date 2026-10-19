@@ -127,8 +127,8 @@ export async function maybeExtractDocuments(
       const data = Buffer.from(part.base64, "base64");
       const res = await extractDocumentText(data, part.mediaType, part.name);
       if (res.ok) {
-        const label = part.name ?? "پیوست";
-        out.push({ type: "text", text: `[متن سند «${label}»]:\n${res.text}` });
+        const label = part.name ?? "attachment";
+        out.push({ type: "text", text: `[Document "${label}" text]:\n${res.text}` });
       } else {
         out.push(part);
       }
@@ -153,8 +153,8 @@ const MAX_TEXT_CHARS = 200_000;
 
 function capText(text: string, name?: string): string {
   if (text.length <= MAX_TEXT_CHARS) return text;
-  const label = name ?? "سند";
-  return text.slice(0, MAX_TEXT_CHARS) + `\n\n[متن «${label}» طولانی بود؛ ادامهٔ آن حذف شد.]`;
+  const label = name ?? "document";
+  return text.slice(0, MAX_TEXT_CHARS) + `\n\n["${label}" text was too long; the rest was removed.]`;
 }
 
 /** Decode the five XML entities plus numeric character references. */
