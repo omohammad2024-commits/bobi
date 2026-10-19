@@ -17,6 +17,7 @@ import { encode } from "./callbacks";
 import { ADAPTER_TEMPLATES, PROVIDER_PRESETS } from "../ai/adapter";
 import type { ModelView, ProviderView } from "../ai/provider_service";
 import { formatNum, formatTime, tr, type PanelLang } from "./panel_strings";
+import { atr } from "./ai_panel_audit_strings";
 
 export function aiMenuKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()
@@ -445,26 +446,32 @@ export function providerPickerKeyboard(
 export function selectMenuText(
   models: readonly ModelView[],
   providerLabel: string,
+  activeModelId: number | null,
   lang: PanelLang = "fa",
 ): string {
-  const active = models.find((m) => m.isDefault);
+  // The screen manages the ACTIVE model (the runtime selection), which is a
+  // different thing from the provider default — show what is actually live.
+  const active = models.find((m) => m.id === activeModelId);
   const unset = tr(lang, "panel.select.unset");
   return [
     tr(lang, "panel.select.title"),
     "",
     tr(lang, "panel.select.provider", { v: providerLabel }),
-    tr(lang, "panel.select.model", { v: active?.label ?? unset }),
+    atr(lang, "audit.select.active_model", { v: active?.label ?? unset }),
   ].join("\n");
 }
 
 export function modelPickerKeyboard(
   models: readonly ModelView[],
+  activeModelId: number | null,
   lang: PanelLang = "fa",
 ): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const m of models) {
-    const marker = m.isDefault ? " ✓" : "";
-    kb.text(`${m.label}${marker}`, encode({ kind: "ai_model_default", modelId: m.id })).row();
+    // Activate-only: switching the live model must not silently flip the
+    // provider default, so this encodes ai_select_model (not ai_model_default).
+    const marker = m.id === activeModelId ? " ✓" : "";
+    kb.text(`${m.label}${marker}`, encode({ kind: "ai_select_model", modelId: m.id })).row();
   }
   kb.text(tr(lang, "panel.back"), encode({ kind: "ai_select_menu" }));
   return kb;
@@ -546,18 +553,27 @@ export function adapterKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
 export function addFormText(adapter: string, lang: PanelLang = "fa"): string {
   const t = ADAPTER_TEMPLATES.find((x) => x.type === adapter);
   const notes = t?.capabilities.notes;
-  return [
+  const lines = [
     tr(lang, "panel.add.title"),
     "",
     tr(lang, "panel.add.instructions"),
     "",
     tr(lang, "panel.add.label_line"),
     tr(lang, "panel.add.url_line"),
+  ];
+  // A template that knows its endpoint says so: the owner can leave the URL
+  // line empty instead of retyping a URL they never chose. A template with no
+  // suggestion (9Router) shows no line, and the URL stays required.
+  if (t?.suggestedBaseUrl) {
+    lines.push(atr(lang, "audit.add.suggested_url", { url: t.suggestedBaseUrl }));
+  }
+  lines.push(
     tr(lang, "panel.add.key_line"),
     ...(notes !== undefined ? ["", tr(lang, "panel.add.note", { v: notes })] : []),
     "",
     tr(lang, "panel.add.cancel_hint"),
-  ].join("\n");
+  );
+  return lines.join("\n");
 }
 
 /** Keyboard for free-text form screens: an explicit cancel, nothing else. */

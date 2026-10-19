@@ -99,6 +99,7 @@ const FA: Record<string, string> = {
   "menu.label.about": "ℹ️ دربارهٔ بابی",
   "menu.label.help": "❓ راهنما",
   "menu.label.back": "◀️ بازگشت",
+  "menu.label.miniapp": "🛠️ مدیریت (مینی‌اپ)",
 
   // ---- grouped /help ----
   "menu.help.group.general": "🔹 عمومی",
@@ -189,6 +190,7 @@ const EN: Record<string, string> = {
   "menu.label.about": "ℹ️ About BOBI",
   "menu.label.help": "❓ Help",
   "menu.label.back": "◀️ Back",
+  "menu.label.miniapp": "🛠️ Manage (Mini App)",
 
   // ---- grouped /help ----
   "menu.help.group.general": "🔹 General",

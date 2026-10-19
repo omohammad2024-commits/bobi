@@ -1,4 +1,6 @@
 import { InlineKeyboard } from "grammy";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { t, type Lang } from "../i18n";
 import { tr } from "./menu_strings";
 import type { HermesCommandDef } from "./cmd_context";
@@ -19,6 +21,7 @@ export const MAIN_MENU_LABELS = {
   about: tr("fa", "menu.label.about"),
   help: tr("fa", "menu.label.help"),
   back: tr("fa", "menu.label.back"),
+  miniapp: tr("fa", "menu.label.miniapp"),
 } as const;
 
 /**
@@ -132,14 +135,41 @@ export function startScreenText(lang: Lang = "fa"): string {
 }
 
 /**
+ * Public HTTPS URL of the owner Mini App, or undefined when unavailable.
+ *
+ * Resolution order: BOBI_MINIAPP_URL env first, then the `miniapp.url` file
+ * the tunnel service writes in the bot's working directory. Fail-closed: when
+ * neither exists (e.g. no public tunnel yet), the caller must not render the
+ * Mini App button at all — never a dead button.
+ */
+export function miniAppUrl(): string | undefined {
+  const fromEnv = (process.env.BOBI_MINIAPP_URL ?? "").trim();
+  if (fromEnv.startsWith("https://")) return fromEnv;
+  try {
+    const p = join(process.cwd(), "miniapp.url");
+    if (existsSync(p)) {
+      const first = (readFileSync(p, "utf8").trim().split(/\s+/)[0] ?? "").trim();
+      if (first.startsWith("https://")) return first;
+    }
+  } catch {
+    // Fail closed: no URL, no button.
+  }
+  return undefined;
+}
+
+/**
  * Main menu: 3 rows × 2 buttons, grouped by area
  * (chat/tools, commands/settings, about/help).
  *
  * Owner-only: the full menu. The public gets buildPublicMainMenu instead —
  * owner-only buttons are never rendered for them, not just blocked.
+ *
+ * A fourth row holds the Mini App web_app button, but ONLY when a public
+ * HTTPS URL is configured (miniAppUrl()). No URL → no button, never a dead
+ * one. The public menu never includes it.
  */
 export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
-  return new InlineKeyboard()
+  const kb = new InlineKeyboard()
     .text(tr(lang, "menu.label.chat"), CALLBACKS.chat)
     .text(tr(lang, "menu.label.tools"), CALLBACKS.tools)
     .row()
@@ -148,6 +178,11 @@ export function buildMainMenu(lang: Lang = "fa"): InlineKeyboard {
     .row()
     .text(tr(lang, "menu.label.about"), CALLBACKS.about)
     .text(tr(lang, "menu.label.help"), CALLBACKS.help);
+  const miniUrl = miniAppUrl();
+  if (miniUrl !== undefined) {
+    kb.row().webApp(tr(lang, "menu.label.miniapp"), miniUrl);
+  }
+  return kb;
 }
 
 /**

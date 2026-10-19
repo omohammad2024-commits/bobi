@@ -33,6 +33,7 @@ import {
   isDashboardEnabled,
   type BenchWorkerProgress,
 } from "./dashboard";
+import { createMiniAppHandler, type MiniAppDeps } from "../miniapp/api";
 import type { ConversationEngine } from "../conversation/engine";
 import type { ToolActor } from "../tools/types";
 import type { Storage } from "../storage/storage";
@@ -80,6 +81,13 @@ export interface ApiServerDeps {
    * answers 503.
    */
   benchWorker?: BenchWorkerProgress;
+  /**
+   * Mini App (owner's complete remote control). When present, /miniapp/* is
+   * served on this same socket: static frontend + initData-authenticated JSON
+   * API. The handler returns undefined for non-/miniapp paths so the 404
+   * below still answers everything else.
+   */
+  miniapp?: MiniAppDeps;
   /** Sink for startup/bind logging; must never receive the token. */
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
@@ -120,6 +128,11 @@ export function createApiServer(
   // entries, expired buckets are swept before a new one is added.
   const buckets = new Map<string, RateBucket>();
 
+  // Mini App handler, built once. Undefined when the wiring passes no miniapp
+  // deps — then /miniapp/* falls through to the 404 like everything unknown.
+  const miniappHandler =
+    deps.miniapp !== undefined ? createMiniAppHandler(deps.miniapp) : undefined;
+
   const fetch = (req: Request): Promise<Response> | Response => {
     const url = new URL(req.url);
     const path = url.pathname;
@@ -128,6 +141,13 @@ export function createApiServer(
     }
     if (path === "/api/v1/turn") {
       return handleTurn(req, { ip: clientIp(req) });
+    }
+    // Mini App: static frontend + initData-authenticated JSON API on this
+    // same server. The handler authenticates every /miniapp/api/* call
+    // itself (Telegram initData HMAC + server-side owner check).
+    if (miniappHandler !== undefined) {
+      const miniappRes = miniappHandler(req);
+      if (miniappRes !== undefined) return miniappRes;
     }
     // Phase 3, item 3: owner-only web dashboard. Opt-in via BOBI_DASHBOARD=1;
     // the sub-router returns undefined for non-dashboard paths so the 404

@@ -1,4 +1,5 @@
 import { bootstrapMessage } from "./core/app";
+import { fileURLToPath } from "node:url";
 import { loadConfig, requireBotToken } from "./config/config";
 import { createBot, PERSONALITY_PREF_KEY } from "./bot/bot";
 import { publicMenuCommands, ownerMenuCommands } from "./bot/menu";
@@ -1340,17 +1341,17 @@ async function main(): Promise<void> {
       : undefined;
   if (health !== undefined) log.info("health endpoint listening", { port: health.port });
 
-  // Phase E5: minimal HTTP API (GET /health, POST /api/v1/turn). Started ONLY
-  // when BOBI_API_TOKEN is set — with no token the bot boots exactly as
-  // before: no port is bound and nothing else changes. The server reuses the
-  // already-built storage/engine pieces; the turn endpoint runs as the OWNER
-  // actor (actorForUser(ownerIdStr), the same server-side builder the
-  // heartbeat uses), never as an arbitrary requester, because the HTTP channel
-  // bypasses Telegram identity. Wrapped in try/catch so an API failure can
-  // never crash the bot. The token is never logged; only the bind address is.
+  // Phase E5: minimal HTTP API (GET /health, POST /api/v1/turn). The server
+  // always starts: every endpoint guards itself. Without BOBI_API_TOKEN,
+  // /api/v1/turn and /dashboard answer 503 ("not configured") and only
+  // /health (public by design) plus /miniapp/* stay live — and /miniapp/*
+  // authenticates every call via Telegram initData HMAC plus a server-side
+  // owner check, never touching the API token. Wrapped in try/catch so an
+  // API failure can never crash the bot. The token is never logged; only
+  // the bind address is.
   let apiServer: ApiServer | undefined;
   const apiToken = (process.env.BOBI_API_TOKEN ?? "").trim();
-  if (apiToken !== "") {
+  {
     const apiBind = (process.env.BOBI_API_BIND ?? "").trim() || DEFAULT_API_BIND;
     const apiPortRaw = Number((process.env.BOBI_API_PORT ?? "").trim());
     const apiPort =
@@ -1369,6 +1370,21 @@ async function main(): Promise<void> {
           // Phase-5: the dashboard's live benchmark stream reads progress
           // from the daemon worker (SSE on the same server, Bearer auth).
           benchWorker,
+          // Mini App: the owner's complete remote control, served on this
+          // same socket. Auth is Telegram initData HMAC + server-side owner
+          // check on every /miniapp/api/* call (see src/miniapp/auth.ts).
+          miniapp: {
+            storage,
+            providerSvc,
+            modelSvc,
+            health: healthSvc,
+            engineFactory: () => engine,
+            actorForOwner: () => actorForUser(ownerIdStr),
+            ownerId: ownerIdStr,
+            botToken: token,
+            webDir: fileURLToPath(new URL("./miniapp/web", import.meta.url)),
+            log: (message, fields) => log.info(message, fields),
+          },
           log: (message, fields) => log.info(message, fields),
         },
         { port: apiPort, host: apiBind },

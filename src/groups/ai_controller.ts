@@ -33,6 +33,7 @@ import { resolveLang } from "../i18n";
 import { decode, encode, type PanelAction } from "./callbacks";
 import { PANEL_DENIED, PANEL_STALE, backKeyboard } from "./panel";
 import { formatNum, tr, type PanelLang } from "./panel_strings";
+import { atr } from "./ai_panel_audit_strings";
 import {
   adapterKeyboard,
   addFormText,
@@ -546,7 +547,11 @@ export class AiAdminController {
         return;
       }
 
-      case "fo_add_form": {
+      // fo_add_pick_provider is a legacy two-step picker code that no current
+      // keyboard emits; it is handled like fo_add_form so a stale button can
+      // never silently do nothing.
+      case "fo_add_form":
+      case "fo_add_pick_provider": {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.add.form", permission: PERM_MANAGE },
           () => {
@@ -870,7 +875,13 @@ export class AiAdminController {
         }
         await this.render(ctx, tr(lang, "panel.provider.discovering"), backKeyboard(lang));
         const found = await this.runAuthorizedDiscovery(ctx, id, lang);
-        await this.showProvider(ctx, id, found.text, lang);
+        // On success the models landed in the model list, so land there: the
+        // owner enables what they want next. On failure, back to the provider.
+        if (found.ok) {
+          await this.showModels(ctx, id, found.text, lang);
+        } else {
+          await this.showProvider(ctx, id, found.text, lang);
+        }
         return;
       }
 
@@ -1138,6 +1149,16 @@ export class AiAdminController {
           () => {
             const model = this.models.get(id);
             if (!model) return undefined;
+            // Activating a model of a disabled provider would point the
+            // runtime at a provider that can never answer; refuse it here
+            // instead of leaving a dead selection behind.
+            const provider = this.storage.getProvider(model.providerId);
+            if (!provider || !provider.enabled) {
+              return {
+                providerId: model.providerId,
+                text: atr(lang, "audit.models.provider_disabled"),
+              };
+            }
             const res = this.models.setDefault(id);
             if (!res.ok) return { providerId: model.providerId, text: res.message };
             // Selecting the default also activates this provider+model, so a
@@ -1170,9 +1191,22 @@ export class AiAdminController {
             const view = this.providers.view(id);
             if (!view) return undefined;
             const models = this.models.enabledModels(id);
+            const settings = this.storage.getRuntimeSettings();
+            if (models.length === 0) {
+              // A provider with no enabled models is still listed (marked) on
+              // the picker; say plainly what to do instead of showing an empty
+              // picker with only a back button.
+              return {
+                text: atr(lang, "audit.select.no_models"),
+                keyboard: new InlineKeyboard().text(
+                  tr(lang, "panel.back"),
+                  encode({ kind: "ai_select_menu" }),
+                ),
+              };
+            }
             return {
               text: tr(lang, "panel.select.pick_model", { label: view.label }),
-              keyboard: modelPickerKeyboard(models, lang),
+              keyboard: modelPickerKeyboard(models, settings.activeModelId, lang),
             };
           },
         );
@@ -1225,6 +1259,14 @@ export class AiAdminController {
         targetId: String(providerId),
       },
       async () => {
+        // A stale button can name a provider that no longer exists; the
+        // health service records against the provider row, so check first
+        // instead of letting the probe throw on a missing row.
+        if (!this.storage.getProvider(providerId)) {
+          return {
+            text: `${tr(lang, "panel.provider.test_fail")} (${tr(lang, "panel.discover.no_provider")})`,
+          };
+        }
         const probe = await this.health.probe(providerId);
         const msg = probe.ok
           ? tr(lang, "panel.provider.test_ok")
@@ -1279,7 +1321,7 @@ export class AiAdminController {
     ctx: Context,
     providerId: number,
     lang: PanelLang,
-  ): Promise<{ text: string }> {
+  ): Promise<{ ok: boolean; text: string }> {
     const actor = this.actorFor(ctx);
     const r = await this.admin.runAdmin(
       {
@@ -1292,20 +1334,78 @@ export class AiAdminController {
         const discovered = await this.discover(providerId, lang);
         if (!discovered.ok) {
           return {
+            ok: false as const,
             text: `${tr(lang, "panel.provider.discover_fail")}${discovered.message !== undefined ? ` (${discovered.message})` : ""}`,
           };
         }
-        // Discovered models are NEVER auto-enabled or made default: the owner
-        // must pick them from the model list.
-        return {
-          text: tr(lang, "panel.provider.discover_ok", {
-            n: formatNum(discovered.models.length, lang),
-          }),
-        };
+        // Discovered models are imported into the model list — never
+        // auto-enabled or made default: the owner picks them from the model
+        // list. Before this, the fetch succeeded and the list was silently
+        // dropped, so "discover" found models the owner could never use.
+        const imported = this.importDiscoveredModels(providerId, discovered.models);
+        return { ok: true as const, text: this.importReport(imported, lang) };
       },
     );
-    if (!r.ok) return { text: tr(lang, "panel.provider.discover_fail") };
+    if (!r.ok) return { ok: false, text: tr(lang, "panel.provider.discover_fail") };
     return r.data;
+  }
+
+  /**
+   * Import freshly discovered models into the provider's model list.
+   *
+   * Duplicates (same model id already listed) are skipped, not re-added.
+   * The import is capped so one chatty service cannot flood the panel with
+   * hundreds of buttons.
+   */
+  private importDiscoveredModels(
+    providerId: number,
+    remote: readonly RemoteModel[],
+  ): { added: number; existing: number; capped: boolean } {
+    const CAP = 50;
+    const present = new Set(this.models.list(providerId).map((m) => m.modelId));
+    let added = 0;
+    let existing = 0;
+    for (const r of remote.slice(0, CAP)) {
+      if (present.has(r.id)) {
+        existing++;
+        continue;
+      }
+      const res = this.models.add({
+        providerId,
+        modelId: r.id,
+        label: r.label?.trim() ? r.label!.trim() : r.id,
+      });
+      if (!res.ok) {
+        existing++;
+        continue;
+      }
+      // Never auto-enabled or default: the owner enables them explicitly.
+      this.models.setEnabled(res.data, false);
+      present.add(r.id);
+      added++;
+    }
+    return { added, existing, capped: remote.length > CAP };
+  }
+
+  /** The user-facing report for a discovery import. */
+  private importReport(
+    imported: { added: number; existing: number; capped: boolean },
+    lang: PanelLang,
+  ): string {
+    if (imported.added === 0) return atr(lang, "audit.discover.none_new");
+    let text = atr(lang, "audit.discover.imported", {
+      added: formatNum(imported.added, lang),
+      existing:
+        imported.existing > 0
+          ? atr(lang, "audit.discover.existing_suffix", {
+              n: formatNum(imported.existing, lang),
+            })
+          : "",
+    });
+    if (imported.capped) {
+      text += atr(lang, "audit.discover.capped", { n: formatNum(50, lang) });
+    }
+    return text;
   }
 
   /** The active provider + its models, for the quick-switch screen. */
@@ -1315,7 +1415,12 @@ export class AiAdminController {
       settings.activeProviderId !== null ? this.providers.view(settings.activeProviderId) : undefined;
     const models = provider ? this.models.enabledModels(provider.id) : [];
     return {
-      text: selectMenuText(models, provider?.label ?? tr(lang, "panel.select.unset"), lang),
+      text: selectMenuText(
+        models,
+        provider?.label ?? tr(lang, "panel.select.unset"),
+        settings.activeModelId,
+        lang,
+      ),
       keyboard: providerPickerKeyboard(this.providers.listViews(), lang),
     };
   }
@@ -1436,6 +1541,9 @@ export class AiAdminController {
         baseUrl: provider.baseUrl,
         apiKey,
         model: "discover",
+        // The owner may have granted this provider the local-target
+        // exception; discovery must honor the same boundary as the runtime.
+        ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
       });
       if (!adapter.listModels) {
         return { ok: false, message: tr(lang, "panel.discover.unsupported") };
@@ -1730,10 +1838,20 @@ export class AiAdminController {
 
       // A preset supplies its endpoint, so the owner may leave the URL line out
       // of the form entirely. An explicitly typed URL still wins, which is how
-      // the Cloudflare placeholder gets filled in.
+      // the Cloudflare placeholder gets filled in. A bare adapter template
+      // with a known endpoint (e.g. Gemini) behaves the same: the suggested
+      // URL from the add form is the fallback, so the owner is not retyping a
+      // URL they never chose. A template with no suggestion (9Router) still
+      // requires the URL, and the service says so plainly.
       const preset = flow.presetId !== undefined ? providerPreset(flow.presetId) : undefined;
+      const template =
+        flow.presetId === undefined
+          ? ADAPTER_TEMPLATES.find((t) => t.type === (flow.adapter ?? "openai_compatible"))
+          : undefined;
       const baseUrl =
-        parsed.baseUrl.trim().length > 0 ? parsed.baseUrl : (preset?.baseUrl ?? "");
+        parsed.baseUrl.trim().length > 0
+          ? parsed.baseUrl
+          : (preset?.baseUrl ?? template?.suggestedBaseUrl ?? "");
 
       // A placeholder that was never substituted would be sent verbatim and
       // fail with a confusing error, so it is refused here with a clear one.
@@ -1770,17 +1888,19 @@ export class AiAdminController {
         return true;
       }
       // Never echo the key back; confirm the fields that are not secrets.
-      await this.render(
-        ctx,
-        [
-          tr(lang, "panel.add.created"),
-          "",
-          tr(lang, "panel.add.created_name", { v: parsed.label }),
-          tr(lang, "panel.add.created_url", { v: parsed.baseUrl }),
-          tr(lang, "panel.add.created_key"),
-        ].join("\n"),
-        providersKeyboard(lang),
-      );
+      // Land on the new provider's own screen (not the providers list): it
+      // carries the مدل‌ها and دریافت مدل‌ها buttons, which is exactly the
+      // next step — a bare provider cannot answer without a model.
+      const createdLead = [
+        tr(lang, "panel.add.created"),
+        "",
+        tr(lang, "panel.add.created_name", { v: parsed.label }),
+        tr(lang, "panel.add.created_url", { v: baseUrl }),
+        tr(lang, "panel.add.created_key"),
+        "",
+        atr(lang, "audit.add.next_step_models"),
+      ].join("\n");
+      await this.showProvider(ctx, r.data.providerId, createdLead, lang);
       return true;
     }
 
@@ -1950,13 +2070,15 @@ export class AiAdminController {
       }
 
       // Re-read from the store: the confirmation must reflect what persisted.
+      // Land on the provider's own screen, like every other provider action.
       const view = this.providers.view(providerId);
       if (!view) {
         await this.stale(ctx);
         return true;
       }
-      await this.render(
+      await this.showProvider(
         ctx,
+        providerId,
         [
           tr(lang, "panel.edit.updated"),
           "",
@@ -1969,7 +2091,7 @@ export class AiAdminController {
               : tr(lang, "panel.providers.key_unset"),
           }),
         ].join("\n"),
-        providersKeyboard(lang),
+        lang,
       );
       return true;
     }
@@ -2109,7 +2231,10 @@ function editFormText(view: ProviderView, lang: PanelLang): string {
     tr(lang, "panel.edit.instructions"),
     "",
     tr(lang, "panel.edit.label_line", { v: view.label }),
-    tr(lang, "panel.edit.adapter_line", { v: view.adapterLabel }),
+    // The edit parser expects the adapter SLUG, so the form must show it: the
+    // Persian label alone left the owner guessing what to type.
+    tr(lang, "panel.edit.adapter_line", { v: `${view.adapterLabel} (${view.adapter})` }),
+    atr(lang, "audit.edit.adapter_hint"),
     tr(lang, "panel.edit.url_line", { v: view.baseUrl }),
     tr(lang, "panel.edit.key_line", {
       v: view.hasCredential
