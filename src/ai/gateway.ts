@@ -157,6 +157,57 @@ export class AiGateway implements AiProvider {
   }
 
   /**
+   * Why there is no valid selection right now, for user-facing diagnostics.
+   * Used by the FakeProvider fallback so the owner sees WHICH provider broke
+   * and how to fix it instead of a generic "not configured".
+   */
+  describeSelectionProblem(): string {
+    let settings: { activeProviderId: number | null; activeModelId: number | null };
+    try {
+      settings = this.storage.getRuntimeSettings();
+    } catch {
+      return "خواندن تنظیمات ممکن نشد.";
+    }
+    if (settings.activeProviderId === null || settings.activeModelId === null) {
+      return "هنوز هیچ پروایدر و مدلی انتخاب نشده است. از /ai یا مینی‌اپ یک پروایدر اضافه و فعال کن.";
+    }
+    let provider;
+    try {
+      provider = this.storage.getProvider(settings.activeProviderId);
+    } catch {
+      return "خواندن پروایدر ممکن نشد.";
+    }
+    if (provider === undefined) {
+      return "پروایدر انتخاب‌شده حذف شده است. از /ai یک پروایدر دیگر انتخاب کن.";
+    }
+    if (!provider.enabled) {
+      return `پروایدر «${provider.label}» غیرفعال شده است. آن را فعال کن یا از /ai پروایدر دیگری انتخاب کن.`;
+    }
+    let hasCredential = false;
+    try {
+      hasCredential = this.storage.hasCredential(provider.id);
+    } catch {
+      // Treat as missing below.
+    }
+    if (!hasCredential) {
+      return `اعتبارنامهٔ پروایدر «${provider.label}» حذف شده است. کلید را دوباره وارد کن یا از /ai پروایدر دیگری انتخاب کن.`;
+    }
+    let model;
+    try {
+      model = this.storage.getModel(settings.activeModelId);
+    } catch {
+      return "خواندن مدل ممکن نشد.";
+    }
+    if (model === undefined || model.providerId !== provider.id) {
+      return `مدل انتخاب‌شده برای «${provider.label}» دیگر وجود ندارد. از /ai یک مدل انتخاب کن.`;
+    }
+    if (!model.enabled) {
+      return `مدل «${model.label}» غیرفعال شده است. آن را فعال کن یا مدل دیگری انتخاب کن.`;
+    }
+    return "پیکربندی ناقص است. از /ai وضعیت را بررسی کن.";
+  }
+
+  /**
    * Whether the active provider accepts raw audio ContentParts natively.
    *
    * Phase B2 seam: the bot layer asks this before deciding whether a voice

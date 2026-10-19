@@ -79,9 +79,78 @@ export class ProviderService {
     return this.storage.getRuntimeSettings().activeProviderId === id;
   }
 
+  /**
+   * Self-healing selection: when nothing valid is currently selected (fresh
+   * install, deleted/disabled provider, missing credential), automatically
+   * select the first usable provider — enabled, with a stored credential and
+   * at least one enabled model — and its default (or first) model.
+   *
+   * This is what makes "add provider → it just works" true: the add flows
+   * call this after creating the provider and its models, and boot calls it
+   * so a configured-but-unselected provider is picked up without a restart
+   * dance. Explicit when it matters: an existing valid selection is never
+   * overridden. Returns the active pair, or undefined when nothing usable
+   * exists.
+   */
+  ensureSelection(): { providerId: number; modelId: number } | undefined {
+    const settings = this.storage.getRuntimeSettings();
+    if (settings.activeProviderId !== null && settings.activeModelId !== null) {
+      const p = this.storage.getProvider(settings.activeProviderId);
+      const m =
+        settings.activeModelId !== null ? this.storage.getModel(settings.activeModelId) : undefined;
+      if (
+        p !== undefined &&
+        p.enabled &&
+        m !== undefined &&
+        m.enabled &&
+        m.providerId === p.id
+      ) {
+        try {
+          if (this.storage.hasCredential(p.id)) {
+            return { providerId: p.id, modelId: m.id };
+          }
+        } catch {
+          // Fall through to auto-select below.
+        }
+      }
+    }
+    let providers: { id: number; enabled: boolean }[];
+    try {
+      providers = this.storage.listProviders();
+    } catch {
+      return undefined;
+    }
+    for (const p of providers) {
+      if (!p.enabled) continue;
+      let hasCredential = false;
+      try {
+        hasCredential = this.storage.hasCredential(p.id);
+      } catch {
+        continue;
+      }
+      if (!hasCredential) continue;
+      let models: { id: number; enabled: boolean; isDefault: boolean }[];
+      try {
+        models = this.storage.listModels(p.id);
+      } catch {
+        continue;
+      }
+      const enabled = models.filter((m) => m.enabled);
+      if (enabled.length === 0) continue;
+      const chosen = enabled.find((m) => m.isDefault) ?? enabled[0];
+      if (!chosen) continue;
+      try {
+        this.storage.setRuntimeSelection({ providerId: p.id, modelId: chosen.id });
+      } catch {
+        continue;
+      }
+      return { providerId: p.id, modelId: chosen.id };
+    }
+    return undefined;
+  }
+
   /** Providers for the panel, newest first. */
-  listViews(): ProviderView[] {
-    const adapters = new AdapterRegistry();
+  listViews(): ProviderView[] {    const adapters = new AdapterRegistry();
     return this.storage.listProviders().map((p) => {
       const health = this.storage.getProviderHealth(p.id);
       const info = adapters.describes(p.adapter);
