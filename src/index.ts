@@ -1322,11 +1322,22 @@ async function main(): Promise<void> {
     return { id };
   }
 
+  // The API server (health + miniapp + turn) prefers BOBI_API_PORT, then the
+  // platform's PORT (Railway et al. route public traffic to $PORT). Computed
+  // up here so the standalone health server below can stand down when it
+  // would bind the same socket — the API server already answers /health.
+  const apiPortRaw = Number((process.env.BOBI_API_PORT ?? process.env.PORT ?? "").trim());
+  const apiPort =
+    Number.isSafeInteger(apiPortRaw) && apiPortRaw > 0 && apiPortRaw < 65536
+      ? apiPortRaw
+      : DEFAULT_API_PORT;
+
   // Health endpoint. Started only when a port is configured, so a local run
   // opens no socket at all. A hosting platform polls this to decide whether the
   // deploy is alive, and a long-polling bot has no other socket to offer.
+  // Skipped when it would collide with the API server's own /health.
   const health =
-    config.healthPort > 0
+    config.healthPort > 0 && config.healthPort !== apiPort
       ? await startHealthServer({
           port: config.healthPort,
           detail: () => ({
@@ -1353,11 +1364,6 @@ async function main(): Promise<void> {
   const apiToken = (process.env.BOBI_API_TOKEN ?? "").trim();
   {
     const apiBind = (process.env.BOBI_API_BIND ?? "").trim() || DEFAULT_API_BIND;
-    const apiPortRaw = Number((process.env.BOBI_API_PORT ?? "").trim());
-    const apiPort =
-      Number.isSafeInteger(apiPortRaw) && apiPortRaw > 0 && apiPortRaw < 65536
-        ? apiPortRaw
-        : DEFAULT_API_PORT;
     try {
       apiServer = createApiServer(
         {
