@@ -681,7 +681,7 @@ CREATE TABLE IF NOT EXISTS ai_failover_settings (
   id          INTEGER PRIMARY KEY CHECK(id = 1),
   enabled     INTEGER NOT NULL DEFAULT 0,
   max_attempts INTEGER NOT NULL DEFAULT 2,
-  timeout_ms  INTEGER NOT NULL DEFAULT 15000
+  timeout_ms  INTEGER NOT NULL DEFAULT 300000
 );
 
 -- Ordered failover candidates. Only rows the owner added here may be used,
@@ -774,7 +774,7 @@ CREATE TABLE IF NOT EXISTS skill_install_provenance (
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 18;
+export const SCHEMA_VERSION = 19;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
@@ -848,6 +848,12 @@ export class Storage {
         // elsewhere instead: FTS5 replaces the document on a duplicate
         // rowid, and this branch only runs while the version stamp is < 15.
         // Triggers keep the index current from here on.
+        // Schema 19: the old 15s provider-call default was too aggressive —
+        // it cancelled legitimate long answers. Existing databases still on
+        // the old default get the new one; an owner-set custom value is kept.
+        this.exec(
+          `UPDATE ai_failover_settings SET timeout_ms=300000 WHERE timeout_ms=15000`,
+        );
         this.exec(
           `INSERT INTO messages_fts(rowid, content)
              SELECT id, content FROM messages`,

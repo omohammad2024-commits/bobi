@@ -182,7 +182,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
  * fallback so a rename never alters how a running install behaves.
  */
 function envVar(env: NodeJS.ProcessEnv, suffix: string): string | undefined {
-  return env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`];
+  return env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`] ?? env[suffix];
 }
 
 /** Parse a boolean env value; only explicit false-y strings disable. */
