@@ -301,18 +301,25 @@ describe("miniapp providers api", () => {
     ]);
   });
 
-  test("providers.add rejects a non-https URL in Persian", async () => {
+  test("providers.add accepts plain http (self-hosted) but rejects bad schemes", async () => {
     const { deps } = makeDeps();
     const handler = createMiniAppHandler(deps);
-    const { status, json } = await apiJson(handler, "providers.add", {
+    const ok = await apiJson(handler, "providers.add", {
       initData: initData(),
       kind: "custom",
       label: "Plain",
       baseUrl: "http://api.example.com/v1",
     });
-    expect(status).toBe(400);
-    expect(typeof json["error"]).toBe("string");
-    expect(String(json["error"])).toContain("https");
+    expect(ok.status).toBe(200);
+
+    const bad = await apiJson(handler, "providers.add", {
+      initData: initData(),
+      kind: "custom",
+      label: "Ftp",
+      baseUrl: "ftp://api.example.com/v1",
+    });
+    expect(bad.status).toBe(400);
+    expect(typeof bad.json["error"]).toBe("string");
   });
 
   test("providers.add rejects an SSRF target (private IP)", async () => {
@@ -719,7 +726,7 @@ describe("miniapp models api", () => {
     const badUrl = await apiJson(handler, "models.discoverDraft", {
       initData: initData(),
       kind: "custom",
-      baseUrl: "http://insecure.example.com/v1",
+      baseUrl: "ftp://example.com/v1",
       key: "sk-draft",
     });
     expect(badUrl.status).toBe(400);
@@ -738,5 +745,38 @@ describe("miniapp models api", () => {
       key: "sk-draft",
     });
     expect(badKind.status).toBe(400);
+  });
+
+  test("plain http base URLs are accepted but private hosts are rejected", async () => {
+    const { deps } = makeDeps();
+    const handler = createMiniAppHandler(deps);
+    // Self-hosted router on a public IP over http (no public CA for bare IPs).
+    const ok = await apiJson(handler, "providers.add", {
+      initData: initData(),
+      kind: "nine_router",
+      label: "NineHttp",
+      baseUrl: "http://45.32.171.49:20128/v1",
+      key: "nine-key",
+      model: "nine-model",
+    });
+    expect(ok.status).toBe(200);
+
+    const privateHost = await apiJson(handler, "providers.add", {
+      initData: initData(),
+      kind: "custom",
+      label: "Local",
+      baseUrl: "http://127.0.0.1:8080/v1",
+      key: "k",
+    });
+    expect(privateHost.status).toBe(400);
+
+    const badScheme = await apiJson(handler, "providers.add", {
+      initData: initData(),
+      kind: "custom",
+      label: "Ftp",
+      baseUrl: "ftp://example.com/v1",
+      key: "k",
+    });
+    expect(badScheme.status).toBe(400);
   });
 });
