@@ -2105,18 +2105,19 @@ export function createBot(token: string, deps: BotDeps): Bot {
       );
       if (!ctx.message.text.startsWith("/")) {
         const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
+        console.error(`[bobi] group msg: chat=${gaChatId} text="${ctx.message.text.slice(0,30)}" enabled=${gaCfg.enabled} replyOnly=${gaCfg.replyOnlyWhenCalled}`);
         if (gaCfg.enabled) {
           const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
           const botUsername = ctx.me.username ?? "";
-          if (
-            !shouldReplyAssistant({
-              text: ctx.message.text,
-              botUsername,
-              replyToBot,
-              enabled: true,
-              replyOnlyWhenCalled: gaCfg.replyOnlyWhenCalled,
-            })
-          ) {
+          const shouldReply = shouldReplyAssistant({
+            text: ctx.message.text,
+            botUsername,
+            replyToBot,
+            enabled: true,
+            replyOnlyWhenCalled: gaCfg.replyOnlyWhenCalled,
+          });
+          console.error(`[bobi] group shouldReply=${shouldReply} replyToBot=${replyToBot}`);
+          if (!shouldReply) {
             return; // assistant mode: silent unless called
           }
         }
