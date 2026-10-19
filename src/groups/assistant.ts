@@ -375,8 +375,9 @@ export function recordGroupMessage(
  *
  * - Mode disabled → false (this module is inert).
  * - replyOnlyWhenCalled false → true (owner opted out of the silence rule).
- * - Otherwise true only when the message is a reply to the bot or mentions
- *   the bot's @username. Pure, so the whole decision matrix is assertable.
+ * - Otherwise true when the message is a reply to the bot, mentions
+ *   the bot's @username, or calls it by name ("بابی"/"bobi"). Pure, so the
+ *   whole decision matrix is assertable.
  */
 export function shouldReplyAssistant(input: {
   text: string;
@@ -388,6 +389,7 @@ export function shouldReplyAssistant(input: {
   if (!input.enabled) return false;
   if (!input.replyOnlyWhenCalled) return true;
   if (input.replyToBot) return true;
+  if (mentionsBotByName(input.text)) return true;
   return mentionsBot(input.text, input.botUsername);
 }
 
@@ -403,6 +405,15 @@ export function mentionsBot(text: string, botUsername: string): boolean {
   if (u.length === 0) return false;
   const esc = u.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(^|[^\\p{L}\\p{N}_])@${esc}(?![\\p{L}\\p{N}_])`, "iu").test(text);
+}
+
+/**
+ * True when `text` calls the bot by name ("بابی", "bobi", case-insensitive).
+ * Catches "بابی بیا", "bobi what is...", "بابی،" — but not "بابیلون" or
+ * "abobis". Used for wake-word replies in groups alongside @mentions.
+ */
+export function mentionsBotByName(text: string): boolean {
+  return /(^|[^\p{L}\p{N}_])(بابی|bobi)(?![\p{L}\p{N}_])/iu.test(text);
 }
 
 // ---------------------------------------------------------- summary ----
