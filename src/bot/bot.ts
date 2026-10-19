@@ -2130,9 +2130,10 @@ export function createBot(token: string, deps: BotDeps): Bot {
     // message as an API key (the same one-message shape as the /ai setup
     // flow). Owner-only and state-gated inside handleOnboardingText; anything
     // else falls through to the /ai forms and the engine below.
+    // PRIVATE CHATS ONLY: never consume group messages as setup answers.
     {
       const onb = onboardingEnv(ctx, deps);
-      if (onb !== undefined && !text.startsWith("/")) {
+      if (onb !== undefined && !text.startsWith("/") && ctx.chat.type === "private") {
         if (await handleOnboardingText(ctx, onb, text, senderLang(ctx, deps.prefs))) return;
       }
     }
@@ -2143,7 +2144,12 @@ export function createBot(token: string, deps: BotDeps): Bot {
     //
     // This runs BEFORE the user gate on purpose: it is how the owner
     // administers, and the owner is exempt from the user gate anyway.
-    if (aiAdmin && !text.startsWith("/")) {
+    //
+    // PRIVATE CHATS ONLY: the AI setup forms must never consume group
+    // messages. If the owner starts a provider setup in DM then says "بابی"
+    // in a group, that group message must reach the assistant, not be
+    // swallowed as a setup answer.
+    if (aiAdmin && !text.startsWith("/") && ctx.chat.type === "private") {
       const consumed = await aiAdmin.handleText(ctx, text);
       if (consumed) return;
     }
