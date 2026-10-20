@@ -402,3 +402,121 @@ describe("gateway smart-routing integration", () => {
     b.storage.close();
   });
 });
+
+// ---------- capability-aware degraded routing (Phase 3, Workstream C) ----------
+
+describe("SmartRouter degraded routing", () => {
+  const tools: ToolSpec[] = [
+    { name: "search", description: "web search", parameters: {} },
+  ];
+
+  test("tool-needing request with only tools-incapable candidates → degraded decision naming tools", () => {
+    const b = build();
+    // Both models are non-chat (embedding / whisper): modelCapabilities
+    // reports supportsTools=false for them on ANY adapter.
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "whisper", "whisper-1");
+    const d = new SmartRouter(b.storage, adapters).route({
+      messages: [msg("transcribe and embed this please")],
+      tools,
+    });
+    expect(d).toBeDefined();
+    expect(d!.degraded).toBeDefined();
+    expect(d!.degraded).toContain("tools");
+    expect(d!.reason).toContain("degraded=no-tools-capable");
+    // Winner is the best-ranked incapable candidate: both models are
+    // rank 1 and both cost the default 50, so the deterministic
+    // tie-break picks the lower provider id ("embed", seeded first).
+    expect(d!.providerLabel).toBe("embed");
+    expect(d!.modelId).toBe("text-embedding-3-small");
+    b.storage.close();
+  });
+
+  test("tool-needing request with one capable + one incapable candidate → capable wins, no degraded flag", () => {
+    const b = build();
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "chat", "llama-3.1-8b-instruct");
+    const d = new SmartRouter(b.storage, adapters).route({
+      messages: [msg("search for this")],
+      tools,
+    });
+    expect(d).toBeDefined();
+    expect(d!.modelId).toBe("llama-3.1-8b-instruct");
+    expect(d!.degraded).toBeUndefined();
+    expect(d!.reason).not.toContain("degraded");
+    b.storage.close();
+  });
+
+  test("vision-needing request with only vision-incapable candidates → degraded decision naming vision", () => {
+    const b = build();
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "whisper", "whisper-1");
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: "what is in this picture?",
+        parts: [{ type: "image", mediaType: "image/png", base64: "AAAA" }],
+      },
+    ];
+    const d = new SmartRouter(b.storage, adapters).route({ messages });
+    expect(d).toBeDefined();
+    expect(d!.degraded).toBeDefined();
+    expect(d!.degraded).toContain("vision");
+    expect(d!.reason).toContain("degraded=no-vision-capable");
+    b.storage.close();
+  });
+
+  test("vision-needing request with a vision-capable candidate → no degraded flag", () => {
+    const b = build();
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "chat", "gpt-4o-mini");
+    const messages: ChatMessage[] = [
+      {
+        role: "user",
+        content: "what is in this picture?",
+        parts: [{ type: "image", mediaType: "image/png", base64: "AAAA" }],
+      },
+    ];
+    const d = new SmartRouter(b.storage, adapters).route({ messages });
+    expect(d).toBeDefined();
+    expect(d!.modelId).toBe("gpt-4o-mini");
+    expect(d!.degraded).toBeUndefined();
+    b.storage.close();
+  });
+
+  test("plain chat request with only incapable candidates → normal decision, degraded undefined", () => {
+    const b = build();
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "whisper", "whisper-1");
+    const d = new SmartRouter(b.storage, adapters).route({
+      messages: [msg("hi")],
+    });
+    // No capability is needed, so nothing is degraded: the router serves
+    // the request through its normal pools exactly as before.
+    expect(d).toBeDefined();
+    expect(d!.degraded).toBeUndefined();
+    b.storage.close();
+  });
+
+  test("even the degraded pool is empty (all breakers open) → undefined", () => {
+    const b = build();
+    seed(b, "embed", "text-embedding-3-small");
+    seed(b, "whisper", "whisper-1");
+    const circuit = {
+      state: () => ({
+        state: "open" as const,
+        consecutiveFailures: 5,
+        cooldownMs: 60_000,
+        nextRetryAt: Date.now() + 60_000,
+      }),
+    };
+    const d = new SmartRouter(b.storage, adapters, { circuit }).route({
+      messages: [msg("search for this")],
+      tools,
+    });
+    // Every candidate is breaker-excluded in every pool; the gateway's
+    // own fallbacks own this case.
+    expect(d).toBeUndefined();
+    b.storage.close();
+  });
+});

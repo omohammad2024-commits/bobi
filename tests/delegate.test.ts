@@ -87,7 +87,9 @@ describe("delegate tool", () => {
     expect(out.ok).toBe(true);
     if (out.ok) expect(out.summary).toContain("پاسخ نهایی فرزند");
     // The child really ran a tool: one model turn asked, one answered.
-    expect(provider.requests.length).toBe(2);
+    // +1 is the Phase-3 self-review call (hits the exhausted script; its
+    // fallback keeps the summary).
+    expect(provider.requests.length).toBe(3);
   });
 
   test("truncates a long summary with a named note", async () => {

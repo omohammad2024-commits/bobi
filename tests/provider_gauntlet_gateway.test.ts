@@ -506,7 +506,8 @@ describe("G1 — loop → real gateway → fake adapter: tool-only answers execu
       const result = await makeLoop(h.gateway).run(LOOP_INPUT);
       expect(result.text).toBe("حاصل ۴۲ است.");
       expect(result.toolCallsExecuted).toBe(1);
-      expect(h.state.completeCalls).toBe(2);
+      // 2 loop turns + 1 Phase-3 self-review call (confirms the draft).
+      expect(h.state.completeCalls).toBe(3);
       expect(h.state.streamCalls).toBe(0); // no sink → single-shot only
       expect(h.state.sawToolResult).toBe(true);
       h.storage.close();
@@ -525,7 +526,8 @@ describe("G1 — loop → real gateway → fake adapter: tool-only answers execu
       expect(h.state.streamCalls).toBeGreaterThan(0);
       // Both loop turns fell back to complete(): the tool turn and the
       // final answer — and the tool calls survived BOTH crossings.
-      expect(h.state.completeCalls).toBe(2);
+      // +1 is the Phase-3 self-review call (confirms the draft).
+      expect(h.state.completeCalls).toBe(3);
       expect(h.state.sawToolResult).toBe(true);
       h.storage.close();
     });

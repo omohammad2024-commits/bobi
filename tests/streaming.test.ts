@@ -81,8 +81,16 @@ class ScriptedStreamProvider implements AiProvider {
     private readonly fallbackText = "single-shot answer",
   ) {}
 
-  async complete(_req: CompletionRequest): Promise<CompletionResponse> {
+  async complete(req: CompletionRequest): Promise<CompletionResponse> {
     this.completeCalls++;
+    // Phase-3 self-review: confirm the draft unchanged (review protocol).
+    const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
+    const lastUserText = typeof lastUser?.content === "string" ? lastUser.content : "";
+    if (lastUserText.startsWith("<self_review>")) {
+      const draftMsg = [...req.messages].reverse().find((m) => m.role === "assistant");
+      const draft = typeof draftMsg?.content === "string" ? draftMsg.content : this.fallbackText;
+      return { text: draft, model: "m" };
+    }
     return { text: this.fallbackText, model: "m" };
   }
 
