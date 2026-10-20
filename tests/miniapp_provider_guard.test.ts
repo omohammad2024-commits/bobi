@@ -203,6 +203,34 @@ describe("provider URL guard — incident reproduction", () => {
     expect(registry.createdTypes).toEqual([]);
     storage.close();
   });
+
+  test("saved-provider discovery of a legacy incident-combo row is refused with the fix", async () => {
+    const registry = new StubRegistry();
+    const { deps, storage, providerSvc } = makeDeps(registry);
+    // A row saved before the guard existed (the owner's actual card):
+    // created through the service layer, which the API guard never sees.
+    const created = providerSvc.create({
+      label: "Google Gemini",
+      adapter: "openai_compatible",
+      baseUrl: GEMINI_NATIVE,
+      apiKey: "test-key",
+    });
+    if (!created.ok) throw new Error("provider create failed");
+
+    const err = await expectApiError(
+      handleProviderApi(
+        "models.discover",
+        { providerId: created.data },
+        deps,
+      ),
+    );
+    expect(err.status).toBe(400);
+    expect(err.code).toBe("provider_url_mismatch");
+    expect(err.suggestion).toBe(GEMINI_OPENAI);
+    // Fail-fast, like draft discovery: no adapter was built.
+    expect(registry.createdTypes).toEqual([]);
+    storage.close();
+  });
 });
 
 // ------------------------------------------------------------------- C2 ----

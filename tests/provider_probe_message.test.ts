@@ -21,6 +21,7 @@ import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
 import { ProviderHealthService } from "../src/ai/health";
 import { statusToAiError } from "../src/ai/http_status";
+import { checkProviderUrl } from "../src/ai/provider_url_guard";
 import type { AIProviderAdapter } from "../src/ai/adapter";
 import type {
   CompletionRequest,
@@ -70,11 +71,14 @@ function harness(): Harness {
   return { storage, providers, models, health, adapters };
 }
 
-function makeProvider(h: Harness, opts: { withModel?: boolean } = {}): number {
+function makeProvider(
+  h: Harness,
+  opts: { withModel?: boolean; adapter?: string; baseUrl?: string } = {},
+): number {
   const created = h.providers.create({
     label: "Test provider",
-    adapter: "openai_compatible",
-    baseUrl: "https://api.invalid.example/v1",
+    adapter: opts.adapter ?? "openai_compatible",
+    baseUrl: opts.baseUrl ?? "https://api.invalid.example/v1",
     apiKey: "sk-test-credential",
   });
   if (!created.ok) throw new Error("provider create failed");
@@ -179,6 +183,71 @@ describe("probe() with no model configured", () => {
     expect(h.adapters.completedModels).toEqual([]);
     // Still recorded as provider health, so the row explains itself.
     expect(h.storage.getProviderHealth(providerId)?.message).toBe(result.message);
+    h.storage.close();
+  });
+});
+
+describe("probe messages lead with the URL-guard fix for mismatched providers", () => {
+  const GEMINI_NATIVE = "https://generativelanguage.googleapis.com/v1beta";
+  const issue = checkProviderUrl("openai_compatible", GEMINI_NATIVE);
+  if (issue === null) throw new Error("the incident combo must be flagged");
+  const lead =
+    issue.suggestion !== undefined
+      ? `${issue.message} Suggested address: ${issue.suggestion}`
+      : issue.message;
+
+  test("probe() on the incident combo leads with the fix; the probe still ran", async () => {
+    const h = harness();
+    const providerId = makeProvider(h, {
+      adapter: "openai_compatible",
+      baseUrl: GEMINI_NATIVE,
+    });
+    h.adapters.failWith = statusToAiError(404);
+
+    const result = await h.health.probe(providerId);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(
+      `${lead} (probe: Service response was invalid (HTTP 404).)`,
+    );
+    // Semantics untouched: the probe ran, status/latency stay truthful.
+    expect(h.adapters.completedModels).toEqual(["m1"]);
+    expect(result.status).toBe(404);
+    // The stored health row carries the same lead (the card reads it back).
+    expect(h.storage.getProviderHealth(providerId)?.message).toBe(result.message);
+    h.storage.close();
+  });
+
+  test("probeModel() top-level message leads with the fix; stage error stays bare", async () => {
+    const h = harness();
+    const providerId = makeProvider(h, {
+      adapter: "openai_compatible",
+      baseUrl: GEMINI_NATIVE,
+    });
+    h.adapters.failWith = statusToAiError(404);
+
+    const result = await h.health.probeModel(providerId, "m1");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(
+      `${lead} (probe: Service response was invalid (HTTP 404).)`,
+    );
+    expect(result.ping?.error).toBe("Service response was invalid (HTTP 404).");
+    h.storage.close();
+  });
+
+  test("a matched provider on a known host keeps the bare message", async () => {
+    const h = harness();
+    const providerId = makeProvider(h, {
+      adapter: "gemini",
+      baseUrl: GEMINI_NATIVE,
+    });
+    h.adapters.failWith = statusToAiError(404);
+
+    const result = await h.health.probe(providerId);
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("Service response was invalid (HTTP 404).");
     h.storage.close();
   });
 });

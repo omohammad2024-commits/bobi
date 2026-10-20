@@ -235,6 +235,16 @@ export class AiError extends Error {
      * presentation layer can say "(tried N providers)". Additive only.
      */
     readonly attempts?: number,
+    /**
+     * The provider's OWN error words, extracted from a non-2xx response
+     * body by the status mapper (see http_status.ts): a short, sanitized,
+     * length-capped snippet — never the raw body, and with the request
+     * credential redacted when the provider echoed it. Providers explain
+     * themselves ("API key required for remote API access"), and a mapped
+     * label alone cannot carry that. Additive only; undefined whenever the
+     * body was empty, unreadable, or carried no usable text.
+     */
+    readonly providerMessage?: string,
   ) {
     super(message);
     this.name = "AiError";

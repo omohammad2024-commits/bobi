@@ -344,6 +344,13 @@ export class EngineError extends Error {
      * `error.tried_providers` note ("(tried N providers)"). Additive only.
      */
     readonly attempts?: number,
+    /**
+     * The provider's own error words, when the failing response carried
+     * any (sanitized + capped at the adapter; see AiError.providerMessage).
+     * Carried so the presentation layer can quote them — the provider
+     * often names the exact fix. Additive only.
+     */
+    readonly providerMessage?: string,
   ) {
     super(message);
     this.name = "EngineError";
@@ -1512,7 +1519,7 @@ export function splitForTelegram(text: string): string[] {
 function toEngineError(err: unknown, aborted: boolean): EngineError {
   if (err instanceof EngineError) return err;
   if (err instanceof AiError) {
-    return new EngineError(err.kind, err.message, err.status, err.attempts);
+    return new EngineError(err.kind, err.message, err.status, err.attempts, err.providerMessage);
   }
   if (aborted) return new EngineError("timeout", "Request was cancelled or timed out.");
   return new EngineError("unknown", "Unknown error while processing the request.");

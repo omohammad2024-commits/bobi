@@ -563,6 +563,7 @@ export class AiGateway implements AiProvider {
       err.retryAfterMs,
       err.emptyResponse,
       attempts,
+      err.providerMessage,
     );
   }
 

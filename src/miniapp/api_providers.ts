@@ -24,6 +24,7 @@ import {
   providerPreset,
 } from "../ai/adapter";
 import { checkProviderUrl } from "../ai/provider_url_guard";
+import { withHttpStatusSuffix } from "../ai/http_status";
 import { validateTarget } from "../ai/target";
 import { AiError } from "../ai/provider";
 import type { Storage } from "../storage/storage";
@@ -401,12 +402,17 @@ function assertUrlMatchesType(adapterType: string, baseUrl: string): void {
  * AiError keeps its message and HTTP status (appended when the message
  * does not already name it) instead of collapsing into a generic 502
  * sentence that makes a 401, a 404 and a dead network indistinguishable.
+ * The provider's own error words ride along when the response carried
+ * any — discovery is where a wrong address or key is usually diagnosed.
  */
 function discoveryError(err: unknown): ProviderApiError {
   if (err instanceof AiError) {
     let message = err.message;
-    if (err.status !== undefined && !message.includes(String(err.status))) {
-      message = `${message} (HTTP ${err.status})`;
+    if (err.status !== undefined) {
+      message = withHttpStatusSuffix(message, err.status);
+    }
+    if (err.providerMessage !== undefined && err.providerMessage.length > 0) {
+      message = `${message} Provider said: ${err.providerMessage}`;
     }
     const status =
       err.status !== undefined && err.status >= 400 && err.status < 600
@@ -868,6 +874,10 @@ async function discoverModels(
   if (!provider) {
     throw new ProviderApiError(404, "Provider not found.");
   }
+  // A row saved before the guard existed can still hold a known-broken
+  // type ↔ URL pair: refuse with the guard's fix (same fail-fast as
+  // draft discovery) instead of sending a request that can only 404.
+  assertUrlMatchesType(provider.adapter, provider.baseUrl);
   if (!adapters.describes(provider.adapter).listModels) {
     throw new ProviderApiError(400, "This provider type cannot list models.");
   }

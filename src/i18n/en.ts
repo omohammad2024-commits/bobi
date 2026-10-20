@@ -180,6 +180,7 @@ export const en: LanguagePack = {
   "error.unknown": "Temporary error; try again.",
   "error.unknown_status": "Temporary error; try again. (Provider answered HTTP {status}.)",
   "error.tried_providers": "(tried {count} providers)",
+  "error.provider_said": "Provider said: \"{text}\"",
   "error.unexpected": "Unexpected error.",
 
   // ---- tool errors (short, user-facing; no internals) ----

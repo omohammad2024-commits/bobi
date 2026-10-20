@@ -2401,6 +2401,13 @@ export function userFacingMessage(err: unknown, lang: Lang): string {
     if (err.attempts !== undefined && err.attempts >= 2) {
       message += ` ${t("error.tried_providers", lang, { count: err.attempts })}`;
     }
+    // The provider's own words, when its error response carried any: the
+    // mapped label says WHAT failed, the provider often says WHY and what
+    // to fix ("API key required for remote API access"). Already
+    // sanitized and capped at the adapter.
+    if (err.providerMessage !== undefined && err.providerMessage.length > 0) {
+      message += ` ${t("error.provider_said", lang, { text: err.providerMessage })}`;
+    }
     return message;
   }
   if (isToolError(err)) return t(`error.tool.${err.kind}`, lang);

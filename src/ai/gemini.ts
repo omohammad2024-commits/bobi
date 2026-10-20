@@ -392,7 +392,12 @@ async function fetchJson(
   if (res.status >= 300 && res.status < 400) {
     throw new AiError('invalid_response', 'The service redirected to another address.');
   }
-  if (res.status < 200 || res.status >= 300) throw statusToError(res.status, res.headers);
+  if (res.status < 200 || res.status >= 300) {
+    throw statusToError(res.status, res.headers, {
+      body: res.body,
+      secret: opts.apiKey,
+    });
+  }
 
   let parsed: unknown;
   try {

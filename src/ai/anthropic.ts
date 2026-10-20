@@ -72,6 +72,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
     const body = buildBody(this.target, req);
     const res = await fetchJson(resolved, "/messages", {
       method: "POST",
+      secret: this.target.apiKey,
       headers: {
         "content-type": "application/json",
         accept: "application/json",
@@ -345,6 +346,8 @@ function extractModel(res: Record<string, unknown>, requested: string): string {
 interface AnthropicFetchOptions {
   method: string;
   headers: Record<string, string>;
+  /** The request credential, used ONLY to redact it from provider error text. */
+  secret?: string | undefined;
   timeoutMs: number;
   signal: AbortSignal;
   body?: string;
@@ -374,7 +377,12 @@ async function fetchJson(
   if (res.status >= 300 && res.status < 400) {
     throw new AiError("invalid_response", "The service redirected to another address.");
   }
-  if (res.status < 200 || res.status >= 300) throw statusToError(res.status, res.headers);
+  if (res.status < 200 || res.status >= 300) {
+    throw statusToError(res.status, res.headers, {
+      body: res.body,
+      secret: opts.secret,
+    });
+  }
 
   let parsed: unknown;
   try {

@@ -506,7 +506,9 @@
         statusDot(p) + " " + ctx.esc(probeText(p)) + "</span></div>" +
         (p.lastProbe && !p.lastProbe.ok && p.lastProbe.message
           ? '<div class="prov-probe-msg" id="probeDetail">' + ctx.esc(p.lastProbe.message) +
-            (p.lastProbe.status !== undefined && p.lastProbe.status !== null ? " (" + ctx.esc(fmt("prov.httpStatus", p.lastProbe.status)) + ")" : "") + "</div>"
+            // The stored message usually already ends in "(HTTP <status>)"
+            // (probeMessage appends it) — never name the same status twice.
+            (p.lastProbe.status !== undefined && p.lastProbe.status !== null && String(p.lastProbe.message).indexOf("(HTTP " + p.lastProbe.status + ")") === -1 ? " (" + ctx.esc(fmt("prov.httpStatus", p.lastProbe.status)) + ")" : "") + "</div>"
           : '<div class="prov-probe-msg" id="probeDetail" hidden></div>') +
         (healthBadges(p) ? '<div class="prov-badges">' + healthBadges(p) + "</div>" : "") +
         '<div class="mx-row" style="margin-top:12px"><span style="font-weight:600">' +

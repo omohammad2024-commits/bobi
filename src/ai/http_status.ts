@@ -3,12 +3,19 @@
  *
  * The chat adapters (OpenAI-compatible, Gemini, Anthropic) and the audio
  * endpoints (transcription, TTS) all speak the same failure vocabulary, so
- * the mapping lives here exactly once. The rule is identical everywhere —
- * a response body is never echoed into an error, because a provider may
- * echo the request (and therefore a key) — but the numeric HTTP status IS
- * carried on the AiError and named in the message where it disambiguates:
- * an unmapped status used to collapse into "Unknown service error.", which
+ * the mapping lives here exactly once. The numeric HTTP status IS carried
+ * on the AiError and named in the message where it disambiguates: an
+ * unmapped status used to collapse into "Unknown service error.", which
  * hid real causes (e.g. 402 = balance exhausted) from the owner entirely.
+ *
+ * One narrow, deliberate exception to the old "never echo a body" rule:
+ * when the caller hands the mapper the response body, the provider's OWN
+ * error words are extracted (JSON error.message / error / message /
+ * detail, else a sanitized text snippet), scrubbed, credential-redacted
+ * and hard-capped, then carried on AiError.providerMessage. A provider
+ * that explains itself ("API key required for remote API access") must
+ * not be flattened into a bare label — but the raw body still never
+ * leaves this module.
  */
 import { AiError } from "./provider";
 
@@ -44,6 +51,121 @@ export function parseRetryAfterMs(
   return undefined;
 }
 
+/** How much of a non-2xx response body is even looked at, in chars. */
+export const PROVIDER_BODY_READ_LIMIT = 600;
+
+/** Hard cap on the extracted provider message, in chars. */
+export const PROVIDER_MESSAGE_LIMIT = 300;
+
+/**
+ * Append ` (HTTP <status>)` to a message — idempotently.
+ *
+ * The canonical appender: several surfaces used to hand-roll this and one
+ * (the miniapp probe detail) appended unconditionally, so a stored probe
+ * message that already ended in "(HTTP 403)" rendered as
+ * "(HTTP 403). (HTTP 403)". Never append when the message already names
+ * that exact status.
+ */
+export function withHttpStatusSuffix(message: string, status: number): string {
+  if (message.includes(`(HTTP ${status})`)) return message;
+  return `${message} (HTTP ${status})`;
+}
+
+/**
+ * Extract the provider's own error words from a non-2xx response body.
+ *
+ * JSON bodies are read for `error.message` (record error), `error`
+ * (string), `message`, then `detail` (string, or a FastAPI-style array of
+ * `{msg}` entries joined with "; "). Anything else falls back to the body
+ * itself as a plain-text snippet: HTML tags stripped, control characters
+ * removed, whitespace collapsed. The result is scrubbed (see
+ * sanitizeProviderText) and hard-capped; an empty or unusable body yields
+ * undefined, so callers behave exactly as before.
+ */
+export function extractProviderMessage(
+  body: string | undefined,
+  secret?: string,
+): string | undefined {
+  if (body === undefined) return undefined;
+  const bounded = body.slice(0, PROVIDER_BODY_READ_LIMIT);
+  if (bounded.trim().length === 0) return undefined;
+
+  let candidate: string | undefined;
+  let parsedJson = false;
+  try {
+    const parsed: unknown = JSON.parse(bounded);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      parsedJson = true;
+      const record = parsed as Record<string, unknown>;
+      const error = record["error"];
+      if (typeof error === "string" && error.trim().length > 0) {
+        candidate = error;
+      } else if (
+        typeof error === "object" &&
+        error !== null &&
+        !Array.isArray(error) &&
+        typeof (error as Record<string, unknown>)["message"] === "string"
+      ) {
+        candidate = (error as Record<string, unknown>)["message"] as string;
+      }
+      if (candidate === undefined && typeof record["message"] === "string") {
+        candidate = record["message"];
+      }
+      if (candidate === undefined) {
+        const detail = record["detail"];
+        if (typeof detail === "string") {
+          candidate = detail;
+        } else if (Array.isArray(detail)) {
+          const parts = detail
+            .map((item) =>
+              typeof item === "object" && item !== null &&
+              typeof (item as Record<string, unknown>)["msg"] === "string"
+                ? ((item as Record<string, unknown>)["msg"] as string)
+                : "",
+            )
+            .filter((s) => s.length > 0);
+          if (parts.length > 0) candidate = parts.join("; ");
+        }
+      }
+    }
+  } catch {
+    // Not JSON — the plain-text snippet below handles it.
+  }
+  // A body that IS JSON but names no error field has no words worth
+  // quoting — never surface raw JSON punctuation as a "provider message".
+  if (candidate === undefined) {
+    if (parsedJson) return undefined;
+    candidate = bounded;
+  }
+
+  const cleaned = sanitizeProviderText(candidate, secret);
+  if (cleaned.length === 0) return undefined;
+  return cleaned.length > PROVIDER_MESSAGE_LIMIT
+    ? `${cleaned.slice(0, PROVIDER_MESSAGE_LIMIT - 1)}…`
+    : cleaned;
+}
+
+/**
+ * Make provider-supplied text safe to surface: remove HTML tags and
+ * control characters, collapse whitespace, and redact every occurrence
+ * of the exact credential used for the request (a provider may echo the
+ * request — headers, URL, key and all — inside its error body). The
+ * redaction only applies to plausible credential lengths: below 4 chars
+ * the "secret" is a substring of ordinary words ("k" in "key") and
+ * redacting it would shred the very diagnosis being surfaced.
+ */
+function sanitizeProviderText(text: string, secret?: string): string {
+  let out = text;
+  if (secret !== undefined && secret.length >= 4) {
+    out = out.split(secret).join("•••");
+  }
+  return out
+    .replace(/<[^>]*>/g, " ")
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Map an HTTP status onto the engine's error categories.
  *
@@ -52,8 +174,31 @@ export function parseRetryAfterMs(
  * is parsed onto the error so the gateway's retry can honor it. Only
  * those two statuses carry it — a Retry-After on any other response is
  * not a backoff instruction.
+ *
+ * `body` is optional: when the caller has the response body, the
+ * provider's own error words are extracted from it (sanitized, capped,
+ * credential-redacted) and attached as AiError.providerMessage.
  */
 export function statusToAiError(
+  status: number,
+  headers?: Record<string, string | undefined>,
+  body?: { body?: string | undefined; secret?: string | undefined },
+): AiError {
+  const mapped = mapStatusToAiError(status, headers);
+  const providerMessage = extractProviderMessage(body?.body, body?.secret);
+  if (providerMessage === undefined) return mapped;
+  return new AiError(
+    mapped.kind,
+    mapped.message,
+    mapped.status,
+    mapped.retryAfterMs,
+    mapped.emptyResponse,
+    mapped.attempts,
+    providerMessage,
+  );
+}
+
+function mapStatusToAiError(
   status: number,
   headers?: Record<string, string | undefined>,
 ): AiError {

@@ -9,8 +9,9 @@
  *   401/403  → auth        429 → quota        5xx → network
  *   408/timeout → timeout   other/abort → respective category
  *
- * A provider's response body is never returned to the caller: it can echo the
- * request, so only a caller-chosen static message leaves this module.
+ * A provider's raw response body is never returned to the caller: it can
+ * echo the request. Only the status mapper's sanitized extraction of the
+ * provider's own error words may ride the error (AiError.providerMessage).
  */
 import { AiError, base64Bytes, MAX_ATTACHMENT_BYTES, emptyResponseError } from "./provider";
 import type {
@@ -78,6 +79,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       path: "/chat/completions",
       method: "POST",
       headers: headers(this.target.apiKey),
+      secret: this.target.apiKey,
       body: JSON.stringify(body),
       timeoutMs: req.timeoutMs,
       signal: req.signal,
@@ -138,8 +140,15 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       throw new AiError("invalid_response", "The service redirected to another address.");
     }
     if (stream.status < 200 || stream.status >= 300) {
+      // An error status still carries the provider's own explanation in
+      // its body: read a bounded slice before closing, so the mapped
+      // error can quote it like the non-streaming path does.
+      const errorBody = await readStreamErrorBody(stream.chunks);
       await stream.chunks.return(undefined);
-      throw statusToError(stream.status, stream.headers);
+      throw statusToError(stream.status, stream.headers, {
+        body: errorBody,
+        secret: this.target.apiKey,
+      });
     }
 
     const parser = new SseParser();
@@ -228,6 +237,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       path: "/models",
       method: "GET",
       headers: headers(req.target.apiKey),
+      secret: req.target.apiKey,
       timeoutMs: req.timeoutMs,
       signal: req.signal,
     });
@@ -270,6 +280,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       path: "/embeddings",
       method: "POST",
       headers: headers(this.target.apiKey),
+      secret: this.target.apiKey,
       body: JSON.stringify({ model: req.model, input: req.texts }),
       timeoutMs: req.timeoutMs,
       signal: req.signal,
@@ -956,6 +967,8 @@ interface FetchOptions {
   path: string;
   method: string;
   headers: Record<string, string>;
+  /** The request credential, used ONLY to redact it from provider error text. */
+  secret?: string | undefined;
   timeoutMs: number;
   signal: AbortSignal;
   body?: string;
@@ -985,9 +998,9 @@ function readJson(raw: string): Record<string, unknown> {
  * Send one request through the pinned transport and map the result.
  *
  * The connection is bound to addresses `resolveTarget` approved, redirects are
- * never followed, and only a 2xx body is parsed. The response body is never
- * echoed into an error, so a provider that echoes the request cannot leak the
- * key into a message.
+ * never followed, and only a 2xx body is parsed. A non-2xx body never leaves
+ * raw: only the status mapper's sanitized, capped, credential-redacted
+ * extraction of the provider's own error words rides the thrown AiError.
  */
 async function fetchJson(
   target: ResolvedTarget,
@@ -1012,10 +1025,33 @@ async function fetchJson(
     throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
-    throw statusToError(res.status, res.headers);
+    throw statusToError(res.status, res.headers, {
+      body: res.body,
+      secret: opts.secret,
+    });
   }
 
   return readJson(res.body);
+}
+
+/**
+ * Read just enough of an error response's body for the status mapper to
+ * quote the provider's own words — bounded, and never throwing: a body
+ * that cannot be read simply leaves the mapped error without a quote.
+ */
+async function readStreamErrorBody(
+  chunks: AsyncGenerator<Buffer, void, undefined>,
+): Promise<string> {
+  let text = "";
+  try {
+    for await (const chunk of chunks) {
+      text += chunk.toString("utf8");
+      if (text.length >= 600) break;
+    }
+  } catch {
+    // Keep whatever arrived; the mapper treats an unreadable body as none.
+  }
+  return text;
 }
 
 /** Map an HTTP status onto the engine's categories (shared implementation). */

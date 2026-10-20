@@ -3,9 +3,11 @@
  *
  * The probe is deliberately cheap and self-contained: it asks the service for a
  * minimal completion (or, when the adapter supports it, its model list) and
- * records only the outcome. The result message is chosen by this module, never
- * copied from a provider response, so a body that echoes the request cannot
- * leak a key into the database or a Telegram message.
+ * records only the outcome. The result message is chosen by this module;
+ * the only provider text it may carry is the status mapper's sanitized,
+ * capped, credential-redacted extraction of the provider's own error
+ * words, so a body that echoes the request cannot leak a key into the
+ * database or a Telegram message.
  *
  * The service also hosts the opt-in BACKGROUND prober (startBackgroundProbes):
  * a periodic pass that re-probes providers whose circuit breaker is open or
@@ -33,6 +35,8 @@ import {
   modelQuarantineEnabled,
   sharedModelQuarantine,
 } from "./model_quarantine";
+import { checkProviderUrl } from "./provider_url_guard";
+import { withHttpStatusSuffix } from "./http_status";
 
 export interface ProbeResult {
   ok: boolean;
@@ -615,6 +619,42 @@ export class ProviderHealthService {
     return (models.find((m) => m.isDefault && m.enabled) ?? models.find((m) => m.enabled))?.modelId;
   }
 
+  /**
+   * The type ↔ URL guard's fix for this provider, when its STORED
+   * (adapter, baseUrl) pair is a known-broken mismatch — a row saved
+   * before the guard existed, or by a path that predates it. Composed
+   * exactly like the save-path rejection (guard message verbatim, then
+   * the corrected address), so every surface names the same fix.
+   */
+  private guardLead(providerId: number): string | undefined {
+    try {
+      const provider = this.storage.getProvider(providerId);
+      if (provider === undefined) return undefined;
+      const issue = checkProviderUrl(provider.adapter, provider.baseUrl);
+      if (issue === null) return undefined;
+      return issue.suggestion !== undefined
+        ? `${issue.message} Suggested address: ${issue.suggestion}`
+        : issue.message;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Lead a FAILED probe message with the guard's fix when the provider's
+   * stored type/URL pair is mismatched: a bare "(HTTP 404)" tells the
+   * owner the request died, not that the address belongs to another wire
+   * format or what to change it to. The probe itself still ran — its
+   * mapped diagnosis is appended verbatim after the lead, and status /
+   * latency stay exactly what the probe measured. Successes and
+   * guard-clean providers pass through byte-identical.
+   */
+  private explainFailure(providerId: number, ok: boolean, message: string): string {
+    if (ok) return message;
+    const lead = this.guardLead(providerId);
+    return lead === undefined ? message : `${lead} (probe: ${message})`;
+  }
+
   private record(
     providerId: number,
     ok: boolean,
@@ -622,10 +662,11 @@ export class ProviderHealthService {
     extra: { status?: number; latencyMs?: number } = {},
   ): ProbeResult {
     const checkedAt = Date.now();
-    this.storage.setProviderHealth({ providerId, ok, message, ...extra });
+    const explained = this.explainFailure(providerId, ok, message);
+    this.storage.setProviderHealth({ providerId, ok, message: explained, ...extra });
     return {
       ok,
-      message,
+      message: explained,
       checkedAt,
       ...(extra.status !== undefined ? { status: extra.status } : {}),
       ...(extra.latencyMs !== undefined ? { latencyMs: extra.latencyMs } : {}),
@@ -649,7 +690,7 @@ export class ProviderHealthService {
   ): ProbeResult {
     return {
       ok,
-      message,
+      message: this.explainFailure(providerId, ok, message),
       checkedAt: Date.now(),
       ...this.circuitField(providerId),
       ...this.connectionField(providerId),
@@ -705,13 +746,17 @@ async function defaultRealisticToolSpecs(): Promise<readonly ToolSpec[]> {
 /**
  * Map an adapter failure onto a short, safe English message.
  *
- * Messages are chosen here, never copied from a provider response. One
- * narrow exception, by design: an "unknown" AiError that carries an HTTP
- * status surfaces its own message, because that status could only have
- * been attached by the status mapper, whose templates are fixed strings
- * naming the real cause (e.g. "Unexpected provider response (HTTP 302).").
- * An unknown with no status has no such provenance and stays opaque:
- * "Probe failed."
+ * The mapped label is chosen here, never copied from a provider response.
+ * Two narrow exceptions, by design: an "unknown" AiError that carries an
+ * HTTP status surfaces its own message, because that status could only
+ * have been attached by the status mapper, whose templates are fixed
+ * strings naming the real cause (e.g. "Unexpected provider response
+ * (HTTP 302)."). An unknown with no status has no such provenance and
+ * stays opaque: "Probe failed." And when the error carries the provider's
+ * own words (AiError.providerMessage — extracted, sanitized and capped by
+ * the status mapper), they are appended after the label: the label says
+ * WHAT failed, the provider often says WHY ("API key required for remote
+ * API access").
  */
 function probeMessage(err: unknown): string {
   if (err instanceof AiError) {
@@ -720,7 +765,7 @@ function probeMessage(err: unknown): string {
       err.status !== undefined &&
       err.message.trim().length > 0
     ) {
-      return err.message;
+      return appendProviderWords(err.message, err);
     }
     let base: string;
     switch (err.kind) {
@@ -757,9 +802,22 @@ function probeMessage(err: unknown): string {
     // tell a 500 from a 503, and a bare "invalid" cannot tell a 404 (wrong
     // address) from a 400 (bad request) — the number IS the diagnosis.
     if (err.status !== undefined && !base.includes(`(HTTP ${err.status})`)) {
-      base = `${base.replace(/\.$/, "")} (HTTP ${err.status}).`;
+      base = `${withHttpStatusSuffix(base.replace(/\.$/, ""), err.status)}.`;
     }
-    return base;
+    return appendProviderWords(base, err);
   }
   return "Probe failed.";
+}
+
+/**
+ * Append the provider's own words after a probe label, when the failure
+ * carried any. Byte-identical passthrough when it did not, so every
+ * existing probe string is unchanged for silent providers.
+ */
+function appendProviderWords(base: string, err: AiError): string {
+  if (err.providerMessage === undefined || err.providerMessage.length === 0) {
+    return base;
+  }
+  const lead = base.endsWith(".") ? base : `${base}.`;
+  return `${lead} Provider said: ${err.providerMessage}`;
 }

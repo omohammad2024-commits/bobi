@@ -1572,6 +1572,13 @@ export class AiAdminController {
   ): Promise<{ ok: true; models: readonly RemoteModel[] } | { ok: false; message?: string }> {
     const provider = this.storage.getProvider(providerId);
     if (!provider) return { ok: false, message: tr(lang, "panel.discover.no_provider") };
+    // A row saved before the guard existed can still hold a known-broken
+    // type ↔ URL pair: name the fix instead of a doomed request's
+    // generic failure.
+    const urlIssue = checkProviderUrl(provider.adapter, provider.baseUrl);
+    if (urlIssue !== null) {
+      return { ok: false, message: urlGuardRefusalText(urlIssue) };
+    }
     if (!this.adapters.describes(provider.adapter).listModels) {
       return { ok: false, message: tr(lang, "panel.discover.no_list") };
     }

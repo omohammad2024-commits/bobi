@@ -99,7 +99,10 @@ export async function transcribeAudio(
     throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
-    throw statusToAiError(res.status, res.headers);
+    throw statusToAiError(res.status, res.headers, {
+      body: res.body,
+      secret: opts.apiKey,
+    });
   }
 
   return parseTranscriptionText(res.body);
