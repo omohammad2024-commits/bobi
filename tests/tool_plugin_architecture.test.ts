@@ -120,7 +120,7 @@ describe("plugin manifest contract", () => {
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain("download_media");
     expect(ids).toContain("remind_nl");
-    expect(ids.length).toBe(36);
+    expect(ids.length).toBe(44);
   });
 
   test("static plugin tools carry manifests matching their names", () => {
@@ -142,6 +142,11 @@ describe("plugin manifest contract", () => {
       id: "ok_tool",
       version: "1.0.0",
       title: "OK",
+      purpose: "perfectly fine tool",
+      useWhen: "a fine case arises",
+      doNotUseWhen: "when something else fits the request better",
+      confusableWith: [],
+      latencyTier: "instant",
       description: "A perfectly fine description.",
       outputSummary: "Something useful.",
       category: "utils",
@@ -155,6 +160,35 @@ describe("plugin manifest contract", () => {
     ).toBeGreaterThan(0);
     expect(
       validateCatalog([base, { ...base }]).some((p) => p.includes("duplicate")),
+    ).toBe(true);
+    // Desk-card fields are all required: removing any one is a problem.
+    const without = (field: string): string[] => {
+      const copy: Record<string, unknown> = { ...base };
+      delete copy[field];
+      return validateManifest(copy as unknown as ToolManifest);
+    };
+    for (const field of ["purpose", "useWhen", "doNotUseWhen", "confusableWith", "latencyTier"]) {
+      expect(without(field).length).toBeGreaterThan(0);
+    }
+    expect(
+      validateManifest({
+        ...base,
+        latencyTier: "eventually" as ToolManifest["latencyTier"],
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      validateManifest({
+        ...base,
+        confusableWith: [{ tool: "ok_tool", difference: "the same tool, not a peer" }],
+      }).length,
+    ).toBeGreaterThan(0);
+    expect(
+      validateCatalog([
+        {
+          ...base,
+          confusableWith: [{ tool: "ghost_tool", difference: "a different tool entirely" }],
+        },
+      ]).some((p) => p.includes("unknown") && p.includes("ghost_tool")),
     ).toBe(true);
   });
 });

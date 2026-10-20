@@ -40,7 +40,6 @@ function anyStub(): any {
  */
 async function realToolDescriptors(): Promise<ToolDescriptor[]> {
   const R = "../src";
-  const { DEFAULT_TOOLS } = await import(`${R}/tools/service`);
   const mem = await import(`${R}/tools/memory`);
   const hist = await import(`${R}/tools/history`);
   const rem = await import(`${R}/tools/reminders`);
@@ -105,21 +104,9 @@ async function realToolDescriptors(): Promise<ToolDescriptor[]> {
   ];
 
   const svc = new ToolService({ extraTools: extra });
-  const registry = (svc as unknown as { registry: { list(): any[] } }).registry;
-  const all = [...DEFAULT_TOOLS, ...registry.list()];
-  const seen = new Set<string>();
-  return all
-    .filter((t) => {
-      if (seen.has(t.name)) return false;
-      seen.add(t.name);
-      return true;
-    })
-    .map((t) => ({
-      name: t.name as string,
-      description: t.description as string,
-      enabled: true,
-      requires: [] as readonly string[],
-    }));
+  // Real descriptors from the service, so they carry the real desk-card
+  // fields (purpose/useWhen) listActive populates from each manifest.
+  return [...svc.listActive()];
 }
 
 /** Constructed tool objects (mirrors realToolDescriptors registration). */
@@ -215,8 +202,11 @@ describe("prompt diet", () => {
     expect(tools.length).toBeGreaterThan(25); // production-scale catalog
     const prompt = buildSystemPrompt(baseCtx(tools));
     const tokens = estimatePromptTokens(prompt);
-    // Measured ~700 at diet time; budget 1000 leaves headroom for growth.
-    expect(tokens).toBeLessThan(1000);
+    // Deliberate raise (was 1000): Phase-1 desk lists the FULL catalog —
+    // measured ~1091 with this helper's 33 carded tools (the full
+    // catalog is ≈570 tokens for 44 tools) + the owner's persona block;
+    // prompt caching amortizes it. Budget = measured + ~15% headroom.
+    expect(tokens).toBeLessThan(1255);
   });
 
   test("full production tool list: per provider call stays under 4K", async () => {
@@ -239,18 +229,29 @@ describe("prompt diet", () => {
     expect(perCall).toBeLessThan(4000);
   });
 
-  test("no visible tool is silently dropped: core spelled out, rest counted", async () => {
+  test("tool desk: every visible tool listed once, from its desk card", async () => {
     const tools = await realToolDescriptors();
     const prompt = buildSystemPrompt(baseCtx(tools));
-    const coreCount = tools.filter((d) => isCoreTool(d.name)).length;
-    // Core tools get the full name + description line.
-    for (const t of tools.filter((d) => isCoreTool(d.name))) {
-      expect(prompt).toContain(`- ${t.name}: ${t.description}`);
+    // Every descriptor's name appears in the prompt.
+    for (const t of tools) {
+      expect(prompt).toContain(t.name);
     }
-    // Everything else is counted in the discovery line — full definitions
-    // ride in the request's tools field and one tool_search away.
-    expect(prompt).toContain(`Plus ${tools.length - coreCount} more`);
-    expect(prompt).toContain("Call tool_search with a keyword");
+    // Every descriptor WITH card fields gets its exact desk line.
+    for (const t of tools) {
+      if (t.purpose !== undefined && t.useWhen !== undefined) {
+        expect(prompt).toContain(`- ${t.name}: ${t.purpose} — ${t.useWhen}`);
+      }
+    }
+    // The desk block holds exactly one "- " line per tool — no drops,
+    // no extras hidden behind an anonymous count.
+    const desk = prompt
+      .split("\n\n")
+      .find((b) => b.startsWith("Tool desk ("));
+    expect(desk).toBeDefined();
+    const deskLines = desk!.split("\n").filter((l) => l.startsWith("- "));
+    expect(deskLines.length).toBe(tools.length);
+    expect(prompt).not.toContain("Plus ");
+    expect(prompt).not.toContain("more (full definitions");
   });
 
   test("identity, safety, and language rules survive the diet", async () => {
@@ -326,7 +327,9 @@ describe("prompt diet", () => {
   test("empty tool list still tells the model to answer from knowledge", () => {
     const prompt = buildSystemPrompt(baseCtx([]));
     expect(prompt).toContain("No tools available");
-    expect(estimatePromptTokens(prompt)).toBeLessThan(600);
+    // Measured ~673 now: the persona block grew by the owner's persona
+    // order. Budget = measured + ~15% headroom (was 600).
+    expect(estimatePromptTokens(prompt)).toBeLessThan(775);
   });
 
   test("personality section present; identity and access survive byte-identical in effect", async () => {

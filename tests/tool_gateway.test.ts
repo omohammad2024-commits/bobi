@@ -527,7 +527,7 @@ const promptCtx = (tools: ToolDescriptor[]) => ({
 });
 
 describe("tool_search prompt hint", () => {
-  test("core tools get full lines; the rest are counted with a tool_search pointer", () => {
+  test("every tool gets its own desk line; nothing is counted or pointed at tool_search", () => {
     const prompt = buildSystemPrompt(
       promptCtx([
         descriptor("calculator", "math"),
@@ -535,14 +535,17 @@ describe("tool_search prompt hint", () => {
         descriptor("tool_search", "find tools"),
       ]),
     );
-    // Core tool: full name + description line.
+    // Desk header, then one line per tool. The descriptors built here
+    // carry no card fields, so each line falls back to `- name: description`.
+    expect(prompt).toContain(
+      "Tool desk (3) — every tool you may use; each line: what — when to pick it up:",
+    );
     expect(prompt).toContain("- calculator: math");
-    // Non-core tool: counted, not described — its definition lives in the
-    // request's tools field and one tool_search away.
-    expect(prompt).toContain("Plus 1 more");
-    expect(prompt).not.toContain("- schedule_task: sched");
-    // Discovery hint points at tool_search because it is visible to this actor.
-    expect(prompt).toContain("Call tool_search with a keyword");
+    expect(prompt).toContain("- schedule_task: sched");
+    expect(prompt).toContain("- tool_search: find tools");
+    // No tool is left as an anonymous count, and there is no discovery pointer.
+    expect(prompt).not.toContain("Plus ");
+    expect(prompt).not.toContain("Call tool_search with a keyword");
   });
 
   test("no discovery section when every visible tool is core", () => {
@@ -553,11 +556,19 @@ describe("tool_search prompt hint", () => {
     expect(prompt).not.toContain("Call tool_search with a keyword");
   });
 
-  test("falls back gracefully when tool_search itself is not visible", () => {
+  test("desk lists every tool even when tool_search itself is not visible", () => {
     const prompt = buildSystemPrompt(
       promptCtx([descriptor("calculator", "math"), descriptor("schedule_task", "sched")]),
     );
-    expect(prompt).toContain("full definitions for all 2 tools are attached");
+    // The desk is complete on its own: both tools get their fallback
+    // `- name: description` lines whether or not tool_search is visible.
+    expect(prompt).toContain(
+      "Tool desk (2) — every tool you may use; each line: what — when to pick it up:",
+    );
+    expect(prompt).toContain("- calculator: math");
+    expect(prompt).toContain("- schedule_task: sched");
+    expect(prompt).not.toContain("Plus ");
+    expect(prompt).not.toContain("full definitions");
     expect(prompt).not.toContain("Call tool_search");
   });
 

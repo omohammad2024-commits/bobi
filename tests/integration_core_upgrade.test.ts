@@ -188,7 +188,7 @@ describe("wire 1: one breaker registry shared by gateway + health", () => {
 
 // ---------- 2. intent router → tool catalog ----------
 
-describe("wire 3: intent router narrows/orders the turn's specs", () => {
+describe("wire 3: intent router orders/advises on the turn's specs (never narrows)", () => {
   const MANIFESTS = new ToolService().pluginCatalog;
   const catalog: ToolSpec[] = [
     spec("download_media"),
@@ -200,12 +200,13 @@ describe("wire 3: intent router narrows/orders the turn's specs", () => {
     spec("web_search"),
   ];
 
-  test("strong intent (bare YouTube link) narrows to hinted + always-keep", async () => {
+  test("strong intent keeps the full set, hinted first, with note", async () => {
     await withEnv({ BOBI_INTENT_ROUTER: undefined }, async () => {
       const url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
       const routed = applyIntentRouting(catalog, url, MANIFESTS);
       const names = routed.specs.map((s) => s.name).sort();
-      expect(names).toEqual(["commands", "download_media", "recall", "remember"]);
+      expect(names).toEqual(catalog.map((s) => s.name).sort());
+      expect(routed.specs[0]!.name).toBe("download_media");
       expect(routed.note).toBe(`[router] suggested: download_media(url=${url})`);
     });
   });
@@ -279,6 +280,53 @@ describe("wire 3: intent router narrows/orders the turn's specs", () => {
     });
     expect(requests.length).toBeGreaterThan(0);
     expect(requests[0]!.tools?.map((t) => t.name)).toEqual([narrowed[0]!.name]);
+  });
+});
+
+// ---------- 2b. router invariant: no spec is ever removed ----------
+
+describe("router invariant: no spec is ever removed", () => {
+  const MANIFESTS = new ToolService().pluginCatalog;
+  const fullSpecs: ToolSpec[] = MANIFESTS.map((m) => ({
+    name: m.id,
+    description: "",
+    parameters: {},
+  }));
+  const inputNames = fullSpecs.map((s) => s.name).sort();
+
+  const messages = [
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "حساب کن ۱۲*۸",
+    "این لینک رو دانلود کن https://www.youtube.com/watch?v=dQw4w9WgXcQ و فردا هم یادم بنداز",
+    "یادم بنداز فردا ساعت ۹ به مامانم زنگ بزنم",
+    "https://www.instagram.com/reel/ABC123/ فقط صدا",
+  ];
+
+  test("every battery message keeps the full 44-spec set, tool_search included", async () => {
+    await withEnv({ BOBI_INTENT_ROUTER: undefined }, async () => {
+      expect(fullSpecs.length).toBe(44);
+      for (const message of messages) {
+        const routed = applyIntentRouting(fullSpecs, message, MANIFESTS);
+        expect(routed.specs.map((s) => s.name).sort()).toEqual(inputNames);
+        expect(routed.specs.map((s) => s.name)).toContain("tool_search");
+      }
+    });
+  });
+
+  test("download+reminder message: both hinted tools present, download_media first", async () => {
+    await withEnv({ BOBI_INTENT_ROUTER: undefined }, async () => {
+      const routed = applyIntentRouting(
+        fullSpecs,
+        "این لینک رو دانلود کن https://www.youtube.com/watch?v=dQw4w9WgXcQ و فردا هم یادم بنداز",
+        MANIFESTS,
+      );
+      const names = routed.specs.map((s) => s.name);
+      expect(names).toContain("download_media");
+      expect(names).toContain("remind_nl");
+      // URL hint is 0.95, the reminder hint is ≤0.9, so download_media
+      // is ordered ahead of remind_nl.
+      expect(names.indexOf("download_media")).toBeLessThan(names.indexOf("remind_nl"));
+    });
   });
 });
 

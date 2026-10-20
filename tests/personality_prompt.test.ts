@@ -23,17 +23,54 @@ function personalityBlock(prompt: string): string {
 }
 
 describe("personality tuning (worker-3)", () => {
-  test("natural, warm, witty-when-apt phrasing is present", () => {
+  test("Michael default: cold, dry, heavy, ultra-terse, precise, anti-cliché", () => {
     const prompt = buildSystemPrompt(BASE_CTX);
-    expect(prompt).toContain("text like a real person, not a bot");
-    expect(prompt).toContain("Witty when the vibe invites it");
-    expect(prompt).toContain("never forced");
-    expect(prompt).toContain("warm and familiar like a sharp friend");
-    expect(prompt).toContain("never cold");
-    expect(prompt).toContain("no sycophancy");
+    expect(prompt).toContain("cold");
+    expect(prompt).toContain("dry");
+    expect(prompt).toContain("heavy");
+    expect(prompt).toContain("ultra-terse");
+    expect(prompt).toContain("precise");
+    expect(prompt).toContain("anti-cliché");
+    expect(prompt).toContain("Short imperative sentences");
+    expect(prompt).toContain("Zero service-politeness");
+    expect(prompt).toContain("no stock phrases");
+    expect(prompt).toContain("No sycophancy");
     expect(prompt).toContain("Emoji: max one");
     expect(prompt).toContain("خودمونی");
-    expect(prompt).toContain("match the user's energy");
+  });
+
+  test("destructive edge with guardrails: playful, never hostile or insulting", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("destructive");
+    expect(prompt).toContain("roast bad ideas");
+    expect(prompt).toContain("Playful");
+    expect(prompt).toContain("never genuinely hostile");
+    expect(prompt).toContain("never insulting toward users");
+    // Mohammad gets the same voice, but familiar — insider/family, not a stranger.
+    expect(prompt).toContain("insider, family, never a stranger");
+  });
+
+  test("length: shortest natural answer, greeting nudge, no narration unless asked", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("shortest natural answer");
+    expect(prompt).toContain("often a few words, one line");
+    // Greetings/small talk: dry minimum + brusque get-to-the-point nudge.
+    expect(prompt).toContain("سلام. بنال. کارتو بگو.");
+    expect(prompt).toContain("No padding, no recap");
+    expect(prompt).toContain("no \"here's what I did\" narration unless asked");
+    // Expansion only when the task needs it.
+    expect(prompt).toContain("Expand only for results, asked-for explanations, or long-form on explicit ask");
+  });
+
+  test("brevity survives a personality skin", () => {
+    const prompt = buildSystemPrompt({
+      ...BASE_CTX,
+      personality: "Be extra cheerful.",
+    });
+    expect(prompt).toContain("Be extra cheerful.");
+    expect(prompt).toContain("ultra-terse");
+    expect(prompt).toContain("shortest natural answer");
+    expect(prompt).toContain("سلام. بنال. کارتو بگو.");
   });
 
   test("the old rigid one-word-in-one-word-out rule is gone", () => {
@@ -42,9 +79,11 @@ describe("personality tuning (worker-3)", () => {
     expect(prompt).not.toContain("Say less, hit harder");
   });
 
-  test("PERSONALITY block stays within the 180-token budget", () => {
+  test("PERSONALITY block stays within the 280-token budget", () => {
+    // Raised from 180 by the owner's persona order (Michael default spec
+    // cannot fit 180); the block must still practice the brevity it preaches.
     const prompt = buildSystemPrompt(BASE_CTX);
-    expect(estimatePromptTokens(personalityBlock(prompt))).toBeLessThanOrEqual(180);
+    expect(estimatePromptTokens(personalityBlock(prompt))).toBeLessThanOrEqual(280);
   });
 
   test("colloquial register: spoken Persian, bookish bans, bad→good example", () => {
@@ -64,12 +103,12 @@ describe("personality tuning (worker-3)", () => {
     expect(prompt).toContain("خوب: «بفرست، می‌گیرمش»");
   });
 
-  test("human texting rhythm: react first, contractions, no form-letter openings", () => {
+  test("no form-letter openings: contractions, no Certainly!, no I'd be happy to", () => {
     const prompt = buildSystemPrompt(BASE_CTX);
-    expect(prompt).toContain("React, then answer");
-    expect(prompt).toContain("contractions");
+    expect(prompt).toContain("Contractions");
     expect(prompt).toContain("no \"Certainly!\"");
     expect(prompt).toContain("no \"I'd be happy to\"");
+    expect(prompt).toContain("Emoji: max one, when it lands");
   });
 
   test("colloquial register survives a personality skin", () => {
@@ -81,16 +120,16 @@ describe("personality tuning (worker-3)", () => {
     expect(prompt).toContain("محاوره‌ای");
     expect(prompt).toContain("Never bookish");
     expect(prompt).toContain("خوب: «بفرست، می‌گیرمش»");
-    expect(prompt).toContain("React, then answer");
+    expect(prompt).toContain("ultra-terse");
   });
 
   test("owner and group blocks still assemble alongside the new tone", () => {
     const owner = buildSystemPrompt({ ...BASE_CTX, isOwner: true });
     expect(owner).toContain("IS Mohammad");
     expect(owner).toContain("Greet him like family");
-    expect(owner).toContain("text like a real person");
+    expect(owner).toContain("ultra-terse");
     const group = buildSystemPrompt({ ...BASE_CTX, isGroup: true });
     expect(group).toContain("You are in a Telegram group");
-    expect(group).toContain("text like a real person");
+    expect(group).toContain("ultra-terse");
   });
 });

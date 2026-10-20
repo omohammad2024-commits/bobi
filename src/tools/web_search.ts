@@ -60,6 +60,15 @@ export const webSearchManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Web Search",
   description: "Web search. Use it to find fresh information or sources beyond the model's knowledge.",
+  purpose: "web page search",
+  useWhen: "fresh info needed",
+  doNotUseWhen:
+    "a specific URL's full text — that is fetch_url; finding a BOBI tool — that is tool_search",
+  confusableWith: [
+    { tool: "fetch_url", difference: "fetch_url reads one known URL; web_search finds pages by query" },
+    { tool: "tool_search", difference: "tool_search finds BOBI tools; web_search finds web pages" },
+  ],
+  latencyTier: "seconds",
   outputSummary: "Returns the query, the answering provider, and the list of search results.",
   category: "web",
   triggers: { keywordPatterns: ["سرچ کن", "جستجو کن", "تو اینترنت بگرد", "search (the )?(web|internet)", "look (it|this|that) up online"] },
