@@ -237,12 +237,13 @@ describe("SqliteMemoryProvider parity with the old storage behavior", () => {
       p.upsert("u1", "a", "اول-جدید");
       p.upsert("u2", "a", "دیگری");
 
-      // get: same row the storage layer returns.
+      // get: same row the storage layer returns (worker-2: importance included).
       expect(p.get("u1", "a")).toEqual({
         key: "a",
         content: "اول-جدید",
         createdAt: storage.getMemory("u1", "a")!.createdAt,
         updatedAt: storage.getMemory("u1", "a")!.updatedAt,
+        importance: 3,
       });
       expect(p.get("u1", "missing")).toBeUndefined();
       // Another user's key with the same name is a different row.

@@ -118,8 +118,8 @@ describe("review: duplicate detection", () => {
     expect(dup.suggestedAction).toEqual({ type: "merge", keepKey: "k2", removeKeys: ["k1"] });
     // The summary is the exact old→new diff, in Persian.
     expect(dup.summaryFa.length).toBeGreaterThan(0);
-    expect(dup.summaryFa).toContain("ادغام");
-    expect(kindLabelFa("duplicate")).toBe("تکراری");
+    expect(dup.summaryFa).toContain("merge");
+    expect(kindLabelFa("duplicate")).toBe("Duplicate");
   });
 
   test("exact normalized duplicates are caught even when keys differ", async () => {
@@ -166,7 +166,7 @@ describe("review: stale detection", () => {
     const stale = stales[0]!;
     expect(stale.memoryIds).toEqual(["old", "new"]);
     expect(stale.suggestedAction).toEqual({ type: "delete", keys: ["old"] });
-    expect(stale.summaryFa).toContain("تضاد");
+    expect(stale.summaryFa).toContain("contradict");
   });
 
   test("different topics are not flagged as contradictions", async () => {
@@ -221,7 +221,7 @@ describe("curate_memories tool", () => {
     expect(res.status).toBe("ok");
     const data = res.data as { count: number; proposals: Array<{ id: string; kindFa: string; summaryFa: string }> };
     expect(data.count).toBe(1);
-    expect(data.proposals[0]!.kindFa).toBe("تکراری");
+    expect(data.proposals[0]!.kindFa).toBe("Duplicate");
     expect(data.proposals[0]!.summaryFa.length).toBeGreaterThan(0);
   });
 

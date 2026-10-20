@@ -292,7 +292,7 @@ describe("command handlers in English", () => {
       prefs: fakePrefs(undefined),
     };
     await handleVoiceCommand({ from: { id: 7 }, reply: async (t) => { replies.push(t); } }, env, "en", "always");
-    expect(replies[0]).toContain("voice mode: always");
+    expect(replies[0]).toContain("voice mode set to always");
   });
 
   test("/voice prompt shows the current mode", async () => {
@@ -312,7 +312,7 @@ describe("command handlers in English", () => {
       prefs: fakePrefs(undefined),
     };
     await handleVoiceCommand({ from: { id: 7 }, reply: async (t) => { replies.push(t); } }, env, "en", "maybe");
-    expect(replies).toEqual(["Unknown option; use one of: auto, always, never."]);
+    expect(replies).toEqual(["Unknown option — use auto, always, or never."]);
   });
 
   test("/personality unknown-name reply translates", async () => {
@@ -322,7 +322,7 @@ describe("command handlers in English", () => {
       { prefs: fakePrefs(undefined) },
       "en",
     );
-    expect(replies[0]).toContain("Unknown personality «nope».");
+    expect(replies[0]).toContain('Unknown personality "nope".');
   });
 
   test("/personality save failure uses the shared prefs key", async () => {
@@ -368,7 +368,7 @@ describe("bot.ts error paths", () => {
     const expected: Record<string, string> = {
       empty_input: "The message is empty.",
       empty_response: "I got no reply; try again.",
-      auth: "The service is unavailable (authentication).",
+      auth: "Authentication failed — the AI service is unavailable. Check the provider's API key.",
       quota: "The usage quota is full; try again in a bit.",
       network: "Network error; try again.",
       timeout: "The reply took too long; it was cancelled.",
@@ -411,7 +411,7 @@ describe("bot.ts error paths", () => {
       "You're going a bit fast; try again in about 42 seconds.",
     );
     expect(t("reply.truncated", "en")).toBe(
-      "I hit this reply's step budget; ask more specifically for more detail.",
+      "I ran out of steps on this reply — ask a more specific question for more detail.",
     );
   });
 

@@ -138,7 +138,7 @@ describe("archive writing", () => {
     expect(report.archiveKey).toBe("archive:2026-10-18");
     const archive = await p.get("u1", "archive:2026-10-18");
     expect(archive).toBeDefined();
-    expect(archive!.content).toContain("بایگانی حافظه");
+    expect(archive!.content).toContain("Memory archive");
     expect(archive!.content).toContain("k1");
     expect(archive!.content).toContain("k2");
     // Oldest first in the body.
@@ -184,7 +184,7 @@ describe("archive proposal", () => {
     const report = await service(p).review("u1");
     const proposal = report.proposal!;
     expect(proposal.kind).toBe("archive");
-    expect(kindLabelFa("archive")).toBe("بایگانی");
+    expect(kindLabelFa("archive")).toBe("Archive");
     expect(proposal.memoryIds.sort()).toEqual(["k1", "k2"]);
     expect(proposal.suggestedAction).toEqual({ type: "delete", keys: ["k1", "k2"] });
     expect(proposal.summaryFa).toContain("archive:2026-10-18");

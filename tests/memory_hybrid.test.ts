@@ -27,12 +27,27 @@ import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import {
   reciprocalRankFusion,
+  reciprocalRankFusionWithScores,
   RRF_K,
   MemoryVectorStore,
   ProviderEmbedder,
   SemanticMemorySearch,
   embedTextFor,
+  // Worker-2: better recall.
+  normalizeMemoryText,
+  expandQueryVariants,
+  tokenJaccard,
+  DEFAULT_MEMORY_IMPORTANCE,
+  memoryImportance,
+  recencyImportanceScore,
+  rankByRecencyImportance,
+  RECENCY_IMPORTANCE_BOOST,
+  boostByRecencyImportance,
+  dedupeNearIdentical,
+  oneLineSummary,
+  buildPrunePlan,
 } from "../src/memory";
+import { SqliteMemoryProvider } from "../src/memory/sqlite_provider";
 import type {
   Embedder,
   Embedding,

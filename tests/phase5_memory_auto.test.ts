@@ -41,6 +41,18 @@ import {
   type PrefStore,
 } from "../src/memory/auto_extract";
 import {
+  FACT_EXTRACT_PREF_KEY,
+  candidatesToFactProposals,
+  extractFactCandidates,
+  factKeyFor,
+  findCorrectionTarget,
+  isFactExtractEnabled,
+  scanForFactCandidates,
+  scoreFactImportance,
+  setFactExtractEnabled,
+  type FactCandidate,
+} from "../src/memory/auto_extract";
+import {
   applyMemoryImport,
   buildMemoryPackage,
   importProposalsFromPlan,
@@ -227,8 +239,8 @@ describe("auto event extraction: sweep scan", () => {
     const pending = s.store.listPending(OWNER);
     expect(pending).toHaveLength(2);
     expect(pending.every((p) => p.kind === "event")).toBe(true);
-    expect(kindLabelFa("event")).toBe("رویداد");
-    expect(kindLabelFa("import")).toBe("ورودی");
+    expect(kindLabelFa("event")).toBe("Event");
+    expect(kindLabelFa("import")).toBe("Import");
 
     // Nothing was stored: the events land only via curator_decide.
     const events = await new EventStore(s.provider).list(OWNER);
@@ -642,5 +654,237 @@ describe("/memory command handlers", () => {
     expect(isMemoryImportCaption("/memory export")).toBe(false);
     expect(isMemoryImportCaption("/skill import")).toBe(false);
     expect(isMemoryImportCaption(undefined)).toBe(false);
+  });
+});
+
+
+describe("fact extraction: extractFactCandidates", () => {
+  test("extracts the user's name (Persian and English)", () => {
+    const [fa] = extractFactCandidates(["اسمم محمد است"]);
+    expect(fa?.kind).toBe("name");
+    expect(fa?.key).toBe("fact:name");
+    expect(fa?.importance).toBe(5);
+    expect(fa?.content).toContain("محمد");
+
+    const [en] = extractFactCandidates(["my name is Mohammad"]);
+    expect(en?.kind).toBe("name");
+    expect(en?.key).toBe("fact:name");
+  });
+
+  test("extracts preferences in several phrasings", () => {
+    const kinds = extractFactCandidates([
+      "دوست دارم قهوه بخورم",
+      "از چایی خوشم میاد",
+      "از قهوه خوشم می‌آید",
+      "ترجیح میدم شب کار کنم",
+      "متنفرم از شلوغی",
+    ]).map((c) => c.kind);
+    expect(kinds).toEqual([
+      "preference",
+      "preference",
+      "preference",
+      "preference",
+      "preference",
+    ]);
+    for (const c of extractFactCandidates(["دوست دارم قهوه"])) {
+      expect(c.importance).toBe(3);
+      expect(c.isCorrection).toBe(false);
+    }
+  });
+
+  test("extracts «یادم بنداز» commitments with importance 4", () => {
+    const [c] = extractFactCandidates(["یادم بنداز فردا به علی زنگ بزنم"]);
+    expect(c?.kind).toBe("commitment");
+    expect(c?.importance).toBe(4);
+    expect(c?.content).toContain("علی");
+
+    const [c2] = extractFactCandidates(["remind me to call Ali tomorrow"]);
+    expect(c2?.kind).toBe("commitment");
+  });
+
+  test("extracts decisions with importance 4", () => {
+    const [c] = extractFactCandidates(["تصمیم گرفتم هر روز ورزش کنم"]);
+    expect(c?.kind).toBe("decision");
+    expect(c?.importance).toBe(4);
+  });
+
+  test("a correction beats a preference in the same message", () => {
+    const [c] = extractFactCandidates([
+      "نه، اشتباه گفتی، من چایی دوست دارم نه قهوه",
+    ]);
+    expect(c?.kind).toBe("correction");
+    expect(c?.isCorrection).toBe(true);
+    expect(c?.importance).toBe(5);
+    expect(c?.content).not.toContain("اشتباه گفتی");
+  });
+
+  test("plain chatter yields no candidates", () => {
+    expect(extractFactCandidates(["سلام چطوری", "امروز هوا خوبه"])).toEqual([]);
+  });
+
+  test("duplicate topics collapse by key, last wins", () => {
+    const cs = extractFactCandidates(["اسمم محمد است", "اسمم علی است"]);
+    expect(cs).toHaveLength(1);
+    expect(cs[0]!.content).toContain("علی");
+  });
+});
+
+describe("fact extraction: scoring and keys", () => {
+  test("scoreFactImportance ranks name/correction highest", () => {
+    expect(scoreFactImportance("name")).toBe(5);
+    expect(scoreFactImportance("correction")).toBe(5);
+    expect(scoreFactImportance("commitment")).toBe(4);
+    expect(scoreFactImportance("decision")).toBe(4);
+    expect(scoreFactImportance("preference")).toBe(3);
+  });
+
+  test("factKeyFor is deterministic and stable per topic", () => {
+    expect(factKeyFor("name", "anything")).toBe("fact:name");
+    const a = factKeyFor("preference", "قهوه");
+    const b = factKeyFor("preference", "قهوه");
+    const c = factKeyFor("preference", "چایی");
+    expect(a).toBe(b);
+    expect(a).not.toBe(c);
+    // Normalization-insensitive: Arabic ي hashes like Persian ی.
+    expect(factKeyFor("preference", "علي")).toBe(factKeyFor("preference", "علی"));
+  });
+});
+
+describe("fact extraction: correction targeting", () => {
+  const corr = (content: string): FactCandidate => ({
+    kind: "correction",
+    key: factKeyFor("correction", content),
+    content,
+    importance: 5,
+    isCorrection: true,
+    source: content,
+  });
+
+  test("finds the target by deterministic key", () => {
+    const c = corr("من چایی دوست دارم");
+    const target = findCorrectionTarget(c, [
+      { key: c.key, content: "دوست دارم قهوه" },
+      { key: "other", content: "unrelated" },
+    ]);
+    expect(target?.key).toBe(c.key);
+  });
+
+  test("falls back to token overlap when the key is unknown", () => {
+    const c = corr("من چایی دوست دارم نه قهوه");
+    const target = findCorrectionTarget(c, [
+      { key: "fact:preference:xyz", content: "دوست دارم قهوه بخورم" },
+      { key: "other", content: "امروز هوا آفتابی است" },
+    ]);
+    expect(target?.key).toBe("fact:preference:xyz");
+  });
+
+  test("returns undefined when nothing looks related", () => {
+    const c = corr("تولدم پانزده مرداده");
+    expect(
+      findCorrectionTarget(c, [{ key: "x", content: "امروز هوا آفتابی است" }]),
+    ).toBeUndefined();
+  });
+
+  test("a correction proposal UPDATES the target instead of appending", () => {
+    const existing = [{ key: "fact:preference:xyz", content: "دوست دارم قهوه" }];
+    const [p] = candidatesToFactProposals(
+      [corr("دوست دارم چایی")].map((c) => ({ ...c, key: "fact:preference:xyz" })),
+      existing,
+    );
+    expect(p!.kind).toBe("fact");
+    expect(p!.suggestedAction).toMatchObject({
+      type: "update",
+      key: "fact:preference:xyz",
+      importance: 5,
+    });
+    expect(p!.summaryFa).toContain("به‌روزرسانی");
+  });
+
+  test("a new fact proposal ADDS with its importance attached", () => {
+    const [c] = extractFactCandidates(["اسمم محمد است"]);
+    const [p] = candidatesToFactProposals([c!], []);
+    expect(p!.kind).toBe("fact");
+    expect(p!.suggestedAction).toMatchObject({
+      type: "add",
+      key: "fact:name",
+      importance: 5,
+    });
+  });
+
+  test("proposal ids are deterministic", () => {
+    const [c] = extractFactCandidates(["اسمم محمد است"]);
+    const [p1] = candidatesToFactProposals([c!], []);
+    const [p2] = candidatesToFactProposals([c!], []);
+    expect(p1!.id).toBe(p2!.id);
+  });
+});
+
+describe("fact extraction: sweep scan", () => {
+  test("disabled by default", () => {
+    const s = setupSweep();
+    expect(isFactExtractEnabled(s.prefs, OWNER)).toBe(false);
+    expect(s.prefs.getUserPref(OWNER, FACT_EXTRACT_PREF_KEY)).toBeUndefined();
+  });
+
+  test("setFactExtractEnabled round-trips the pref", () => {
+    const s = setupSweep();
+    setFactExtractEnabled(s.prefs, OWNER, true);
+    expect(isFactExtractEnabled(s.prefs, OWNER)).toBe(true);
+    setFactExtractEnabled(s.prefs, OWNER, false);
+    expect(isFactExtractEnabled(s.prefs, OWNER)).toBe(false);
+  });
+
+  test("a disabled sweep touches nothing", async () => {
+    const s = setupSweep();
+    s.convs.add("c1", [{ role: "user", content: "اسمم محمد است", createdAt: 5000 }]);
+    const r = await scanForFactCandidates(scanDeps(s));
+    expect(r.enabled).toBe(false);
+    expect(r.messagesScanned).toBe(0);
+    expect(s.store.listPending(OWNER)).toHaveLength(0);
+  });
+
+  test("an enabled sweep files fact proposals but stores nothing", async () => {
+    const s = setupSweep();
+    setFactExtractEnabled(s.prefs, OWNER, true);
+    s.convs.add("c1", [
+      { role: "user", content: "اسمم محمد است", createdAt: 5000 },
+      { role: "user", content: "یادم بنداز فردا به علی زنگ بزنم", createdAt: 6000 },
+      { role: "assistant", content: "باشه", createdAt: 7000 },
+    ]);
+    const r = await scanForFactCandidates(scanDeps(s));
+    expect(r.enabled).toBe(true);
+    expect(r.messagesScanned).toBe(2); // assistant messages are not scanned
+    expect(r.candidatesFound).toBe(2);
+    expect(r.newProposals).toBe(2);
+    const pending = s.store.listPending(OWNER);
+    expect(pending).toHaveLength(2);
+    expect(pending.every((p) => p.kind === "fact")).toBe(true);
+    // Nothing written to memory — proposals need owner approval.
+    expect(s.provider.count(OWNER)).toBe(0);
+  });
+
+  test("a verbatim-stored fact is not proposed again", async () => {
+    const s = setupSweep();
+    setFactExtractEnabled(s.prefs, OWNER, true);
+    s.provider.seed("fact:name", "نام کاربر: محمد", 1000);
+    s.convs.add("c1", [{ role: "user", content: "اسمم محمد است", createdAt: 5000 }]);
+    const r = await scanForFactCandidates(scanDeps(s));
+    expect(r.candidatesFound).toBe(1);
+    expect(r.newProposals).toBe(0);
+  });
+
+  test("approving a fact proposal stores it with its importance", async () => {
+    const s = setupSweep();
+    setFactExtractEnabled(s.prefs, OWNER, true);
+    s.convs.add("c1", [{ role: "user", content: "اسمم محمد است", createdAt: 5000 }]);
+    await scanForFactCandidates(scanDeps(s));
+    const [p] = s.store.listPending(OWNER);
+    // The apply path threads importance through provider.upsert — the fake
+    // provider ignores opts, so assert the action carries it.
+    expect(p!.suggestedAction).toMatchObject({ type: "add", importance: 5 });
+    const res = await decide(s.svc, p!.id, "approve");
+    expect(res.status).toBe("ok");
+    expect(s.provider.get(OWNER, "fact:name")?.content).toContain("محمد");
+    expect(s.store.listPending(OWNER)).toHaveLength(0);
   });
 });
