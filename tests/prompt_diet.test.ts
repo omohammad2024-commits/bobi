@@ -273,6 +273,33 @@ describe("prompt diet", () => {
     expect(prompt).toContain("5 item(s)");
   });
 
+  test("tool internals stay internal: no doc-voice capability answers", () => {
+    const prompt = buildSystemPrompt(baseCtx([]));
+    // Tool names/descriptions are internal — never recited like documentation
+    // (the download_media incident: the bot paraphrased the tool description
+    // and showed the raw id when asked if it could download).
+    expect(prompt).toContain("Tool names/descriptions are internal");
+    expect(prompt).toContain("never quote, paraphrase, or list them");
+    // Raw tool ids are never shown to the user.
+    expect(prompt).toContain("never show a raw tool name");
+    // Capability questions get one short line in Bobi's own voice, asking
+    // for what it needs; specifics only on explicit request.
+    expect(prompt).toContain("one short line, own voice");
+    expect(prompt).toContain("ask for what you need");
+    expect(prompt).toContain("details only if asked");
+  });
+
+  test("internal-tools rule survives a personality skin", () => {
+    const prompt = buildSystemPrompt({
+      ...baseCtx([]),
+      personality: "Be extra cheerful.",
+    });
+    const skinIdx = prompt.indexOf("Be extra cheerful.");
+    const ruleIdx = prompt.indexOf("never show a raw tool name");
+    expect(skinIdx).toBeGreaterThan(-1);
+    expect(ruleIdx).toBeGreaterThan(skinIdx);
+  });
+
   test("prompt text is English-only (synthetic descriptors)", () => {
     // NOTE: the production `skills` tool ships a Persian description
     // (src/skills/tool.ts) — pre-existing, owned by another file. The prompt

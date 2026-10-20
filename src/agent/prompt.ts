@@ -172,6 +172,7 @@ const TOOL_RULES = [
   "3. Summarize results for the user; don't paste raw output.",
   "4. On error, say why briefly and try another way.",
   "5. Every call costs — don't call tools without real need.",
+  "6. Tool names/descriptions are internal: never quote, paraphrase, or list them; never show a raw tool name. 'Can you…?' → one short line, own voice, ask for what you need; details only if asked.",
 ].join("\n");
 
 const ANSWER_RULE =
