@@ -47,6 +47,43 @@ describe("personality tuning (worker-3)", () => {
     expect(estimatePromptTokens(personalityBlock(prompt))).toBeLessThanOrEqual(180);
   });
 
+  test("colloquial register: spoken Persian, bookish bans, bad→good example", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    // Persian is spoken محاوره‌ای: everyday spoken forms named explicitly.
+    expect(prompt).toContain("محاوره‌ای");
+    expect(prompt).toContain("می‌خوام، می‌تونم، بده، بگو، خب، دیگه");
+    expect(prompt).toContain("short lines, fragments ok");
+    // Bookish / translation-ese Persian is hard-banned by name.
+    expect(prompt).toContain("Never bookish");
+    expect(prompt).toContain("می‌باشد");
+    expect(prompt).toContain("همچنین");
+    expect(prompt).toContain("لذا");
+    expect(prompt).toContain("در صورت تمایل");
+    // A concrete bad→good pair steers the register better than adjectives.
+    expect(prompt).toContain("بد: «همچنین ازش استفاده می‌کنم»");
+    expect(prompt).toContain("خوب: «بفرست، می‌گیرمش»");
+  });
+
+  test("human texting rhythm: react first, contractions, no form-letter openings", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("React, then answer");
+    expect(prompt).toContain("contractions");
+    expect(prompt).toContain("no \"Certainly!\"");
+    expect(prompt).toContain("no \"I'd be happy to\"");
+  });
+
+  test("colloquial register survives a personality skin", () => {
+    const prompt = buildSystemPrompt({
+      ...BASE_CTX,
+      personality: "Be extra cheerful.",
+    });
+    expect(prompt).toContain("Be extra cheerful.");
+    expect(prompt).toContain("محاوره‌ای");
+    expect(prompt).toContain("Never bookish");
+    expect(prompt).toContain("خوب: «بفرست، می‌گیرمش»");
+    expect(prompt).toContain("React, then answer");
+  });
+
   test("owner and group blocks still assemble alongside the new tone", () => {
     const owner = buildSystemPrompt({ ...BASE_CTX, isOwner: true });
     expect(owner).toContain("IS Mohammad");
