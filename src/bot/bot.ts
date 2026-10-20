@@ -81,7 +81,8 @@ import {
 } from "./menu";
 import type { Storage } from "../storage/storage";
 import type { RegisterOpts } from "./cmd_system";
-import { extractMedia, hasMedia, describeMediaPart, MAX_MEDIA_PER_REPLY } from "./media";
+import { extractMedia, hasMedia, deliverToolMedia } from "./media";
+import { cleanupDownloadForPart } from "../tools/downloader";
 import { createModerator } from "../moderation/index";
 import type { RateLimiter } from "../core/rate_limit";
 import type { UsageService } from "../core/usage";
@@ -1731,15 +1732,22 @@ async function runTurnInner(
           : {}),
       });
     }
-    // Media a tool produced for the user (a generated image, say) follows the
-    // text. It never entered the prompt or history — this is its only trip.
-    for (const part of out.media.slice(0, MAX_MEDIA_PER_REPLY)) {
-      const m = describeMediaPart(part);
-      if (m === undefined) continue;
-      if (m.kind === "photo") await ctx.replyWithPhoto(m.file);
-      else if (m.kind === "voice") await ctx.replyWithVoice(m.file);
-      else await ctx.replyWithDocument(m.file);
-    }
+    // Media a tool produced for the user (a generated image, a downloaded
+    // video, say) follows the text. It never entered the prompt or history —
+    // this is its only trip. Every part is settled afterwards: a part that
+    // stands behind a temp file (a download) has that file deleted whether
+    // its send succeeded or failed, so downloads never leak on disk.
+    await deliverToolMedia(
+      out.media,
+      {
+        photo: (file) => ctx.replyWithPhoto(file),
+        voice: (file) => ctx.replyWithVoice(file),
+        video: (file) => ctx.replyWithVideo(file),
+        audio: (file) => ctx.replyWithAudio(file),
+        document: (file) => ctx.replyWithDocument(file),
+      },
+      cleanupDownloadForPart,
+    );
     // A run that hit a budget got a best-effort answer; saying so is more
     // honest than presenting it as complete.
     if (out.truncated) {

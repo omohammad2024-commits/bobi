@@ -3,9 +3,15 @@
  *
  * Platforms are detected lexically (see `detectPlatform`); platform links go
  * through yt-dlp (which handles YouTube, Instagram, TikTok and X/Twitter
- * natively), and direct file links are streamed with `fetch`. The tool's job
- * ends at a file on disk: the bot layer sends it to Telegram and then calls
- * `cleanupDownload` — the file path is the contract between the two.
+ * natively), and direct file links are streamed with `fetch`.
+ *
+ * Delivery contract (Phase 0 of the platform redesign — previously the file
+ * was never delivered at all): the downloaded bytes ride out-of-band via
+ * the tool's `extractMedia`, exactly like `generate_image`/`generate_video`,
+ * so the model-facing `data` never carries a server path. The delivering
+ * surface (bot layer) sends the part and then settles it with
+ * `cleanupDownloadForPart`, which deletes the on-disk file — on success AND
+ * on failure, so a temp download can never leak.
  *
  * Security notes:
  * - The URL comes from the MODEL, so it is untrusted input. Direct downloads
@@ -24,8 +30,9 @@
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { AiError } from "../ai/provider";
+import type { ContentPart } from "../ai/provider";
 import { resolveTarget } from "../ai/dns_guard";
 import { ToolError } from "./errors";
 import { defineManifest } from "./manifest";
@@ -593,12 +600,86 @@ export interface DownloadMediaInput {
 export interface DownloadMediaOutput {
   url: string;
   platform: Platform;
-  /** Absolute path of the downloaded file; pass to cleanupDownload when done. */
-  filePath: string;
   title?: string;
   ext: string;
   sizeBytes: number;
   audioOnly: boolean;
+  /** The file itself is delivered to the user as an attachment (see extractMedia). */
+  deliveredAs: "attachment";
+}
+
+/**
+ * Downloaded bytes, keyed by the data object `run()` returned.
+ *
+ * Same proven pattern as `generate_image`/`generate_video`: `extractMedia`
+ * receives only the data object, and the data contract forbids embedding
+ * base64 (or a server path), so the bytes are stashed here by identity.
+ * The Executor passes the exact object `run()` returned, so the lookup
+ * cannot miss; a WeakMap keeps entries from outliving their run.
+ */
+const downloadBytes = new WeakMap<
+  object,
+  { base64: string; mediaType: string; name: string }
+>();
+
+/** Which on-disk file a successful run produced, keyed by its data object. */
+const downloadDataFiles = new WeakMap<object, string>();
+
+/**
+ * Which on-disk file stands behind a media part `extractMedia` produced.
+ *
+ * The delivering surface settles every part it was handed with
+ * `cleanupDownloadForPart`; parts from other tools simply miss the lookup.
+ * WeakMap-keyed by the part object itself: the Executor and the agent loop
+ * pass the exact part objects through, so identity holds end to end.
+ */
+const downloadPartFiles = new WeakMap<ContentPart, string>();
+
+/**
+ * Settle one delivered media part: if it came from a download, delete the
+ * temp file behind it. Surfaces call this after EVERY send attempt —
+ * success or failure — so a downloaded file never leaks on disk. A no-op
+ * for parts produced by other tools. Never throws.
+ */
+export async function cleanupDownloadForPart(part: ContentPart): Promise<void> {
+  const filePath = downloadPartFiles.get(part);
+  if (filePath === undefined) return;
+  downloadPartFiles.delete(part);
+  await cleanupDownload(filePath);
+}
+
+/** MIME type for a downloaded extension — drives the surface's send kind. */
+function mediaTypeForExt(ext: string, audioOnly: boolean): string {
+  if (audioOnly) return "audio/mpeg";
+  switch (ext.toLowerCase()) {
+    case "mp4":
+      return "video/mp4";
+    case "webm":
+      return "video/webm";
+    case "mkv":
+      return "video/x-matroska";
+    case "mov":
+      return "video/quicktime";
+    case "avi":
+      return "video/x-msvideo";
+    case "3gp":
+      return "video/3gpp";
+    case "mp3":
+      return "audio/mpeg";
+    case "m4a":
+      return "audio/mp4";
+    case "ogg":
+    case "oga":
+      return "audio/ogg";
+    case "opus":
+      return "audio/opus";
+    case "wav":
+      return "audio/wav";
+    case "flac":
+      return "audio/flac";
+    default:
+      return "application/octet-stream";
+  }
 }
 
 function mapErrorKind(kind: DownloadErrorKind): "not_found" | "not_allowed" | "invalid_result" | "invalid_input" | "internal" {
@@ -636,8 +717,8 @@ export const downloadMediaManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Media Downloader",
   description:
-    "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct media file URL. Returns a local file path for the bot layer to send.",
-  outputSummary: "Local file path, platform, title and size of the downloaded media.",
+    "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct media file URL. The file is sent to the user as an attachment.",
+  outputSummary: "The downloaded file itself (delivered as an attachment), with platform, title and size.",
   category: "media",
   triggers: {
     urlPatterns: [
@@ -658,62 +739,119 @@ export const downloadMediaManifest: ToolManifest = defineManifest({
   costTier: "heavy",
 });
 
-export const downloadTool: Tool<DownloadMediaInput, DownloadMediaOutput> = {
-  name: "download_media",
-  manifest: downloadMediaManifest,
-  description:
-    "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct file URL. Returns a file path; the bot layer sends the file and deletes it afterwards.",
-  enabled: true,
-  permission: { requires: [DOWNLOAD_MEDIA_PERMISSION] },
-  toolset: "media",
-  // A download can legitimately take minutes on a slow host.
-  timeoutMs: 600_000,
-  input: {
-    fields: {
-      url: {
-        type: "string",
-        required: true,
-        description: "Full media URL, with http or https.",
-        minLength: 10,
-        maxLength: 2_048,
-      },
-      audio_only: {
-        type: "boolean",
-        description: "When true, extract audio as MP3 instead of the video.",
-      },
-      max_size_mb: {
-        type: "integer",
-        description: "Size ceiling in MB. Defaults to 50 (the Telegram Bot API limit).",
-        minimum: 1,
-        maximum: 200,
+/** Dependencies a download tool instance may override (tests inject a fake spawn). */
+export interface DownloadToolDeps {
+  /** Subprocess runner forwarded to `downloadMedia`. Defaults to Bun.spawn. */
+  spawn?: SpawnFn;
+}
+
+export function createDownloadTool(
+  deps: DownloadToolDeps = {},
+): Tool<DownloadMediaInput, DownloadMediaOutput> {
+  return {
+    name: "download_media",
+    manifest: downloadMediaManifest,
+    description:
+      "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct file URL. The downloaded file is sent to the user as an attachment.",
+    enabled: true,
+    permission: { requires: [DOWNLOAD_MEDIA_PERMISSION] },
+    toolset: "media",
+    // A download can legitimately take minutes on a slow host.
+    timeoutMs: 600_000,
+    input: {
+      fields: {
+        url: {
+          type: "string",
+          required: true,
+          description: "Full media URL, with http or https.",
+          minLength: 10,
+          maxLength: 2_048,
+        },
+        audio_only: {
+          type: "boolean",
+          description: "When true, extract audio as MP3 instead of the video.",
+        },
+        max_size_mb: {
+          type: "integer",
+          description: "Size ceiling in MB. Defaults to 50 (the Telegram Bot API limit).",
+          minimum: 1,
+          maximum: 200,
+        },
       },
     },
-  },
 
-  async run(input: DownloadMediaInput, ctx: ToolContext): Promise<DownloadMediaOutput> {
-    const url = input.url.trim();
-    if (url.length === 0) throw new ToolError("invalid_input", "No URL was provided.");
+    extractMedia(data: DownloadMediaOutput) {
+      const media = downloadBytes.get(data);
+      if (media === undefined) return undefined;
+      const part: ContentPart = {
+        type: "document",
+        mediaType: media.mediaType,
+        base64: media.base64,
+        name: media.name,
+      };
+      // Remember which temp file stands behind this part, so the surface
+      // that delivers it can delete the file once the send settles
+      // (cleanupDownloadForPart). The file path lives ONLY in this map —
+      // never in `data`, never in the part the model could see.
+      const filePath = downloadDataFiles.get(data);
+      if (filePath !== undefined) downloadPartFiles.set(part, filePath);
+      return [part];
+    },
 
-    const result = await downloadMedia(url, {
-      audioOnly: input.audio_only === true,
-      ...(input.max_size_mb !== undefined ? { maxSizeMB: input.max_size_mb } : {}),
-      signal: ctx.signal,
-    });
+    async run(input: DownloadMediaInput, ctx: ToolContext): Promise<DownloadMediaOutput> {
+      const url = input.url.trim();
+      if (url.length === 0) throw new ToolError("invalid_input", "No URL was provided.");
 
-    if (!result.ok) {
-      throw new ToolError(mapErrorKind(result.errorKind), result.error, {
-        errorKind: result.errorKind,
+      const result = await downloadMedia(url, {
+        audioOnly: input.audio_only === true,
+        ...(input.max_size_mb !== undefined ? { maxSizeMB: input.max_size_mb } : {}),
+        signal: ctx.signal,
+        ...(deps.spawn !== undefined ? { spawn: deps.spawn } : {}),
       });
-    }
 
-    return {
-      url,
-      platform: result.platform,
-      filePath: result.filePath,
-      ...(result.title !== undefined ? { title: result.title } : {}),
-      ext: result.ext,
-      sizeBytes: result.sizeBytes,
-      audioOnly: input.audio_only === true,
-    };
-  },
-};
+      if (!result.ok) {
+        throw new ToolError(mapErrorKind(result.errorKind), result.error, {
+          errorKind: result.errorKind,
+        });
+      }
+
+      // Read the bytes back NOW, while the run still owns the file: they
+      // ride out-of-band via extractMedia (the model's `data` stays free of
+      // paths and blobs), and the surface deletes the file after delivery.
+      let bytes: Buffer;
+      try {
+        bytes = await readFile(result.filePath);
+      } catch {
+        await cleanupDownload(result.filePath);
+        throw new ToolError(
+          "internal",
+          "The download finished, but the file couldn't be read back.",
+        );
+      }
+
+      const data: DownloadMediaOutput = {
+        url,
+        platform: result.platform,
+        ...(result.title !== undefined ? { title: result.title } : {}),
+        ext: result.ext,
+        sizeBytes: result.sizeBytes,
+        audioOnly: input.audio_only === true,
+        deliveredAs: "attachment",
+      };
+      downloadBytes.set(data, {
+        base64: bytes.toString("base64"),
+        mediaType: mediaTypeForExt(result.ext, input.audio_only === true),
+        name:
+          result.title !== undefined && result.title.length > 0
+            ? sanitizeFilename(result.title, result.ext)
+            : basename(result.filePath),
+      });
+      downloadDataFiles.set(data, result.filePath);
+      return data;
+    },
+  };
+}
+
+/** The production download tool (real yt-dlp subprocess). */
+export const downloadTool: Tool<DownloadMediaInput, DownloadMediaOutput> =
+  createDownloadTool();

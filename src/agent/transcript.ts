@@ -80,12 +80,20 @@ export function serialiseToolResult(result: {
   status: ToolRunStatus;
   data?: unknown;
   message?: string;
+  reason?: string;
 }): string {
   if (result.status === "ok") {
     return jsonForModel(result.data);
   }
   const detail = result.message !== undefined ? `: ${result.message}` : "";
-  return `status=${result.status}${detail}`;
+  // The tool's own user-safe reason, when the Executor captured one: the
+  // model relays THIS to the user, so a failure is explained truthfully
+  // ("the link is private") instead of guessed from a bare status word.
+  const reason =
+    result.reason !== undefined && result.reason !== result.message
+      ? ` Reason: ${result.reason}`
+      : "";
+  return `status=${result.status}${detail}${reason}`;
 }
 
 /** JSON with a hard cap, so one huge result cannot consume the whole window. */

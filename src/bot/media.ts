@@ -252,7 +252,7 @@ export function hasMedia(message: NonNullable<Context["message"]>): boolean {
 /** Max tool-produced media items delivered per reply, on every path. */
 export const MAX_MEDIA_PER_REPLY = 4;
 
-export type MediaSendKind = "photo" | "voice" | "document";
+export type MediaSendKind = "photo" | "voice" | "video" | "audio" | "document";
 
 /** File extension derived from a media type, sanitised — never raw input. */
 function extFor(mediaType: string, fallback: string): string {
@@ -263,6 +263,12 @@ function extFor(mediaType: string, fallback: string): string {
 /**
  * Describe how to send one tool-produced part. Returns undefined for text
  * parts (there is nothing to send — the text is already the reply).
+ *
+ * A document part is routed by its media type: video plays inline as a
+ * video, audio arrives as an audio file, everything else stays a document.
+ * (Audio PARTS are synthesized speech and stay voice notes; a downloaded
+ * song is a document part with an audio type and must NOT become a voice
+ * note — Telegram voice requires ogg/opus.)
  */
 export function describeMediaPart(
   part: ContentPart,
@@ -275,8 +281,67 @@ export function describeMediaPart(
   if (part.type === "audio") {
     return { kind: "voice", file: new InputFile(bytes, `bobi.${extFor(part.mediaType, "ogg")}`) };
   }
-  return {
-    kind: "document",
-    file: new InputFile(bytes, part.name ?? `bobi.${extFor(part.mediaType, "bin")}`),
-  };
+  const name = part.name ?? `bobi.${extFor(part.mediaType, "bin")}`;
+  if (part.mediaType.startsWith("video/")) {
+    return { kind: "video", file: new InputFile(bytes, name) };
+  }
+  if (part.mediaType.startsWith("audio/")) {
+    return { kind: "audio", file: new InputFile(bytes, name) };
+  }
+  return { kind: "document", file: new InputFile(bytes, name) };
+}
+
+/** The send operations a surface provides for tool-produced media. */
+export interface MediaSenders {
+  photo(file: InputFile): Promise<unknown>;
+  voice(file: InputFile): Promise<unknown>;
+  video(file: InputFile): Promise<unknown>;
+  audio(file: InputFile): Promise<unknown>;
+  document(file: InputFile): Promise<unknown>;
+}
+
+/**
+ * Deliver the media parts a run produced, on any surface (bot handler,
+ * scheduled runs, …) — the delivery obligation of the media contract.
+ *
+ * At most MAX_MEDIA_PER_REPLY parts are sent, but EVERY part is settled via
+ * `onSettled` exactly once — after its send attempt, whether the send
+ * succeeded, failed, or the part was past the cap. A producer whose media
+ * carries a resource behind it (a downloaded temp file) hooks its cleanup
+ * there, so the resource is released on every path and can never leak just
+ * because a send failed or a reply was crowded. A failed send does not stop
+ * the remaining parts; the first send error is rethrown once every part has
+ * been attempted and settled, preserving the caller's failure handling.
+ */
+export async function deliverToolMedia(
+  parts: readonly ContentPart[],
+  senders: MediaSenders,
+  onSettled?: (part: ContentPart) => Promise<void>,
+): Promise<void> {
+  let firstError: unknown;
+  for (const [i, part] of parts.entries()) {
+    try {
+      if (i < MAX_MEDIA_PER_REPLY) {
+        const m = describeMediaPart(part);
+        if (m !== undefined) {
+          if (m.kind === "photo") await senders.photo(m.file);
+          else if (m.kind === "voice") await senders.voice(m.file);
+          else if (m.kind === "video") await senders.video(m.file);
+          else if (m.kind === "audio") await senders.audio(m.file);
+          else await senders.document(m.file);
+        }
+      }
+    } catch (err) {
+      firstError ??= err;
+    } finally {
+      if (onSettled !== undefined) {
+        try {
+          await onSettled(part);
+        } catch {
+          // Settlement is cleanup: it must never mask the delivery outcome.
+        }
+      }
+    }
+  }
+  if (firstError !== undefined) throw firstError;
 }

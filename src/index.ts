@@ -6,7 +6,7 @@ import { publicMenuCommands, ownerMenuCommands, miniAppUrl } from "./bot/menu";
 import { resolvePersonalityName } from "./personality/personalities";
 import { resolveLang } from "./i18n";
 import type { Lang } from "./i18n/types";
-import { describeMediaPart, MAX_MEDIA_PER_REPLY } from "./bot/media";
+import { deliverToolMedia } from "./bot/media";
 import { blockquoteToEntities } from "./bot/expandable_quote";
 import type { MessageEntity } from "@grammyjs/types";
 import type { Bot, Context } from "grammy";
@@ -65,7 +65,7 @@ import { createScheduledTaskTools } from "./tools/scheduled_tasks";
 import { createUsageReportTool } from "./tools/usage_report";
 import { createDigestTool } from "./tools/digest_tool";
 import { createCommandsTool } from "./tools/commands";
-import { downloadTool } from "./tools/downloader";
+import { cleanupDownloadForPart, downloadTool } from "./tools/downloader";
 import { createShortcutTools } from "./tools/shortcuts";
 import type { SearchHeadlinesFn } from "./digest/builder";
 import { createCuratorTools } from "./curator/tools";
@@ -1489,14 +1489,21 @@ async function main(): Promise<void> {
         for (const chunk of out.chunks) {
           await sendAgentChunk((c, t, extra) => bot.api.sendMessage(c, t, extra), chatId, chunk);
         }
-        // Tool-produced media follows the text on scheduled runs too.
-        for (const part of out.media.slice(0, MAX_MEDIA_PER_REPLY)) {
-          const m = describeMediaPart(part);
-          if (m === undefined) continue;
-          if (m.kind === "photo") await bot.api.sendPhoto(chatId, m.file);
-          else if (m.kind === "voice") await bot.api.sendVoice(chatId, m.file);
-          else await bot.api.sendDocument(chatId, m.file);
-        }
+        // Tool-produced media follows the text on scheduled runs too, with
+        // the same delivery contract as the bot handler: every part is
+        // settled afterwards, so a downloaded temp file is deleted whether
+        // its send succeeded or failed — no disk leak on this path either.
+        await deliverToolMedia(
+          out.media,
+          {
+            photo: (file) => bot.api.sendPhoto(chatId, file),
+            voice: (file) => bot.api.sendVoice(chatId, file),
+            video: (file) => bot.api.sendVideo(chatId, file),
+            audio: (file) => bot.api.sendAudio(chatId, file),
+            document: (file) => bot.api.sendDocument(chatId, file),
+          },
+          cleanupDownloadForPart,
+        );
         return true;
       } catch (err) {
         log.error("scheduled agent run failed", { error: errToLog(err) });
