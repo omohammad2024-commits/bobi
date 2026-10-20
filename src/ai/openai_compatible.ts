@@ -139,7 +139,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     }
     if (stream.status < 200 || stream.status >= 300) {
       await stream.chunks.return(undefined);
-      throw statusToError(stream.status);
+      throw statusToError(stream.status, stream.headers);
     }
 
     const parser = new SseParser();
@@ -941,7 +941,7 @@ async function fetchJson(
     throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
-    throw statusToError(res.status);
+    throw statusToError(res.status, res.headers);
   }
 
   return readJson(res.body);

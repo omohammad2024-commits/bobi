@@ -23,7 +23,12 @@ import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import type { IncomingMessage } from "node:http";
 import { AiError } from "./provider";
-import { classifyAddress, dnsCacheTtlMs } from "./dns_guard";
+import { classifyAddress } from "./dns_guard";
+import { connectionManager, pinnedLookup } from "./connection_manager";
+
+// The pinned lookups live in the connection manager (they are connection
+// establishment); re-exported here so existing imports keep working.
+export { pinnedLookup, pinnedLookupAll } from "./connection_manager";
 
 export interface PinnedRequest {
   /** Full request URL. Its hostname must be the validated one. */
@@ -77,217 +82,21 @@ export interface PinnedResponse {
 export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 /**
- * Keep-alive connection reuse.
- *
- * Every provider request used to pay a fresh TCP + TLS handshake. For a
- * chat bot making several calls per turn to the same provider, that is a
- * needless slice of "ping". A small cache maps host → Agent created with
+ * Keep-alive connection reuse is owned by the connection manager
+ * (connection_manager.ts): it holds the host → Agent cache created with
  * keepAlive and the SAME pinned lookup, so a reused socket still only ever
- * connects to addresses dns_guard validated — keep-alive narrows the
- * rebinding window rather than widening it (an established socket talks to
- * the validated IP, full stop).
- *
- * The agent's lifetime ties to the DNS cache TTL: once the TTL passes (or
- * the validated address set changes), the agent is destroyed and a fresh
- * one is built against fresh addresses, so a provider that rotates IPs is
- * never pinned forever. BOBI_KEEPALIVE=0 disables reuse entirely (the
- * caller passes `agent: false`, which under Bun is the only way to get a
- * fresh connection per request — Bun's global agent pools by default).
+ * connects to addresses dns_guard validated. These two helpers keep the
+ * transport's historical test surface working.
  */
-interface KeepAliveAgentEntry {
-  agent: HttpAgent | HttpsAgent;
-  createdAt: number;
-  addressesKey: string;
-}
-
-const keepAliveAgents = new Map<string, KeepAliveAgentEntry>();
-
-/** Cap so a long-lived process cannot accumulate agents forever. */
-const KEEPALIVE_AGENT_MAX_ENTRIES = 32;
-
-function keepAliveEnabled(): boolean {
-  return process.env.BOBI_KEEPALIVE !== "0";
-}
 
 /** Test-only: destroy and drop every cached agent. */
 export function resetKeepAliveAgents(): void {
-  for (const entry of keepAliveAgents.values()) entry.agent.destroy();
-  keepAliveAgents.clear();
+  connectionManager.reset();
 }
 
 /** Test-only: how many agents are currently cached. */
 export function keepAliveAgentCount(): number {
-  return keepAliveAgents.size;
-}
-
-/**
- * The keep-alive agent for this target, or undefined when disabled.
- *
- * Returns an existing agent only while it is inside the DNS-cache TTL and
- * its address set still matches the addresses THIS request was validated
- * for; any expiry or rotation destroys it and builds a new one.
- */
-function keepAliveAgentFor(
-  url: URL,
-  addresses: readonly string[],
-  secure: boolean,
-  allowLocalTargets: boolean,
-): (HttpAgent | HttpsAgent) | undefined {
-  if (!keepAliveEnabled()) return undefined;
-  const port = url.port ? Number(url.port) : secure ? 443 : 80;
-  const key = `${secure ? "https" : "http"}://${url.hostname}:${port}|${allowLocalTargets ? "local" : "public"}`;
-  const ttl = dnsCacheTtlMs();
-  // When the DNS cache is disabled ("resolve every request"), revalidating
-  // addresses per request still happens in dns_guard; a pooled socket stays
-  // pinned to a validated address, so a short lifetime is kept rather than
-  // disabling reuse outright.
-  const agentTtl = ttl > 0 ? ttl : 30_000;
-  const addressesKey = [...addresses].sort().join(",");
-  const now = Date.now();
-
-  const hit = keepAliveAgents.get(key);
-  if (
-    hit !== undefined &&
-    hit.addressesKey === addressesKey &&
-    now - hit.createdAt < agentTtl
-  ) {
-    return hit.agent;
-  }
-  if (hit !== undefined) {
-    hit.agent.destroy();
-    keepAliveAgents.delete(key);
-  }
-  if (keepAliveAgents.size >= KEEPALIVE_AGENT_MAX_ENTRIES) {
-    const oldest = keepAliveAgents.keys().next().value;
-    if (oldest !== undefined) {
-      keepAliveAgents.get(oldest)?.agent.destroy();
-      keepAliveAgents.delete(oldest);
-    }
-  }
-
-  const lookup = pinnedLookupAll(addresses);
-  const agent = secure
-    ? new HttpsAgent({ keepAlive: true, maxSockets: 4, lookup })
-    : new HttpAgent({ keepAlive: true, maxSockets: 4, lookup });
-  keepAliveAgents.set(key, { agent, createdAt: now, addressesKey });
-  return agent;
-}
-
-/**
- * The `lookup` handed to `node:http`/`node:https`.
- *
- * Verified call shape on this runtime: `(hostname, options, callback)` with
- * `options.all === true`. The Node-compat surface also accepts the older
- * `(options, callback)` form, so both are handled. Either way the answer is
- * ONLY the validated addresses — the system resolver is never consulted for
- * this connection, which is what closes the rebinding race.
- */
-export function pinnedLookup(addresses: readonly string[]): (...args: unknown[]) => void {
-  const familyOf = (address: string): number => (address.includes(":") ? 6 : 4);
-  const isV6 = (address: string): boolean => address.includes(":");
-
-  return (...args: unknown[]): void => {
-    const cb = args[args.length - 1];
-    if (typeof cb !== "function") {
-      // A signature this code does not understand must not fall back to a
-      // system lookup; failing here is the fail-closed behaviour. The throw
-      // propagates to the promise executor, so it becomes a rejection.
-      throw new Error("unsupported lookup callback shape");
-    }
-
-    const options = args.find(
-      (a): a is { all?: boolean; family?: number } => typeof a === "object" && a !== null,
-    );
-    const wantsAll = options?.all === true;
-    // Observed on this runtime: `{family: 6, hints: 0}` with no `all` flag, in
-    // which case the scalar (err, address, family) form is expected.
-    const family = typeof options?.family === "number" ? options.family : 0;
-
-    const eligible = addresses.filter((address) => {
-      if (family === 4) return !isV6(address);
-      if (family === 6) return isV6(address);
-      return true;
-    });
-
-    if (eligible.length === 0) {
-      // The caller asked for a family this resolution did not provide. Node's
-      // own resolver reports an error here, and returning an address of the
-      // wrong family would silently violate the request.
-      (cb as Function)(new Error("no pinned address for requested family"));
-      return;
-    }
-
-    if (wantsAll) {
-      (cb as Function)(
-        null,
-        eligible.map((address) => ({ address, family: familyOf(address) })),
-      );
-      return;
-    }
-    const first = eligible[0]!;
-    (cb as Function)(null, first, familyOf(first));
-  };
-}
-
-/**
- * The pinned lookup, preferring the `all` form.
- *
- * This exists because of a REAL failure observed in production: a DNS answer set
- * routinely contains addresses that accept a TCP connection and then never
- * respond — Google's `generativelanguage.googleapis.com` resolved to eight A
- * records, the first of which black-holed every request while the second
- * answered fine. Handing Node a SINGLE address made the request die on a
- * timeout, even though working addresses were in the same answer set.
- *
- * Node's `net.connect` treats a list from the `all` form as a fallback chain:
- * it advances to the next address when a connection attempt fails. That is
- * exactly the behaviour needed here, and it does NOT widen the security
- * boundary — every address in the list was resolved and classified by
- * `dns_guard`, so the socket still cannot reach anything that was not approved.
- *
- * The single-address form remains as the fallback for a runtime that calls the
- * lookup without `all`, since dropping it would break those runtimes.
- */
-export function pinnedLookupAll(addresses: readonly string[]): (...args: unknown[]) => void {
-  const scalar = pinnedLookup(addresses);
-
-  return (...args: unknown[]): void => {
-    const options = args.find(
-      (a): a is { all?: boolean; family?: number } => typeof a === "object" && a !== null,
-    );
-    // Only the `all` shape is handled here; anything else defers to the scalar
-    // implementation so both call conventions keep working.
-    if (options?.all !== true) {
-      scalar(...args);
-      return;
-    }
-
-    const cb = args[args.length - 1];
-    if (typeof cb !== "function") {
-      throw new Error("unsupported lookup callback shape");
-    }
-
-    const family = typeof options.family === "number" ? options.family : 0;
-    const eligible = addresses.filter((address) => {
-      const isV6 = address.includes(":");
-      if (family === 4) return !isV6;
-      if (family === 6) return isV6;
-      return true;
-    });
-
-    if (eligible.length === 0) {
-      (cb as Function)(new Error("no pinned address for requested family"));
-      return;
-    }
-
-    (cb as Function)(
-      null,
-      eligible.map((address) => ({
-        address,
-        family: address.includes(":") ? 6 : 4,
-      })),
-    );
-  };
+  return connectionManager.agentCount();
 }
 
 /**
@@ -421,7 +230,23 @@ async function attemptStreamAddresses(req: PinnedRequest, url: URL): Promise<Str
     );
 
     try {
-      return await streamOneAddress(req, url, address, Math.min(headerShare, remaining), deadlineTs);
+      // Connect + header-wait latency goes to the connection manager, like
+      // the buffered path — a stream's time-to-first-byte is the latency
+      // the user feels.
+      const startedAt = Date.now();
+      try {
+        const res = await streamOneAddress(req, url, address, Math.min(headerShare, remaining), deadlineTs);
+        connectionManager.noteOutcome(url, req.allowLocalTargets === true, {
+          latencyMs: Date.now() - startedAt,
+        });
+        return res;
+      } catch (err) {
+        connectionManager.noteOutcome(url, req.allowLocalTargets === true, {
+          latencyMs: Date.now() - startedAt,
+          errorKind: err instanceof AiError ? err.kind : "unknown",
+        });
+        throw err;
+      }
     } catch (err) {
       const mapped = err instanceof AiError ? err : new AiError("network", "Could not reach the service.");
       if (mapped.kind === "aborted") throw mapped;
@@ -533,6 +358,13 @@ function streamOneAddress(
       }
     }
 
+    // Streams pool through the same manager as buffered requests: without
+    // an agent every streamed reply paid a fresh handshake. The per-request
+    // pinned `lookup` below still wins per connection, so pooling never
+    // widens the validated address set. When pooling is off the option is
+    // omitted entirely — the pre-pooling stream behaviour, byte for byte.
+    const pooled = connectionManager.agentFor(url, [address], secure, req.allowLocalTargets === true);
+
     try {
       outgoing = requestFn({
         hostname: url.hostname,
@@ -541,6 +373,7 @@ function streamOneAddress(
         method: req.method,
         headers: req.headers,
         lookup: pinnedLookup([address]),
+        ...(pooled !== undefined ? { agent: pooled } : {}),
         servername: secure ? url.hostname : undefined,
       } as never);
     } catch (err) {
@@ -646,7 +479,23 @@ async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedRes
     );
 
     try {
-      return await attemptOne(req, url, [address], Math.min(share, remaining));
+      // One attempt per address: the transport records each attempt's
+      // latency/outcome with the connection manager (for warm/cold stats),
+      // keyed by host.
+      const startedAt = Date.now();
+      try {
+        const res = await attemptOne(req, url, [address], Math.min(share, remaining));
+        connectionManager.noteOutcome(url, req.allowLocalTargets === true, {
+          latencyMs: Date.now() - startedAt,
+        });
+        return res;
+      } catch (err) {
+        connectionManager.noteOutcome(url, req.allowLocalTargets === true, {
+          latencyMs: Date.now() - startedAt,
+          errorKind: err instanceof AiError ? err.kind : "unknown",
+        });
+        throw err;
+      }
     } catch (err) {
       const mapped = err instanceof AiError ? err : new AiError("network", "Could not reach the service.");
       // A cancellation or a caller-imposed expiry ends the whole attempt: the
@@ -733,7 +582,7 @@ function attemptOne(
     // pinned "all" lookup, and this request's own `lookup` below still
     // wins per-connection, so pooling never widens the validated address
     // set.
-    const pooled = keepAliveAgentFor(url, addresses, secure, req.allowLocalTargets === true);
+    const pooled = connectionManager.agentFor(url, addresses, secure, req.allowLocalTargets === true);
     const agent: (HttpAgent | HttpsAgent) | false = pooled ?? false;
 
     try {

@@ -22,12 +22,17 @@
  * on EVERY hit, so a cache entry can never bypass a rule it could not pass
  * when first resolved. Setting BOBI_DNS_CACHE_MS=0 restores "resolve on
  * every request" exactly.
+ *
+ * Storage for the cache lives in the connection manager (`sharedDnsCache`):
+ * the resolution POLICY is here, the storage is shared with the rest of the
+ * connection layer.
  */
 import { resolve4, resolve6 } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
 import { AiError } from "./provider";
 import { validateTarget } from "./target";
 import type { AdapterTarget } from "./adapter";
+import { sharedDnsCache } from "./connection_manager";
 
 /** A resolver returns raw A/AAAA answers. Injected in tests. */
 export type DnsResolver = (hostname: string) => Promise<readonly string[]>;
@@ -160,7 +165,13 @@ interface DnsCacheEntry {
   expiresAt: number;
 }
 
-const dnsCache = new Map<string, DnsCacheEntry>();
+/**
+ * The cache STORAGE is owned by the connection manager (`sharedDnsCache`)
+ * so the connection layer has a single view of name → validated addresses.
+ * Everything policy-shaped stays here: what may be stored, the bound below,
+ * and re-classification of cached addresses on every hit.
+ */
+const dnsCache: Map<string, DnsCacheEntry> = sharedDnsCache;
 
 /** Bounded so a long-lived process cannot accumulate entries forever. */
 const DNS_CACHE_MAX_ENTRIES = 128;

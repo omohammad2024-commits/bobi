@@ -32,7 +32,12 @@
  *  7. Bounded in-call retry. When no failover candidate is available (a
  *     single-candidate plan), a transient failure is retried up to 2 extra
  *     times with jittered exponential backoff, capped at 3s of added wait.
+ *     A provider's `Retry-After` (429/503, carried on the AiError) replaces
+ *     that cap as the backoff floor for the retry it answered.
  *     Kill switch: BOBI_GATEWAY_RETRY=0.
+ *  8. Failover pre-warm. When a plan has a next candidate, an optional
+ *     hook is fired (never awaited) so the connection layer can establish
+ *     that candidate's connection before a failover needs it.
  *
  * `name` is "ai" so the engine's isFake check stays accurate: the gateway is a
  * real provider, unlike the offline FakeProvider used in tests.
@@ -83,6 +88,28 @@ function backoffDelayMs(retryIndex: number, random: () => number): number {
   const base = GATEWAY_RETRY_BASE_MS * 2 ** retryIndex;
   const jitter = 0.75 + random() * 0.5;
   return Math.round(base * jitter);
+}
+
+/**
+ * The delay before the next retry of one candidate.
+ *
+ * When the provider sent `Retry-After` (parsed onto the AiError by the
+ * status mapper for 429/503), that value is the FLOOR: retrying earlier
+ * than the provider asked just earns another rejection. The wait budget
+ * widens to fit the floor — the provider's explicit ask outranks the
+ * gateway's own 3s cap — but the floor itself is already clamped to 30s
+ * by the parser, so one retry can never stall a turn indefinitely.
+ */
+function retryDelayMs(
+  err: AiError,
+  retryIndex: number,
+  random: () => number,
+): { delay: number; budget: number } {
+  const floor = err.retryAfterMs ?? 0;
+  return {
+    delay: Math.max(backoffDelayMs(retryIndex, random), floor),
+    budget: Math.max(GATEWAY_RETRY_BUDGET_MS, floor),
+  };
 }
 
 /**
@@ -170,6 +197,14 @@ export interface GatewayOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Injectable randomness for backoff jitter, for deterministic tests. */
   random?: () => number;
+  /**
+   * Connection pre-warm hook (connection layer). Fired synchronously —
+   * and never awaited — with the SECOND candidate whenever a request plan
+   * has more than one, so a failover switch does not pay the full
+   * TCP+TLS handshake on the user's turn. The hook owns its own async
+   * work and error swallowing; the gateway also invokes it in try/catch.
+   */
+  preWarm?: (candidate: GatewaySelection) => void;
 }
 
 /** The provider/model pair a request actually used. Never includes a key. */
@@ -217,6 +252,8 @@ export class AiGateway implements AiProvider {
   private readonly retryOn: boolean;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly random: () => number;
+  /** Optional connection pre-warm hook for the next failover candidate. */
+  private readonly preWarm: GatewayOptions["preWarm"];
 
   /**
    * Cooldowns for keys that failed with auth, keyed by "p:<providerId>" for
@@ -252,6 +289,7 @@ export class AiGateway implements AiProvider {
     this.sleep =
       opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     this.random = opts.random ?? Math.random;
+    this.preWarm = opts.preWarm;
     this.breakers =
       opts.breakers ??
       new CircuitBreakerRegistry({
@@ -549,10 +587,10 @@ export class AiGateway implements AiProvider {
           retriesUsed < GATEWAY_MAX_RETRIES &&
           isRetryEligible(mapped);
         if (!canRetry) return { kind: "error", error: mapped };
-        const delay = backoffDelayMs(retriesUsed, this.random);
+        const { delay, budget } = retryDelayMs(mapped, retriesUsed, this.random);
         // The total added wait is capped: a retry whose backoff would blow
         // the budget is not taken. Failing fast beats a slow maybe.
-        if (waitedMs + delay > GATEWAY_RETRY_BUDGET_MS) {
+        if (waitedMs + delay > budget) {
           return { kind: "error", error: mapped };
         }
         await this.sleep(delay);
@@ -713,8 +751,8 @@ export class AiGateway implements AiProvider {
           retriesUsed < GATEWAY_MAX_RETRIES &&
           isRetryEligible(mapped);
         if (!canRetry) return { kind: "error", error: mapped };
-        const delay = backoffDelayMs(retriesUsed, this.random);
-        if (waitedMs + delay > GATEWAY_RETRY_BUDGET_MS) {
+        const { delay, budget } = retryDelayMs(mapped, retriesUsed, this.random);
+        if (waitedMs + delay > budget) {
           return { kind: "error", error: mapped };
         }
         await this.sleep(delay);
@@ -827,6 +865,19 @@ export class AiGateway implements AiProvider {
           continue;
         }
         candidates.push(resolved);
+      }
+    }
+
+    // Connection pre-warm: with a real choice of candidates, the NEXT one
+    // gets its connection established in the background so a failover does
+    // not pay full connect latency mid-turn. Fire-and-forget — never
+    // awaited on the request path, and a warming failure is silent (the
+    // failover attempt itself will surface any real problem).
+    if (this.preWarm !== undefined && candidates.length > 1) {
+      try {
+        this.preWarm(candidates[1]!);
+      } catch {
+        // Warming must never break planning.
       }
     }
 

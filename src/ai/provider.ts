@@ -212,6 +212,14 @@ export class AiError extends Error {
      * every unmapped status into an opaque "unknown".
      */
     readonly status?: number,
+    /**
+     * The provider's `Retry-After` request, in milliseconds, when the
+     * response carried one on a 429 or 503. Clamped to 0–30000 by the
+     * parser. Consumers (gateway in-call retry) may use it as the backoff
+     * floor instead of retrying earlier than the provider asked. Additive
+     * only: existing three-arg constructions are unaffected.
+     */
+    readonly retryAfterMs?: number,
   ) {
     super(message);
     this.name = "AiError";

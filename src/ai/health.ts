@@ -6,6 +6,12 @@
  * records only the outcome. The result message is chosen by this module, never
  * copied from a provider response, so a body that echoes the request cannot
  * leak a key into the database or a Telegram message.
+ *
+ * The service also hosts the opt-in BACKGROUND prober (startBackgroundProbes):
+ * a periodic pass that re-probes providers whose circuit breaker is open or
+ * whose last probe failed, and records recovery into the shared breaker
+ * registry so a healed provider returns to rotation without waiting for a
+ * user turn to discover it.
  */
 import { AiError } from "./provider";
 import type { AIProviderAdapter } from "./adapter";
@@ -14,6 +20,10 @@ import { AdapterRegistry } from "./adapter_registry";
 import type { Storage } from "../storage/storage";
 import type { ProviderService } from "./provider_service";
 import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
+import {
+  connectionManagerEnabled,
+  type ConnectionStatsView,
+} from "./connection_manager";
 
 export interface ProbeResult {
   ok: boolean;
@@ -28,6 +38,42 @@ export interface ProbeResult {
    * provider directly — this is read-only observability for the panel.
    */
   circuit?: CircuitStateView;
+  /**
+   * Connection-layer stats for this provider's host, when a connection
+   * stats source was injected and the host has pooled-connection history.
+   * Additive and sparse — absent entirely when there is nothing to report
+   * (same pattern as the memory recall telemetry fields).
+   */
+  connection?: ConnectionStatsView;
+}
+
+/**
+ * Read-only connection-stats source for the `connection` probe field.
+ * The connection manager satisfies this structurally.
+ */
+export interface ConnectionStatsSource {
+  statsForUrl(baseUrl: string, allowLocalTargets: boolean): ConnectionStatsView | undefined;
+}
+
+/**
+ * A breaker the background prober may DRIVE on recovery. The registry from
+ * the reliability core satisfies this; the prober never writes a second
+ * breaker — on a successful recovery probe it records the success into
+ * the shared registry, whose own semantics close/half-open the breaker.
+ */
+export interface BreakerDriver extends CircuitStateReader {
+  recordSuccess(providerId: number): void;
+}
+
+/** Env var for the background probe interval, ms. Default 60000; 0 = off. */
+export const HEALTH_PROBE_MS_ENV_VAR = "BOBI_HEALTH_PROBE_MS";
+
+/** Background probe interval, ms. 0 disables; invalid → the 60s default. */
+export function healthProbeIntervalMs(): number {
+  const raw = process.env[HEALTH_PROBE_MS_ENV_VAR];
+  if (raw === undefined) return 60_000;
+  const n = Math.floor(Number(raw));
+  return Number.isFinite(n) && n >= 0 ? n : 60_000;
 }
 
 export interface ProbeOptions {
@@ -51,6 +97,12 @@ export class ProviderHealthService {
      * optional, so existing constructions keep working unchanged.
      */
     private readonly circuitSource?: CircuitStateReader,
+    /**
+     * Optional connection-stats source (the connection manager).
+     * Populates `connection` on results when the provider's host has
+     * pooled-connection history. Trailing optional, like circuitSource.
+     */
+    private readonly connections?: ConnectionStatsSource,
   ) {}
 
   /** Latest recorded outcome for a provider. */
@@ -62,6 +114,7 @@ export class ProviderHealthService {
       checkedAt: h.checkedAt,
       ...(h.message !== undefined ? { message: h.message } : {}),
       ...this.circuitField(providerId),
+      ...this.connectionField(providerId),
     };
   }
 
@@ -70,6 +123,19 @@ export class ProviderHealthService {
     if (this.circuitSource === undefined) return {};
     try {
       return { circuit: this.circuitSource.state(providerId) };
+    } catch {
+      return {};
+    }
+  }
+
+  /** The connection-stats spread, when a source was injected and has data. */
+  private connectionField(providerId: number): { connection?: ConnectionStatsView } {
+    if (this.connections === undefined) return {};
+    try {
+      const provider = this.storage.getProvider(providerId);
+      if (provider === undefined) return {};
+      const view = this.connections.statsForUrl(provider.baseUrl, provider.allowLocal);
+      return view !== undefined ? { connection: view } : {};
     } catch {
       return {};
     }
@@ -208,6 +274,88 @@ export class ProviderHealthService {
     }
   }
 
+  /* ---------------- background health + auto-recovery ---------------- */
+
+  private probeTimer: ReturnType<typeof setInterval> | undefined;
+  private probePassInFlight = false;
+
+  /** True while the background prober is scheduled. */
+  backgroundProbesRunning(): boolean {
+    return this.probeTimer !== undefined;
+  }
+
+  /**
+   * Start the periodic background prober.
+   *
+   * Every BOBI_HEALTH_PROBE_MS (default 60000; 0 = off) one pass probes the
+   * configured providers that need attention — breaker OPEN (or half-open)
+   * or last recorded probe failed — using the same cheap probe() the panel
+   * runs. A pass never overlaps itself: a slow provider cannot stack
+   * passes up. Recovery is driven through the SHARED breaker registry
+   * passed as `driver`: a successful probe of an open/half-open provider
+   * records a success there, and the registry's own semantics close the
+   * breaker. A failed probe records nothing into the breaker — probe
+   * failures include configuration faults (auth, missing credential) that
+   * must never trip it; the gateway's real traffic keeps it honest.
+   *
+   * Opt-in by construction: nothing runs until start is called. Also a
+   * no-op when the connection manager is disabled (BOBI_CONN_MANAGER=0)
+   * or the interval is 0. The timer is unref'd.
+   */
+  startBackgroundProbes(driver?: BreakerDriver, opts: { intervalMs?: number } = {}): void {
+    if (this.probeTimer !== undefined) return;
+    if (!connectionManagerEnabled()) return;
+    const intervalMs = opts.intervalMs ?? healthProbeIntervalMs();
+    if (intervalMs <= 0) return;
+    this.probeTimer = setInterval(() => {
+      void this.runBackgroundProbePass(driver);
+    }, intervalMs);
+    // Probing must never keep a process (or a test run) alive.
+    this.probeTimer.unref?.();
+  }
+
+  /** Stop the background prober. An in-flight pass finishes on its own. */
+  stopBackgroundProbes(): void {
+    if (this.probeTimer !== undefined) {
+      clearInterval(this.probeTimer);
+      this.probeTimer = undefined;
+    }
+  }
+
+  /**
+   * One background probe pass. Public so tests (and a future manual
+   * "recheck now" surface) can drive it without waiting on the timer.
+   * Returns how many providers were probed.
+   */
+  async runBackgroundProbePass(driver?: BreakerDriver): Promise<number> {
+    if (this.probePassInFlight) return 0;
+    this.probePassInFlight = true;
+    let probed = 0;
+    try {
+      for (const provider of this.storage.listProviders()) {
+        if (!provider.enabled) continue;
+        const breakerState =
+          driver?.state(provider.id).state ?? this.circuitSource?.state(provider.id).state;
+        const breakerNeedsRecovery = breakerState === "open" || breakerState === "half_open";
+        const lastFailed = this.storage.getProviderHealth(provider.id)?.ok === false;
+        if (!breakerNeedsRecovery && !lastFailed) continue;
+        const res = await this.probe(provider.id);
+        probed += 1;
+        if (res.ok && breakerNeedsRecovery && driver !== undefined) {
+          // Recovery, recorded into the shared registry — its semantics
+          // close the breaker; no second breaker exists to disagree.
+          driver.recordSuccess(provider.id);
+        }
+      }
+    } catch {
+      // A background pass must never throw into the timer or the caller:
+      // individual probe failures are already recorded as health rows.
+    } finally {
+      this.probePassInFlight = false;
+    }
+    return probed;
+  }
+
   /** The provider's default model id, when one is set and enabled. */
   private defaultModelId(providerId: number): string | undefined {
     const models = this.storage.listModels(providerId);
@@ -217,7 +365,7 @@ export class ProviderHealthService {
   private record(providerId: number, ok: boolean, message: string): ProbeResult {
     const checkedAt = Date.now();
     this.storage.setProviderHealth({ providerId, ok, message });
-    return { ok, message, checkedAt, ...this.circuitField(providerId) };
+    return { ok, message, checkedAt, ...this.circuitField(providerId), ...this.connectionField(providerId) };
   }
 
   /**
@@ -226,7 +374,7 @@ export class ProviderHealthService {
    * overwrite the provider-level health row.
    */
   private result(providerId: number, ok: boolean, message: string): ProbeResult {
-    return { ok, message, checkedAt: Date.now(), ...this.circuitField(providerId) };
+    return { ok, message, checkedAt: Date.now(), ...this.circuitField(providerId), ...this.connectionField(providerId) };
   }
 }
 

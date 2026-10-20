@@ -30,6 +30,11 @@ import { ModelService, ProviderService } from "./ai/provider_service";
 import { ProviderHealthService } from "./ai/health";
 import { AiGateway } from "./ai/gateway";
 import { CircuitBreakerRegistry } from "./ai/circuit_breaker";
+import {
+  connectionManager,
+  connectionManagerEnabled,
+} from "./ai/connection_manager";
+import { resolveTarget } from "./ai/dns_guard";
 import { SearchProviderSecretStore } from "./search/secret_store";
 import { createDelegateTool } from "./tools/delegate";
 import { createConsultModelsTool } from "./tools/consult_models";
@@ -583,12 +588,38 @@ async function main(): Promise<void> {
     adapters,
     undefined,
     breakers,
+    connectionManager,
   );
+  // Connection layer: warm-up for a provider selection. Resolves the
+  // target through the DNS guard (validation/classification stay there)
+  // and lets the connection manager establish the pooled connection ahead
+  // of the first real request. Best-effort by contract: any failure is
+  // swallowed here — warm-up must never break boot or a request.
+  const warmProviderConnection = async (sel: {
+    baseUrl: string;
+    allowLocal: boolean;
+  }): Promise<void> => {
+    if (!connectionManagerEnabled()) return;
+    try {
+      const resolved = await resolveTarget(
+        { baseUrl: sel.baseUrl, apiKey: undefined },
+        { allowLocalTargets: sel.allowLocal },
+      );
+      await connectionManager.warm(resolved);
+    } catch {
+      // Silent: the first real request reports any genuine problem.
+    }
+  };
   const gateway = new AiGateway({
     storage,
     adapters,
     secrets,
     breakers,
+    // Failover pre-warm: the next candidate's connection is established in
+    // the background, so a mid-turn failover skips the connect latency.
+    preWarm: (sel) => {
+      void warmProviderConnection(sel);
+    },
     // Diagnostic: an error that surfaces to the user as a bare "unknown"
     // hides its cause from the user message; log the original here so the
     // real failure is debuggable.
@@ -602,6 +633,12 @@ async function main(): Promise<void> {
         stack: err instanceof Error ? err.stack?.split("\n").slice(0, 5).join(" | ") : undefined,
       }),
   });
+
+  // Boot warm-up: the ACTIVE provider's connection is established now, so
+  // the first user turn after a (re)start does not pay full connect
+  // latency. Fire-and-forget; silent on failure.
+  const bootSelection = gateway.currentSelection();
+  if (bootSelection !== undefined) void warmProviderConnection(bootSelection);
 
   // Per-run token/cost accounting (usage ledger). Diagnostic only: recording
   // never fails a turn — UsageTracker.record() swallows its own errors and
@@ -1516,6 +1553,13 @@ async function main(): Promise<void> {
     log.info("heartbeat enabled", { intervalMs: config.heartbeatIntervalMs });
   }
 
+  // Background provider health: periodically re-probe providers whose
+  // breaker is open or whose last probe failed, and record recovery into
+  // the shared breaker registry. Interval/switch: BOBI_HEALTH_PROBE_MS
+  // (default 60s, 0 = off) and BOBI_CONN_MANAGER=0 (off) — the service
+  // enforces both; stop() is wired into graceful shutdown below.
+  healthSvc.startBackgroundProbes(breakers);
+
   /**
    * Whether the bot may still send to this reminder's recipient.
    *
@@ -1629,6 +1673,7 @@ async function main(): Promise<void> {
     // Stop the schedulers before the database closes: a pass in flight would
     // otherwise write to a closed handle. The heartbeat stops here too.
     heartbeat.stop();
+    healthSvc.stopBackgroundProbes();
     scheduler.stop();
     taskScheduler.stop();
     // Phase-4: stop the bench worker's pump and cooperatively abort an

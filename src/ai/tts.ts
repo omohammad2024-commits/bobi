@@ -127,7 +127,7 @@ export async function synthesizeSpeech(
     throw new AiError("invalid_response", "The service redirected to another address.");
   }
   if (res.status < 200 || res.status >= 300) {
-    throw statusToAiError(res.status);
+    throw statusToAiError(res.status, res.headers);
   }
 
   const bytes = res.rawBody;
