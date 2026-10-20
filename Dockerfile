@@ -6,9 +6,13 @@
 # actually expects.
 FROM oven/bun:1-debian
 
-# ca-certificates for outbound HTTPS, curl for the healthcheck.
+# ca-certificates for outbound HTTPS, curl for the healthcheck,
+# ffmpeg + yt-dlp for the universal media downloader (download_media tool).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && apt-get install -y --no-install-recommends ca-certificates curl ffmpeg \
+    && curl -fsSL -o /usr/local/bin/yt-dlp \
+        https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \
+    && chmod a+x /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
