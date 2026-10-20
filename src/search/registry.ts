@@ -45,7 +45,7 @@ export class SearchRegistry {
   /** Build a specific provider type, for a panel test action. */
   build(settings: SearchSettings): SearchProvider {
     if (!isSearchProviderType(settings.provider)) {
-      throw new SearchError("config", "سرویس جستجو انتخاب نشده است.");
+      throw new SearchError("config", "No search service selected.");
     }
 
     switch (settings.provider) {

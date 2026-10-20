@@ -107,6 +107,192 @@ export function estimateCost(
   return { usd, estimated: price.fallback };
 }
 
+/** One day's usage totals (owner view, all users). */
+export interface DailyUsage {
+  /** Local calendar date, "YYYY-MM-DD" (server-local days). */
+  date: string;
+  /** unix ms of the day's start, server-local. */
+  dayStartMs: number;
+  runs: number;
+  inputTokens: number;
+  outputTokens: number;
+  /** Approximate cost in US dollars (APPROXIMATE — see PRICES). */
+  estimatedUsd: number;
+}
+
+/** One provider's usage totals in a window (owner view, all users). */
+export interface ProviderUsage {
+  providerId: number;
+  /** Provider label from ai_providers; "Removed or unknown" when the row's provider is gone. */
+  providerName: string;
+  runs: number;
+  /**
+   * null: the usage ledger records completed attempts only — failure counts
+   * are not captured, so a success rate cannot be derived from it.
+   */
+  successRate: number | null;
+  /**
+   * null: the usage ledger has no per-attempt latency column, so average
+   * latency cannot be derived from it.
+   */
+  avgLatencyMs: number | null;
+  inputTokens: number;
+  outputTokens: number;
+  /** Approximate cost in US dollars (APPROXIMATE — see PRICES). */
+  estimatedUsd: number;
+}
+
+/** Per-model latency percentiles. */
+export interface ModelLatency {
+  modelId: string;
+  runs: number;
+  /** p50/p95/max in ms. null when latency is not tracked (usage_ledger has no latency column). */
+  p50Ms: number | null;
+  p95Ms: number | null;
+  maxMs: number | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function clampDays(days: number): number {
+  if (!Number.isFinite(days)) return 7;
+  return Math.min(Math.max(Math.floor(days), 1), 90);
+}
+
+/** Server-local midnight (00:00) of the day containing `atMs`. */
+function dayStartLocal(atMs: number): number {
+  const d = new Date(atMs);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** "YYYY-MM-DD" for a server-local day start. */
+function dayLabelLocal(dayStartMs: number): string {
+  const d = new Date(dayStartMs);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+/**
+ * Daily usage breakdown for the last `days` days (owner view, all users),
+ * oldest day first.
+ *
+ * The usage_ledger is append-only (no deletes), so a day's totals are the
+ * difference between "everything since day start" and "everything since the
+ * next day start". Blended cost uses the fallback price, the same honest
+ * estimate as totalsAll().
+ */
+export function getDailyBreakdown(storage: Storage, days: number): DailyUsage[] {
+  const n = clampDays(days);
+  const todayStart = dayStartLocal(Date.now());
+  const out: DailyUsage[] = [];
+  try {
+    for (let i = n - 1; i >= 0; i--) {
+      const start = todayStart - i * DAY_MS;
+      const end = start + DAY_MS;
+      const t0 = storage.usageTotalsAll(start);
+      const t1 = storage.usageTotalsAll(end);
+      const inputTokens = Math.max(0, t0.inputTokens - t1.inputTokens);
+      const outputTokens = Math.max(0, t0.outputTokens - t1.outputTokens);
+      const runs = Math.max(0, t0.runs - t1.runs);
+      const { usd } = estimateCost(inputTokens, outputTokens, "__unknown__");
+      out.push({
+        date: dayLabelLocal(start),
+        dayStartMs: start,
+        runs,
+        inputTokens,
+        outputTokens,
+        estimatedUsd: usd,
+      });
+    }
+  } catch {
+    // Diagnostic-only data: a storage hiccup yields a partial/empty list,
+    // never an exception to the API layer.
+    return out;
+  }
+  return out;
+}
+
+/**
+ * Per-provider usage totals for the last `days` days (owner view, all users),
+ * most runs first. Model rows are mapped to providers via ai_models/ai_providers;
+ * ledger rows whose model no longer maps to a provider land in an "unknown" bucket.
+ *
+ * successRate and avgLatencyMs are null: the usage ledger captures completed
+ * attempts only — it records neither failures nor per-attempt latency.
+ */
+export function getByProvider(storage: Storage, days: number): ProviderUsage[] {
+  const n = clampDays(days);
+  const sinceMs = Date.now() - n * DAY_MS;
+  try {
+    const modelToProvider = new Map<string, { id: number; label: string }>();
+    for (const p of storage.listProviders()) {
+      for (const m of storage.listModels(p.id)) {
+        if (!modelToProvider.has(m.modelId)) {
+          modelToProvider.set(m.modelId, { id: p.id, label: p.label });
+        }
+      }
+    }
+    const agg = new Map<number, ProviderUsage>();
+    for (const m of storage.usageByModelAll(sinceMs)) {
+      const prov = modelToProvider.get(m.modelId);
+      const id = prov?.id ?? 0;
+      const name = prov?.label ?? "Removed or unknown";
+      let row = agg.get(id);
+      if (!row) {
+        row = {
+          providerId: id,
+          providerName: name,
+          runs: 0,
+          successRate: null,
+          avgLatencyMs: null,
+          inputTokens: 0,
+          outputTokens: 0,
+          estimatedUsd: 0,
+        };
+        agg.set(id, row);
+      }
+      row.runs += m.runs;
+      row.inputTokens += m.inputTokens;
+      row.outputTokens += m.outputTokens;
+      row.estimatedUsd += estimateCost(m.inputTokens, m.outputTokens, m.modelId).usd;
+    }
+    return [...agg.values()].sort(
+      (a, b) => b.runs - a.runs || b.inputTokens + b.outputTokens - (a.inputTokens + a.outputTokens),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Per-model latency percentiles for the last `days` days (owner view).
+ *
+ * The usage ledger records no per-attempt latency, so this currently reports
+ * `{ tracked: false }` with per-model run counts and null percentiles. The
+ * contract is forward-compatible: when per-attempt timing is recorded, the
+ * percentile fields get populated and `tracked` flips to true.
+ */
+export function getLatencyStats(
+  storage: Storage,
+  days: number,
+): { tracked: boolean; perModel: ModelLatency[] } {
+  const n = clampDays(days);
+  const sinceMs = Date.now() - n * DAY_MS;
+  try {
+    const perModel = storage.usageByModelAll(sinceMs).map((m) => ({
+      modelId: m.modelId,
+      runs: m.runs,
+      p50Ms: null as number | null,
+      p95Ms: null as number | null,
+      maxMs: null as number | null,
+    }));
+    return { tracked: false, perModel };
+  } catch {
+    return { tracked: false, perModel: [] };
+  }
+}
+
 export class UsageTracker {
   constructor(
     private readonly storage: Storage,

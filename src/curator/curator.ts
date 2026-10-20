@@ -34,21 +34,34 @@ export const CURATOR_TASK_ACTION = "curate";
  *  with the originals proposed for deletion (owner-approved, never silent).
  *  "event" (Phase-5) is an auto-extracted dated-event candidate from the
  *  owner's conversations; "import" (Phase-5) is an item from an imported
- *  memory package that needs the owner's review (conflict, or reviewAll). */
-export type ProposalKind = "duplicate" | "stale" | "split" | "archive" | "event" | "import";
+ *  memory package that needs the owner's review (conflict, or reviewAll).
+ *  "fact" (worker-2) is an auto-extracted user-stated fact (name,
+ *  preference, commitment, decision, correction) from the owner's
+ *  conversations. */
+export type ProposalKind =
+  | "duplicate"
+  | "stale"
+  | "split"
+  | "archive"
+  | "event"
+  | "import"
+  | "fact";
 
 /** What applying a proposal would do, as structured data (never code).
  *
  *  "add" (Phase-5) writes a brand-new memory from an import package;
  *  "add_event" (Phase-5) records a dated event through EventStore (which
  *  re-validates) — upsert semantics by the deterministic event key.
+ *  "add"/"update" accept an optional 1-5 importance (worker-2): when set,
+ *  the write stores it so recall can prefer the memory; when omitted, an
+ *  existing row keeps its importance.
  */
 export type ProposalAction =
   | { type: "merge"; keepKey: string; removeKeys: string[] }
   | { type: "delete"; keys: string[] }
-  | { type: "update"; key: string; newContent: string }
+  | { type: "update"; key: string; newContent: string; importance?: number }
   | { type: "split"; key: string; parts: Array<{ key: string; content: string }> }
-  | { type: "add"; key: string; content: string }
+  | { type: "add"; key: string; content: string; importance?: number }
   | { type: "add_event"; event: NewEvent };
 
 /**
@@ -73,17 +86,19 @@ export interface Proposal {
 export function kindLabelFa(kind: ProposalKind): string {
   switch (kind) {
     case "duplicate":
-      return "تکراری";
+      return "Duplicate";
     case "stale":
-      return "قدیمی/متناقض";
+      return "Stale";
     case "split":
-      return "تقسیم";
+      return "Split";
     case "archive":
-      return "بایگانی";
+      return "Archive";
     case "event":
-      return "رویداد";
+      return "Event";
     case "import":
-      return "ورودی";
+      return "Import";
+    case "fact":
+      return "Fact";
   }
 }
 
@@ -229,9 +244,9 @@ function findDuplicates(memories: StoredMemory[]): Proposal[] {
         kind: "duplicate",
         memoryIds,
         summaryFa:
-          `دو حافظه تقریباً یکسان‌اند: «${a.content}» و «${b.content}». ` +
-          `پیشنهاد: ادغام و نگه‌داشتن «${keep.key}» با متن «${keep.content}»` +
-          (remove.length > 0 ? ` و حذف «${remove.map((m) => m.key).join("، ")}»` : "") +
+          `Two memories are nearly identical: "${a.content}" and "${b.content}". ` +
+          `Suggestion: merge, keeping "${keep.key}" with the text "${keep.content}"` +
+          (remove.length > 0 ? ` and deleting "${remove.map((m) => m.key).join('", "')}"` : "") +
           `.`,
         suggestedAction: { type: "merge", keepKey: keep.key, removeKeys: remove.map((m) => m.key) },
       });
@@ -285,8 +300,8 @@ function findStale(memories: StoredMemory[]): Proposal[] {
           kind: "stale",
           memoryIds: [older.key, newer.key],
           summaryFa:
-            `دو حافظه با هم در تضادند: «${older.content}» (قدیمی‌تر) در برابر «${newer.content}» (جدیدتر). ` +
-            `پیشنهاد: حذف «${older.key}» چون به‌نظر می‌رسد منسوخ شده است.`,
+            `Two memories contradict each other: "${older.content}" (older) vs "${newer.content}" (newer). ` +
+            `Suggestion: delete "${older.key}" as it looks outdated.`,
           suggestedAction: { type: "delete", keys: [older.key] },
         });
         break; // one proposal per pair, whatever the hint was
@@ -330,8 +345,8 @@ function findSplits(memories: StoredMemory[]): Proposal[] {
       kind: "split",
       memoryIds: [m.key],
       summaryFa:
-        `حافظهٔ «${m.key}» چند موضوع جدا را در یک متن جمع کرده است (${parts.length} بخش). ` +
-        `پیشنهاد: تقسیم به ${newParts.map((p) => `«${p.key}»`).join("، ")} و حذف متن اصلی.`,
+        `Memory "${m.key}" combines several separate topics in one text (${parts.length} parts). ` +
+        `Suggestion: split into ${newParts.map((p) => `"${p.key}"`).join(", ")} and delete the original.`,
       suggestedAction: { type: "split", key: m.key, parts: newParts },
     });
   }

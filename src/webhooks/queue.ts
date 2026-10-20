@@ -77,7 +77,7 @@ export class WebhookQueue {
       this.items.shift();
       this.dropped++;
       console.warn(
-        `[webhooks] صف پر شد؛ قدیمی‌ترین رویداد حذف شد (تعداد حذف‌شده: ${this.dropped}).`,
+        `[webhooks] Queue full; oldest event dropped (dropped: ${this.dropped}).`,
       );
     }
     this.items.push(event);
@@ -141,8 +141,8 @@ export class WebhookQueue {
       } catch (err) {
         const last = attempt === MAX_ATTEMPTS;
         console.warn(
-          `[webhooks] ارسال رویداد «${event.event}» ناموفق بود (تلاش ${attempt} از ${MAX_ATTEMPTS})${
-            last ? "؛ رویداد حذف شد." : "؛ تلاش مجدد."
+          `[webhooks] Failed to deliver event "${event.event}" (attempt ${attempt} of ${MAX_ATTEMPTS})${
+            last ? "; event dropped." : "; retrying."
           }`,
         );
         void err;

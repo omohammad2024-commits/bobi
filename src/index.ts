@@ -54,6 +54,8 @@ import { createScheduledTaskTools } from "./tools/scheduled_tasks";
 import { createUsageReportTool } from "./tools/usage_report";
 import { createDigestTool } from "./tools/digest_tool";
 import { createCommandsTool } from "./tools/commands";
+import { downloadTool } from "./tools/downloader";
+import { createShortcutTools } from "./tools/shortcuts";
 import type { SearchHeadlinesFn } from "./digest/builder";
 import { createCuratorTools } from "./curator/tools";
 import { ProposalStore } from "./curator/proposals";
@@ -352,6 +354,9 @@ async function main(): Promise<void> {
     // Phase D1: full-text search over the caller's own conversation history.
     ...createHistoryTools({ storage }),
     ...createReminderTools({ storage }),
+    // Universal media downloader (YouTube/Instagram/TikTok/Twitter/direct).
+    // Gracefully reports unavailable when yt-dlp is missing on the host.
+    downloadTool as Tool<unknown, unknown>,
     // Stage-3: proactive smart follow-ups — the bot remembers what the user
     // forgot. Tools are scoped to the server-side actor's userId; nothing is
     // noted unless the model calls note_followup.
@@ -683,6 +688,18 @@ async function main(): Promise<void> {
     }) as Tool<unknown, unknown>,
   );
 
+  // Custom shortcuts (owner-defined command aliases). Registered after
+  // `tools` exists because the factory validates kind="tool" targets
+  // against the live registry. Management tools only — execution of a
+  // /shortcut is wired in bot.ts, not here.
+  for (const t of createShortcutTools({
+    storage,
+    registry: tools.registry,
+    isOwner: (userId) => identity.isOwner(Number(userId)),
+  })) {
+    tools.registry.register(t);
+  }
+
   // Phase C4: mixture-of-agents. Only with a real provider — consulting the
   // FakeProvider would be theater. Consultation routes through
   // gateway.completeForModel(), which re-validates each model against storage;
@@ -824,6 +841,13 @@ async function main(): Promise<void> {
     secrets,
     adapters,
     search: searchSettings,
+    // W1(b): effective engine timeouts for the /ai status screen — without
+    // these the panel can only show the DB failover timeout, which is what
+    // confused the owner into thinking his env setting was ignored.
+    engineTimeouts: {
+      aiTimeoutMs: config.aiTimeoutMs,
+      agentTotalTimeoutMs: config.agentTotalTimeoutMs,
+    },
   });
 
   // Version shown by /version — read from package.json once at startup.

@@ -8,6 +8,7 @@
  */
 import type { AIProviderAdapter, AdapterType, AdapterSettings } from "./adapter";
 import { isAdapterType } from "./adapter";
+import { AiError } from "./provider";
 import { OpenAICompatibleAdapter, type OpenAITarget } from "./openai_compatible";
 import { GeminiAdapter, type GeminiTarget } from "./gemini";
 import { AnthropicAdapter, type AnthropicTarget } from "./anthropic";
@@ -35,7 +36,10 @@ export class AdapterRegistry {
   /** Build the adapter for a provider type, or throw for an unknown type. */
   create(type: string, cfg: AdapterConfig): AIProviderAdapter {
     if (!isAdapterType(type)) {
-      throw new Error(`unknown adapter type: ${type}`);
+      // AiError (not a plain Error): the gateway's error mapper turns a bare
+      // Error into the generic "unknown" path, losing the real reason. The
+      // precise-error treatment names the misconfiguration instead.
+      throw new AiError("invalid_response", `unknown adapter type: ${type}`);
     }
 
     switch (type as AdapterType) {

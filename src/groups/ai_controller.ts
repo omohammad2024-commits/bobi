@@ -115,6 +115,12 @@ export interface AiAdminOptions {
    * `user_prefs` reader, so panels follow the owner's /lang choice.
    */
   prefs?: (userId: string, key: string) => string | undefined;
+  /**
+   * Engine-level timeouts as resolved from the environment (AI_TIMEOUT_MS,
+   * AGENT_TOTAL_TIMEOUT_MS). Optional: when absent the /ai status timeouts
+   * line renders "Not set" for those values instead of guessing.
+   */
+  engineTimeouts?: { aiTimeoutMs: number; agentTotalTimeoutMs: number };
 }
 
 export class AiAdminController {
@@ -128,6 +134,9 @@ export class AiAdminController {
   private readonly adapters: AdapterRegistry;
   private readonly search: SearchSettingsService | undefined;
   private readonly prefs: (userId: string, key: string) => string | undefined;
+  private readonly engineTimeouts:
+    | { aiTimeoutMs: number; agentTotalTimeoutMs: number }
+    | undefined;
 
   /** Per-owner state for the free-text add/replace flows. Never in a callback. */
   private readonly pending = new Map<number, PendingInput>();
@@ -142,6 +151,7 @@ export class AiAdminController {
     this.secrets = opts.secrets;
     this.adapters = opts.adapters;
     this.search = opts.search;
+    this.engineTimeouts = opts.engineTimeouts;
     this.prefs = opts.prefs ?? ((u, k) => this.storage.getUserPref(u, k));
   }
 
@@ -1722,6 +1732,17 @@ export class AiAdminController {
         // The runtime reads the database per request, so any mismatch means the
         // primary selection no longer resolves (e.g. it was disabled).
         runtimeMatchesPersisted: primary !== undefined,
+        // The per-request provider timeout is the DB value the gateway reads;
+        // the engine and agent timeouts are the resolved env values, when the
+        // controller was constructed with them. Showing all three here is what
+        // stops an env setting from silently disagreeing with the DB.
+        providerTimeoutMs: s.timeoutMs,
+        ...(this.engineTimeouts !== undefined
+          ? {
+              engineTimeoutMs: this.engineTimeouts.aiTimeoutMs,
+              agentTotalTimeoutMs: this.engineTimeouts.agentTotalTimeoutMs,
+            }
+          : {}),
         note: undefined,
       },
       lang,

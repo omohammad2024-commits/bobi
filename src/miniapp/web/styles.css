@@ -2066,6 +2066,19 @@ textarea.input {
   .app-main {
     padding: 14px 10px calc(var(--tabbar-h) + 16px);
   }
+
+  /* Sheets: stack actions full-width so 44px targets don't crowd. */
+  .sheet-actions {
+    flex-direction: column;
+  }
+
+  .sheet-actions .btn {
+    width: 100%;
+  }
+
+  .btn-row {
+    gap: 6px;
+  }
 }
 
 /* ---------- Motion preferences ---------- */
@@ -2076,5 +2089,108 @@ textarea.input {
   *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+ * Mobile polish — thumb-friendly targets, 360px overflow guards,
+ * horizontal table scroll, thumb-friendly tab bar, sheet sizing.
+ * (CSS/HTML only: no JS, no storage, no bot logic touched.)
+ * ============================================================ */
+
+/* ---------- Base guards (all viewports) ---------- */
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  /* Kill accidental horizontal page scroll on 360px viewports.
+     `clip` (unlike `hidden`) keeps position:fixed/sticky working. */
+  overflow-x: clip;
+}
+
+img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Page-header text wrapper (built by app.js) must shrink in the
+   flex row, otherwise long titles push past the viewport. */
+.page-head-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Preset cards: long provider names must not stretch the 2-col grid. */
+.preset-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+/* Table scroll wrappers (inline overflow-x:auto in section JS):
+   momentum scrolling on iOS + stop horizontal drag from chaining
+   into the page scroll. Desktop unaffected. */
+div:has(> .mx-table) {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+/* ---------- Mobile layout (bottom tab bar, < 1024px) ---------- */
+
+@media (max-width: 1023px) {
+  /* Tap targets ≥44px. */
+  .btn-sm {
+    min-height: 44px;
+  }
+
+  .mx-actions .btn {
+    min-height: 44px;
+  }
+
+  .seg button,
+  .mx-tab,
+  .sub-tab,
+  .mx-period .btn {
+    min-height: 44px;
+  }
+
+  .mx-toggle {
+    min-height: 44px;
+  }
+
+  .mx-back {
+    min-height: 44px;
+  }
+
+  /* Larger sheet close target; keep title text clear of it. */
+  .sheet-close {
+    width: 44px;
+    height: 44px;
+  }
+
+  .sheet-title {
+    padding-inline-end: 52px;
+  }
+
+  /* Tables: scroll horizontally inside their card instead of
+     squashing unreadably on phones. Desktop untouched. */
+  div:has(> .mx-table) > .mx-table {
+    min-width: 520px;
+  }
+
+  /* Thumb-friendly tab bar: roomier press area, larger glyphs. */
+  .tab {
+    padding: 8px 2px;
+    min-height: 48px;
+  }
+
+  .tab .ic {
+    width: 22px;
+    height: 22px;
   }
 }

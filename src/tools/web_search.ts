@@ -83,11 +83,13 @@ export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInpu
       if (query.length === 0) {
         throw new ToolError("invalid_input", "Search query is empty.");
       }
-
-      const provider = deps.resolve();
       const limit = clampLimit(input.limit);
 
       try {
+        // Inside the try: a deployment whose provider vanished (or was never
+        // configured) fails as a clean "not configured" tool error, not a raw
+        // SearchError escaping run().
+        const provider = deps.resolve();
         const results = await provider.search({
           query,
           limit,

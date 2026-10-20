@@ -4,12 +4,35 @@
  *
  * The builder composes a digest from REAL in-repo sources only:
  *  - date/time (Intl, Asia/Tehran)
+ *  - "what matters to you" focus: overdue reminders, today's events, items
+ *    starting soon, and items matching the owner's interest topics — ranked
+ *    above everything else, capped so a busy owner reads it in seconds
  *  - today's scheduled tasks (Storage.listTasks)
  *  - pending reminders due today (Storage.listReminders)
  *  - pending curator proposals (ProposalStore.countPending)
  *  - yesterday's usage/cost (UsageTracker ledger)
- *  - 3 web headlines (injected search function, fully defensive)
- *  - newest 3 long-term memories (Storage.listMemories)
+ *  - web headlines (injected search function, fully defensive; when the
+ *    owner has interest topics saved, the search is aimed at those topics
+ *    instead of generic filler)
+ *  - newest long-term memories (Storage.listMemories)
+ *
+ * PERSONALIZATION (read-only):
+ * - Interest topics are read from the owner's `user_prefs` under the key
+ *   `digest.interests` (JSON array of strings, e.g. ["AI", "meme page"]).
+ *   The digest NEVER writes preferences; whatever surface lets the owner
+ *   set topics is owned by another module. When no topics are saved, the
+ *   digest falls back to generic behavior.
+ * - Topics steer two things: (1) headline search queries ("<topic> news"
+ *   instead of generic headlines), (2) a "📌 about <topic>" highlight in
+ *   the focus section for tasks/memories whose text mentions a topic
+ *   (case-insensitive substring match — deliberately simple, defensive).
+ * - Time-awareness: the focus section puts overdue items first, then
+ *   today's events, then items starting within the next 3 hours.
+ * - Priority ranking: sections are gathered in priority order
+ *   (date → focus → tasks → reminders → events → proposals → usage →
+ *   headlines → memories) and a global item budget (MAX_DIGEST_ITEMS)
+ *   trims the lowest-priority item lists first, so a packed day still fits
+ *   in a quick read. Generic web headlines are the first to go.
  *
  * Every section is built inside its own try/catch: one failing source is
  * logged and skipped, and can never kill the digest.
@@ -120,6 +143,7 @@ export const MAX_DIGEST_CHARS = 2500;
 
 export type DigestSectionKind =
   | "date"
+  | "focus"
   | "tasks"
   | "reminders"
   | "events"
@@ -163,9 +187,65 @@ export interface DigestEventItem {
   daysUntil: number;
 }
 
+/**
+ * Why a focus item made the "what matters to you" cut. Language-neutral;
+ * rendering adds the words.
+ */
+export type DigestFocusReason =
+  | { type: "overdue" }
+  | { type: "soon"; atMs: number; verb: "starts at" | "due at" }
+  | { type: "today" }
+  | { type: "interest"; topic: string };
+
+/** One "what matters to you" highlight. Sorted: overdue → today → soon → interest. */
+export interface DigestFocusItem {
+  itemKind: "task" | "reminder" | "event" | "memory";
+  /** Storage id for tasks/reminders — drives the tap-to-act buttons. */
+  refId?: number;
+  /** Short label (rendered clipped). */
+  text: string;
+  reason: DigestFocusReason;
+}
+
+/** The "what matters to you" section: the personalized top of the digest. */
+export interface DigestFocusSection {
+  kind: "focus";
+  items: DigestFocusItem[];
+}
+
+/** user_prefs key holding the owner's interest topics (JSON string array). Read-only. */
+export const DIGEST_INTERESTS_PREF_KEY = "digest.interests";
+
+/**
+ * Global cap on rendered bullet items: the owner is busy, so a packed day
+ * still fits a quick read. applyItemBudget trims the lowest-priority
+ * sections first (headlines go first, focus last).
+ */
+export const MAX_DIGEST_ITEMS = 12;
+
+/** "Coming up soon" window for focus highlights. */
+export const FOCUS_SOON_MS = 3 * 60 * 60 * 1000;
+
+/** Max highlights in the "what matters to you" section. */
+export const MAX_FOCUS_ITEMS = 5;
+
+/** Max interest topics read from the pref (keeps search fan-out bounded). */
+export const MAX_INTEREST_TOPICS = 3;
+
+/**
+ * English UI strings owned by this module.
+ *
+ * NOTE: src/i18n/en.ts is frozen for this worker's scope (another worker
+ * owns it). These stay inline until the i18n pack is reopened, then move
+ * them under digest.sec.focus / digest.focus.* keys. UI stays English-only
+ * per the v1.0 rule — only date/number formatting varies by DigestLocale.
+ */
+const FOCUS_SECTION_TITLE = "🎯 What matters to you";
+
 /** Language-neutral digest section data. Rendering is per-language. */
 export type DigestSectionData =
   | { kind: "date"; nowMs: number }
+  | DigestFocusSection
   | { kind: "tasks"; items: DigestTaskItem[] }
   | { kind: "reminders"; items: DigestReminderItem[] }
   | { kind: "events"; items: DigestEventItem[] }
@@ -344,9 +424,12 @@ function fmtCost(usd: number, locale: DigestLocale): string {
 /**
  * Compose the digest sections as language-neutral data.
  *
- * Order: date header (always), tasks, reminders, upcoming events, curator
- * proposals, usage, headlines, memories. Each section builder is guarded so a
- * failing source is skipped with a log line instead of killing the digest.
+ * Priority order: date header (always), the personalized "what matters to
+ * you" focus, today's tasks, reminders, upcoming events, curator
+ * proposals, usage, headlines (generic filler — first to be trimmed), and
+ * memories. Each section builder is guarded so a failing source is skipped
+ * with a log line instead of killing the digest. After gathering,
+ * applyItemBudget trims the lowest-priority item lists to MAX_DIGEST_ITEMS.
  */
 export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionData[]> {
   const nowMs = deps.now !== undefined ? deps.now() : Date.now();
@@ -355,6 +438,14 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
 
   // --- Header: always present, never depends on storage. -------------------
   sections.push({ kind: "date", nowMs });
+
+  // --- "What matters to you": overdue, today, soon, interest matches. ------
+  try {
+    const s = focusData(deps, nowMs);
+    if (s) sections.push(s);
+  } catch (err) {
+    log(`digest: focus section skipped (${shortErr(err)})`);
+  }
 
   // --- Today's scheduled tasks ----------------------------------------------
   try {
@@ -411,41 +502,107 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
     log(`digest: memories section skipped (${shortErr(err)})`);
   }
 
-  return sections;
+  return applyItemBudget(sections);
 }
 
-/** Today's enabled scheduled tasks (next run inside the Tehran day). Always rendered. */
-function taskData(deps: DigestDeps, nowMs: number): DigestSectionData {
+/**
+ * Trim item lists to the global budget, lowest-priority sections first.
+ *
+ * Trim priority (first to lose items): headlines → memories → events →
+ * reminders → tasks → focus. Focus and tasks keep at least one item when
+ * they had any — focus is the personalized top, and tasks renders an empty
+ * state when it genuinely has none, so trimming it to zero would lie.
+ * Sections emptied by trimming are dropped, except tasks (its "nothing
+ * scheduled" empty state is informative). Pure, for tests.
+ */
+export function applyItemBudget(
+  sections: readonly DigestSectionData[],
+  maxItems: number = MAX_DIGEST_ITEMS,
+): DigestSectionData[] {
+  const trimmed: DigestSectionData[] = sections.map(copySection);
+  const TRIM_ORDER: DigestSectionKind[] = [
+    "headlines",
+    "memories",
+    "events",
+    "reminders",
+    "tasks",
+    "focus",
+  ];
+  const itemCount = (): number =>
+    trimmed.reduce((n, s) => n + ("items" in s ? s.items.length : 0), 0);
+  for (const kind of TRIM_ORDER) {
+    for (const s of trimmed) {
+      if (s.kind !== kind || !("items" in s)) continue;
+      // Never trim the personalized top or the schedule below one item.
+      const floor = s.kind === "focus" || s.kind === "tasks" ? 1 : 0;
+      while (itemCount() > maxItems && s.items.length > floor) {
+        s.items.pop();
+      }
+    }
+  }
+  return trimmed.filter((s) => {
+    if (!("items" in s)) return true;
+    if (s.kind === "tasks") return true; // keeps its empty state
+    return s.items.length > 0;
+  });
+}
+
+/** Shallow-copy a section so budget trimming never mutates the caller's data. */
+function copySection(s: DigestSectionData): DigestSectionData {
+  switch (s.kind) {
+    case "focus":
+      return { kind: "focus", items: [...s.items] };
+    case "tasks":
+      return { kind: "tasks", items: [...s.items] };
+    case "reminders":
+      return { kind: "reminders", items: [...s.items] };
+    case "events":
+      return { kind: "events", items: [...s.items] };
+    case "headlines":
+      return { kind: "headlines", items: [...s.items] };
+    case "memories":
+      return { kind: "memories", items: [...s.items] };
+    default:
+      return s;
+  }
+}
+
+/** Today's enabled scheduled tasks (next run inside the Tehran day). */
+function todayTasks(deps: DigestDeps, nowMs: number): DigestTaskItem[] {
   const { start, end } = tehranDayBounds(nowMs);
-  const items = deps.storage
+  return deps.storage
     .listTasks(deps.userId, 50)
     .filter((task) => task.enabled && task.nextRunAtMs >= start && task.nextRunAtMs < end)
     .slice(0, 5)
     .map((task) => ({ id: task.id, name: task.name, runAtMs: task.nextRunAtMs }));
-  return { kind: "tasks", items };
 }
 
-/** Pending reminders due by end of today (Tehran), overdue first. Skipped when empty. */
-function reminderData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+/** Always rendered (with an empty state when there is nothing). */
+function taskData(deps: DigestDeps, nowMs: number): DigestSectionData {
+  return { kind: "tasks", items: todayTasks(deps, nowMs) };
+}
+
+/** Pending reminders due by end of today (Tehran), overdue first. */
+function dueReminders(deps: DigestDeps, nowMs: number): DigestReminderItem[] {
   const { end } = tehranDayBounds(nowMs);
   const items = deps.storage
     .listReminders(deps.userId, 50)
     .filter((r) => r.dueAt <= end)
     .slice(0, 4)
     .map((r) => ({ id: r.id, text: r.text, dueAt: r.dueAt, overdue: r.dueAt < nowMs }));
+  items.sort((a, b) => Number(a.overdue) - Number(b.overdue) || a.dueAt - b.dueAt);
+  return items;
+}
+
+/** Skipped when empty. */
+function reminderData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+  const items = dueReminders(deps, nowMs);
   if (items.length === 0) return undefined;
   return { kind: "reminders", items };
 }
 
-/** Dated events in the next 7 days (Phase-3 proactive memory). Skipped when none.
- *
- * Events are stored as memories under the `event:` key prefix (see
- * src/memory/events.ts), so the digest reads them through the same
- * storage.listMemories call as the memory highlights — no new deps needed.
- * Malformed payloads are skipped; event content is rendered as plain text,
- * never interpreted.
- */
-function eventsData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+/** Dated events in the next 7 days (Phase-3 proactive memory). Raw list. */
+function upcomingEvents(deps: DigestDeps, nowMs: number): DigestEventItem[] {
   const items: DigestEventItem[] = [];
   for (const m of deps.storage.listMemories(deps.userId, 200)) {
     if (!m.key.startsWith(EVENT_KEY_PREFIX)) continue;
@@ -465,9 +622,22 @@ function eventsData(deps: DigestDeps, nowMs: number): DigestSectionData | undefi
       daysUntil: occ.daysUntil,
     });
   }
-  if (items.length === 0) return undefined;
   items.sort((a, b) => a.daysUntil - b.daysUntil);
-  return { kind: "events", items: items.slice(0, 5) };
+  return items.slice(0, 5);
+}
+
+/** Skipped when none.
+ *
+ * Events are stored as memories under the `event:` key prefix (see
+ * src/memory/events.ts), so the digest reads them through the same
+ * storage.listMemories call as the memory highlights — no new deps needed.
+ * Malformed payloads are skipped; event content is rendered as plain text,
+ * never interpreted.
+ */
+function eventsData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+  const items = upcomingEvents(deps, nowMs);
+  if (items.length === 0) return undefined;
+  return { kind: "events", items };
 }
 
 /** Pending curator proposals awaiting the owner's decision. Skipped when none. */
@@ -492,7 +662,12 @@ function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefin
 }
 
 /**
- * Three web headlines.
+ * Web headlines, aimed at the owner's interests when saved.
+ *
+ * When interest topics exist in user_prefs (`digest.interests`), each
+ * topic gets its own "<topic> news" query (up to MAX_INTEREST_TOPICS) so
+ * the headlines are about what the owner cares about instead of generic
+ * filler. Without topics, one generic query keeps the old behavior.
  *
  * Fully defensive: missing resolver, timeout, empty results, and parse
  * failures all drop the section instead of failing the digest. The section
@@ -501,36 +676,183 @@ function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefin
  */
 async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undefined> {
   if (deps.searchHeadlines === undefined) return undefined;
+  const interests = readInterests(deps);
+  const queries =
+    interests.length > 0 ? interests.map((t) => `${t} news`) : ["today's top headlines"];
+  const perQuery = interests.length > 0 ? 2 : 3;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
-  let hits: readonly DigestHeadline[];
+  const seen = new Set<string>();
+  const items: DigestHeadlineItem[] = [];
+  let lastError: unknown;
   try {
-    hits = await deps.searchHeadlines("today's top headlines", 3, controller.signal);
+    for (const query of queries) {
+      let hits: readonly DigestHeadline[];
+      try {
+        hits = await deps.searchHeadlines(query, perQuery, controller.signal);
+      } catch (err) {
+        lastError = err;
+        continue; // one bad query never kills the other topics
+      }
+      for (const h of hits) {
+        if (items.length >= 3) break;
+        const title = oneLine(h.title);
+        if (title.length === 0) continue;
+        const key = title.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const host = hostOf(h.url);
+        items.push(host !== undefined ? { title, host } : { title });
+      }
+      if (items.length >= 3) break;
+    }
   } finally {
     clearTimeout(timer);
   }
-  const items: DigestHeadlineItem[] = [];
-  for (const h of hits.slice(0, 3)) {
-    const title = oneLine(h.title);
-    if (title.length === 0) continue;
-    const host = hostOf(h.url);
-    items.push(host !== undefined ? { title, host } : { title });
+  if (items.length === 0) {
+    // Nothing usable: propagate the failure so the caller logs the
+    // skipped source (same contract as the old single-query path).
+    if (lastError !== undefined) throw lastError;
+    return undefined;
   }
-  if (items.length === 0) return undefined;
   return { kind: "headlines", items };
 }
 
-/** Newest 3 memories, as a gentle "on your mind" closer. Skipped when none.
- *  Structured keys (events, archives) are excluded — they have their own
- *  sections and their JSON payloads are not readable highlights. */
-function memoryData(deps: DigestDeps): DigestSectionData | undefined {
-  const items = deps.storage
+/** Newest memories, excluding structured keys (they have their own sections). */
+function recentMemories(deps: DigestDeps): DigestMemoryItem[] {
+  return deps.storage
     .listMemories(deps.userId, 10)
     .filter((m) => !m.key.startsWith(EVENT_KEY_PREFIX) && !m.key.startsWith(ARCHIVE_KEY_PREFIX))
     .slice(0, 3)
     .map((m) => ({ key: m.key, content: m.content }));
+}
+
+/** Newest 3 memories, as a gentle "on your mind" closer. Skipped when none. */
+function memoryData(deps: DigestDeps): DigestSectionData | undefined {
+  const items = recentMemories(deps);
   if (items.length === 0) return undefined;
   return { kind: "memories", items };
+}
+
+/**
+ * Read the owner's interest topics from user_prefs (READ-ONLY — the digest
+ * never writes preferences). The pref is a JSON array of strings under
+ * `digest.interests`. Malformed values degrade to "no interests" so a bad
+ * pref can never break the digest.
+ */
+function readInterests(deps: DigestDeps): string[] {
+  let raw: string | undefined;
+  try {
+    raw = deps.storage.getUserPref(deps.userId, DIGEST_INTERESTS_PREF_KEY);
+  } catch {
+    return [];
+  }
+  if (raw === undefined || raw.length === 0) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((v): v is string => typeof v === "string")
+      .map((s) => oneLine(s).slice(0, 40))
+      .filter((s) => s.length >= 2)
+      .slice(0, MAX_INTEREST_TOPICS);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The "what matters to you" section — the personalized, time-aware top of
+ * the digest.
+ *
+ * Priority order inside the section: overdue reminders first, then events
+ * happening today, then tasks/reminders starting within FOCUS_SOON_MS
+ * (soonest first), then items whose text mentions one of the owner's
+ * interest topics. Capped at MAX_FOCUS_ITEMS; skipped (undefined) when
+ * nothing qualifies, so a calm day keeps its friendly empty state.
+ */
+function focusData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+  const interests = readInterests(deps);
+  const tasks = todayTasks(deps, nowMs);
+  const reminders = dueReminders(deps, nowMs);
+  const events = upcomingEvents(deps, nowMs);
+  const memories = recentMemories(deps);
+
+  const items: DigestFocusItem[] = [];
+  const usedRefs = new Set<string>();
+
+  // 1. Overdue reminders — act now.
+  for (const r of reminders) {
+    if (!r.overdue) continue;
+    items.push({ itemKind: "reminder", refId: r.id, text: r.text, reason: { type: "overdue" } });
+    usedRefs.add(`reminder:${r.id}`);
+  }
+
+  // 2. Events happening today.
+  for (const e of events) {
+    if (e.daysUntil > 0) continue;
+    items.push({ itemKind: "event", text: e.name, reason: { type: "today" } });
+  }
+
+  // 3. Tasks and reminders starting soon (soonest first).
+  const soon: DigestFocusItem[] = [];
+  for (const t of tasks) {
+    if (t.runAtMs >= nowMs && t.runAtMs - nowMs <= FOCUS_SOON_MS) {
+      soon.push({
+        itemKind: "task",
+        refId: t.id,
+        text: t.name,
+        reason: { type: "soon", atMs: t.runAtMs, verb: "starts at" },
+      });
+      usedRefs.add(`task:${t.id}`);
+    }
+  }
+  for (const r of reminders) {
+    if (!r.overdue && r.dueAt >= nowMs && r.dueAt - nowMs <= FOCUS_SOON_MS) {
+      soon.push({
+        itemKind: "reminder",
+        refId: r.id,
+        text: r.text,
+        reason: { type: "soon", atMs: r.dueAt, verb: "due at" },
+      });
+      usedRefs.add(`reminder:${r.id}`);
+    }
+  }
+  soon.sort((a, b) => atMsOf(a.reason) - atMsOf(b.reason));
+  items.push(...soon);
+
+  // 4. Interest matches: tasks/memories mentioning a saved topic, not
+  //    already surfaced above. A deliberately simple substring match.
+  for (const topic of interests) {
+    if (items.length >= MAX_FOCUS_ITEMS) break;
+    const needle = topic.toLowerCase();
+    const candidates: Array<{ kind: "task" | "memory"; refId?: number; text: string }> = [
+      ...tasks.map((t) => ({ kind: "task" as const, refId: t.id, text: t.name })),
+      ...memories.map((m) => ({ kind: "memory" as const, text: m.content })),
+    ];
+    for (const c of candidates) {
+      if (items.length >= MAX_FOCUS_ITEMS) break;
+      const ref =
+        c.kind === "task" ? `task:${c.refId}` : `memory:${oneLine(c.text).slice(0, 40)}`;
+      if (usedRefs.has(ref)) continue;
+      if (!oneLine(c.text).toLowerCase().includes(needle)) continue;
+      usedRefs.add(ref);
+      items.push({
+        itemKind: c.kind,
+        ...(c.refId !== undefined ? { refId: c.refId } : {}),
+        text: c.text,
+        reason: { type: "interest", topic },
+      });
+    }
+  }
+
+  const final = items.slice(0, MAX_FOCUS_ITEMS);
+  if (final.length === 0) return undefined;
+  return { kind: "focus", items: final };
+}
+
+function atMsOf(reason: DigestFocusReason): number {
+  return reason.type === "soon" ? reason.atMs : 0;
 }
 
 function shortErr(err: unknown): string {
@@ -540,6 +862,20 @@ function shortErr(err: unknown): string {
 // ---------------------------------------------------------------------------
 // Per-language rendering
 // ---------------------------------------------------------------------------
+
+/** One line of "why this matters", in the digest locale (English UI). */
+function focusReasonText(reason: DigestFocusReason, locale: DigestLocale): string {
+  switch (reason.type) {
+    case "overdue":
+      return "⚠️ overdue";
+    case "soon":
+      return `⏰ ${reason.verb} ${fmtTimeOf(reason.atMs, locale)}`;
+    case "today":
+      return "📅 today";
+    case "interest":
+      return `📌 about "${reason.topic}"`;
+  }
+}
 
 /** Render one section's title + body in English. Pure. */
 export function renderDigestSection(
@@ -553,6 +889,12 @@ export function renderDigestSection(
         title: `☀️ ${t(greetingKey(hour), "en")}!`,
         body: t("digest.date.body", "en", { date, time }),
       };
+    }
+    case "focus": {
+      const lines = section.items.map(
+        (item) => `• ${clip(item.text, 60)} — ${focusReasonText(item.reason, locale)}`,
+      );
+      return { title: FOCUS_SECTION_TITLE, body: lines.join("\n") };
     }
     case "tasks": {
       const title = t("digest.sec.tasks", "en");

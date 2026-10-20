@@ -62,7 +62,7 @@ export class SearchSettingsService {
    */
   select(provider: string): SearchServiceResult<true> {
     if (!isSearchProviderType(provider)) {
-      return fail("سرویس جستجوی انتخابی نامعتبر است.");
+      return fail("The selected search service is invalid.");
     }
     this.storage.setSearchProvider(provider);
     return { ok: true, data: true };
@@ -76,8 +76,8 @@ export class SearchSettingsService {
    */
   setKey(apiKey: string): SearchServiceResult<true> {
     const trimmed = apiKey.trim();
-    if (trimmed.length === 0) return fail("کلید خالی است.");
-    if (trimmed.length > MAX_KEY_LENGTH) return fail("کلید خیلی طولانی است.");
+    if (trimmed.length === 0) return fail("The key is empty.");
+    if (trimmed.length > MAX_KEY_LENGTH) return fail("The key is too long.");
 
     try {
       const envelope = this.secrets.encrypt(trimmed);
@@ -87,7 +87,7 @@ export class SearchSettingsService {
       if (err instanceof SecretStoreError && err.kind === "missing_key") {
         return fail(err.message, "missing_key");
       }
-      return fail("ذخیرهٔ کلید ناموفق بود.");
+      return fail("Failed to store the key.");
     }
   }
 

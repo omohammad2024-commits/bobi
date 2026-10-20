@@ -36,6 +36,8 @@ import type { AdapterRegistry } from "./adapter_registry";
 import type { ProviderSecretStore } from "./secret_store";
 import { CredentialPoolStore } from "./secret_store";
 import type { Storage } from "../storage/storage";
+// --- smart routing (worker-1) ---
+import { SmartRouter } from "./smart_router";
 
 /**
  * What the usage listener receives for one attempt that returned usage.
@@ -276,7 +278,9 @@ export class AiGateway implements AiProvider {
     // Snapshot: read the selection once, at the start of the request. Every
     // candidate in this request is drawn from that one consistent snapshot, so
     // a configuration change mid-flight cannot mix two different settings.
-    const plan = this.plan();
+    // --- smart routing (worker-1): the request is passed so the router can
+    // classify it; with routing off or <2 providers the plan is unchanged.
+    const plan = this.plan(req);
 
     if (plan.candidates.length === 0) {
       throw new AiError("invalid_response", "No active provider or model is set.");
@@ -332,7 +336,8 @@ export class AiGateway implements AiProvider {
   async *completeStream(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined> {
     // Same snapshot discipline as complete(): the selection is fixed once,
     // up front, so a settings change mid-stream cannot mix configurations.
-    const plan = this.plan();
+    // --- smart routing (worker-1): same routing hook as complete().
+    const plan = this.plan(req);
 
     if (plan.candidates.length === 0) {
       throw new AiError("invalid_response", "No active provider or model is set.");
@@ -428,14 +433,20 @@ export class AiGateway implements AiProvider {
   /**
    * Resolve the ordered candidate list and the failover policy, as one
    * consistent snapshot for this request.
+   *
+   * --- smart routing (worker-1) ---
+   * When routing is enabled and the owner has 2+ eligible providers, the
+   * FIRST candidate comes from the SmartRouter (cheapest/fastest pair that
+   * satisfies the request's task tier) instead of the active selection.
+   * Otherwise the existing behavior is exactly preserved.
    */
-  private plan(): {
+  private plan(req?: CompletionRequest): {
     candidates: GatewaySelection[];
     failover: { enabled: boolean; maxAttempts: number; timeoutMs: number };
     timeoutMs: number;
   } {
     const settings = this.storage.getFailoverSettings();
-    const primary = this.currentSelection();
+    const primary = this.routedPrimary(req) ?? this.currentSelection();
     const candidates: GatewaySelection[] = [];
 
     // The active selection is always first when it is valid.
@@ -459,6 +470,52 @@ export class AiGateway implements AiProvider {
       failover: settings,
       timeoutMs: settings.timeoutMs,
     };
+  }
+
+  /**
+   * --- smart routing (worker-1) ---
+   *
+   * Pick the primary candidate via the SmartRouter when routing applies:
+   * enabled (BOBI_SMART_ROUTING is not 0/false/no/off) AND the owner has
+   * 2+ eligible providers (enabled, with credential, with an enabled model).
+   * Returns undefined when routing does not apply, so the caller falls back
+   * to currentSelection() with byte-for-byte identical behavior.
+   *
+   * The decision is logged at debug level: provider/model labels and the
+   * routing reason only — never prompts, keys, or user content. Any failure
+   * inside the router falls back to the active selection; routing must never
+   * break a request.
+   */
+  private routedPrimary(req: CompletionRequest | undefined): GatewaySelection | undefined {
+    if (req === undefined) return undefined;
+    try {
+      const router = new SmartRouter(this.storage, this.adapters);
+      if (!router.shouldRoute()) return undefined;
+      // The owner's active selection is the tie-break preference: the router
+      // deviates from it only when another candidate scores strictly better.
+      const active = this.currentSelection();
+      const decision = router.route(
+        req,
+        active !== undefined
+          ? { prefer: { providerId: active.providerId, modelId: active.modelId } }
+          : undefined,
+      );
+      if (!decision) return undefined;
+      const provider = this.storage.getProvider(decision.providerId);
+      if (!provider || !provider.enabled) return undefined;
+      const model = this.storage
+        .listModels(provider.id)
+        .find((m) => m.enabled && m.modelId === decision.modelId);
+      if (!model) return undefined;
+      console.debug(
+        `[smart-routing] ${decision.providerLabel}/${decision.modelLabel} — ${decision.reason}`,
+      );
+      return this.resolve(provider.id, model.id);
+    } catch {
+      // Routing must never break a request: fall back to the active
+      // selection with the exact pre-routing behavior.
+      return undefined;
+    }
   }
 
   /** Resolve a specific provider+model pair, or undefined if ineligible. */

@@ -55,7 +55,7 @@ import {
 } from "../groups/group_digest";
 import { getModConfig, modConfigKey, setModConfig } from "../moderation/config";
 import { buildDigest, formatDigest } from "../digest/builder";
-import { UsageTracker } from "../ai/usage";
+import { UsageTracker, getByProvider, getDailyBreakdown, getLatencyStats } from "../ai/usage";
 
 // ------------------------------------------------------------ deps ----------
 
@@ -321,6 +321,12 @@ async function route(
       // usage
       case "usage.report":
         return handleUsageReport(storage, body);
+      case "usage.daily":
+        return handleUsageDaily(storage, body);
+      case "usage.byProvider":
+        return handleUsageByProvider(storage, body);
+      case "usage.latency":
+        return handleUsageLatency(storage, body);
       // reminders / tasks / goals
       case "tasks.list":
         return handleTasksList(storage, ownerId);
@@ -1372,9 +1378,13 @@ function handleTrustRemove(storage: Storage, body: Record<string, unknown>): Res
 
 // ------------------------------------------------------------ usage --------
 
-function handleUsageReport(storage: Storage, body: Record<string, unknown>): Response {
+function usageDays(body: Record<string, unknown>): number {
   const daysRaw = asInt(body["days"]);
-  const days = daysRaw === undefined ? 7 : Math.min(Math.max(daysRaw, 1), 90);
+  return daysRaw === undefined ? 7 : Math.min(Math.max(daysRaw, 1), 90);
+}
+
+function handleUsageReport(storage: Storage, body: Record<string, unknown>): Response {
+  const days = usageDays(body);
   const tracker = new UsageTracker(storage);
   const sinceMs = Date.now() - days * 24 * 60 * 60 * 1000;
   const totals = tracker.totalsAll(sinceMs);
@@ -1391,6 +1401,59 @@ function handleUsageReport(storage: Storage, body: Record<string, unknown>): Res
       inputTokens: m.inputTokens,
       outputTokens: m.outputTokens,
       estimatedUsd: m.estimatedUsd,
+    })),
+  });
+}
+
+/** Daily token/cost breakdown for the period (owner-only). */
+function handleUsageDaily(storage: Storage, body: Record<string, unknown>): Response {
+  const days = usageDays(body);
+  const daily = getDailyBreakdown(storage, days);
+  return ok({
+    days,
+    daily: daily.map((d) => ({
+      date: d.date,
+      dayStartMs: d.dayStartMs,
+      runs: d.runs,
+      inputTokens: d.inputTokens,
+      outputTokens: d.outputTokens,
+      estimatedUsd: d.estimatedUsd,
+    })),
+  });
+}
+
+/** Per-provider stats for the period (owner-only). */
+function handleUsageByProvider(storage: Storage, body: Record<string, unknown>): Response {
+  const days = usageDays(body);
+  const providers = getByProvider(storage, days);
+  return ok({
+    days,
+    providers: providers.map((p) => ({
+      providerId: p.providerId,
+      providerName: p.providerName,
+      runs: p.runs,
+      successRate: p.successRate,
+      avgLatencyMs: p.avgLatencyMs,
+      inputTokens: p.inputTokens,
+      outputTokens: p.outputTokens,
+      estimatedUsd: p.estimatedUsd,
+    })),
+  });
+}
+
+/** Latency percentiles per model (owner-only). */
+function handleUsageLatency(storage: Storage, body: Record<string, unknown>): Response {
+  const days = usageDays(body);
+  const stats = getLatencyStats(storage, days);
+  return ok({
+    days,
+    tracked: stats.tracked,
+    perModel: stats.perModel.map((m) => ({
+      modelId: m.modelId,
+      runs: m.runs,
+      p50Ms: m.p50Ms,
+      p95Ms: m.p95Ms,
+      maxMs: m.maxMs,
     })),
   });
 }

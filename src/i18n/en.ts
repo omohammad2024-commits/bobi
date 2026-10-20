@@ -12,8 +12,8 @@ export const en: LanguagePack = {
   "menu.label.chat": "Chat",
   "menu.label.tools": "Tools",
   "menu.label.about": "About BOBI",
-  "menu.reply.chat": "Chat: you'll soon be able to talk to BOBI.",
-  "menu.reply.tools": "Tools: the tool list will be added in the next step.",
+  "menu.reply.chat": "Chat: just send a message to talk to BOBI.",
+  "menu.reply.tools": "Tools: the tool list will appear here in a future update.",
   "menu.reply.about": "BOBI — the all-purpose agent bot. Beta version.",
   "menu.reply.unknown": "Unknown option.",
   "menu.tool.calculator": "Calculator",
@@ -25,7 +25,7 @@ export const en: LanguagePack = {
   "menu.tools.title": "BOBI's active tools:",
   "menu.tools.empty": "Tools: there are no active tools.",
   "menu.tools.note":
-    "The list above means the tools are available; running each one depends on your permission.",
+    "These tools are available to BOBI; running each one may need extra permissions.",
   "menu.tools.item": "{index}. {label}",
 
   // ---- /start ----
@@ -54,10 +54,10 @@ export const en: LanguagePack = {
   "voice.mode.auto": "auto",
   "voice.mode.always": "always",
   "voice.mode.never": "never",
-  "voice.set_auto": "Done; voice mode: auto — send voice, get voice back.",
-  "voice.set_always": "Done; voice mode: always — every reply comes as voice.",
-  "voice.set_never": "Done; voice mode: never — every reply stays text.",
-  "voice.unknown_option": "Unknown option; use one of: auto, always, never.",
+  "voice.set_auto": "Done — voice mode set to auto: send voice, get voice back.",
+  "voice.set_always": "Done — voice mode set to always: every reply comes as voice.",
+  "voice.set_never": "Done — voice mode set to never: every reply stays text.",
+  "voice.unknown_option": "Unknown option — use auto, always, or never.",
   "voice.tts_failed": "Text-to-speech failed; sending the reply as text.",
   "voice.truncated": "The reply was long; continuing as text:",
 
@@ -70,8 +70,8 @@ export const en: LanguagePack = {
   "personality.list_item": "• {name} — {label}: {description}{mark}",
   "personality.current_mark": " ← current",
   "personality.usage": "To change: /personality <name>",
-  "personality.unknown": "Unknown personality «{name}». Options: {options}",
-  "personality.changed": "Reply personality changed to «{label}».",
+  "personality.unknown": "Unknown personality \"{name}\". Options: {options}",
+  "personality.changed": "Reply personality changed to \"{label}\".",
 
   // ---- /reset ----
   "reset.done": "This conversation's history was cleared. 🧹",
@@ -79,7 +79,7 @@ export const en: LanguagePack = {
 
   // ---- /compress ----
   "compress.compressed":
-    "Summarization done ✅ Old conversations were compressed and their summaries kept.",
+    "Done ✅ Old conversations were compressed; the summary was kept.",
   "compress.nothing": "Not enough messages have accumulated for summarization yet.",
   "compress.failed": "Summarization failed; try again later.",
   "compress.unavailable": "Summarization is not active in this mode.",
@@ -114,9 +114,9 @@ export const en: LanguagePack = {
   "help.cmd.sessions": "List past sessions",
   "help.cmd.status": "Session status",
   "help.cmd.context": "Context window status",
-  "help.cmd.busy": "Busy-behavior preference",
+  "help.cmd.busy": "What to do while busy",
   "help.cmd.whoami": "Show my role",
-  "help.cmd.footer": "Technical footer preference",
+  "help.cmd.footer": "Technical footer on replies",
   "help.cmd.version": "Show the BOBI version",
   "help.cmd.new": "Start a fresh session",
   "help.cmd.bg": "Run a prompt in the background",
@@ -163,7 +163,7 @@ export const en: LanguagePack = {
 
   // ---- rate limit / turn errors (bot.ts §11c) ----
   "ratelimit.wait": "You're going a bit fast; try again in about {seconds} seconds.",
-  "reply.truncated": "I hit this reply's step budget; ask more specifically for more detail.",
+  "reply.truncated": "I ran out of steps on this reply — ask a more specific question for more detail.",
   "media.skipped_title": "These attachments couldn't be used:",
   "media.skipped_too_large": "• {kind}: over the size limit.",
   "media.skipped_too_long": "• {kind}: too long to process.",
@@ -171,7 +171,7 @@ export const en: LanguagePack = {
   "media.skipped_other": "• {kind}: couldn't be fetched.",
   "media.empty": "The message is empty.",
   "error.empty_response": "I got no reply; try again.",
-  "error.auth": "The service is unavailable (authentication).",
+  "error.auth": "Authentication failed — the AI service is unavailable. Check the provider's API key.",
   "error.quota": "The usage quota is full; try again in a bit.",
   "error.network": "Network error; try again.",
   "error.timeout": "The reply took too long; it was cancelled.",
@@ -202,8 +202,8 @@ export const en: LanguagePack = {
   "pal.page": "Page {page} of {pages}",
   "pal.prev": "‹ Prev",
   "pal.next": "Next ›",
-  "pal.back_cats": "« Categories",
-  "pal.back_group": "« Back",
+  "pal.back_cats": "‹ Categories",
+  "pal.back_group": "‹ Back",
   "pal.usage.needs_args": "This command takes arguments; type it in chat:",
   "pal.usage.example": "Example: {example}",
   "pal.owner_only": "This command is owner-only.",
@@ -212,26 +212,26 @@ export const en: LanguagePack = {
   // ---- onboarding wizard (onb:) ----
   "onb.progress": "Step {n} of {total}",
   "onb.intro.title": "👋 Welcome to BOBI!",
-  "onb.intro.body": "I'm BOBI — your Persian-speaking agent on Telegram.\n\nI set reminders, write summaries, search the web, read files — just talk to me.\n\nTo actually think, I first need a connection to an AI service. Let's set it up in 4 steps 👇",
+  "onb.intro.body": "I'm BOBI — your personal AI agent on Telegram.\n\nI set reminders, write summaries, search the web, read files — just talk to me.\n\nTo start thinking, I need a connection to an AI service. Let's set it up in 4 steps 👇",
   "onb.intro.start": "🚀 Start",
   "onb.cancel": "✖ Cancel",
   "onb.skip": "⏭ Skip",
   "onb.back": "‹ Back",
   "onb.continue": "Continue ›",
   "onb.provider.title": "🔑 Connect AI",
-  "onb.provider.body": "Without a connection, BOBI is just a menu 😅\n\nPick a service, then send your API key. That's it — the endpoint and model are set up automatically.",
-  "onb.provider.configured": "✅ “{label}” is connected and active.",
+  "onb.provider.body": "Without a connection I can't think — I'm just a menu 😅\n\nPick a service, then send your API key. The endpoint and model are configured automatically.",
+  "onb.provider.configured": "✅ \"{label}\" is connected and active.",
   "onb.provider.pick": "Pick a service:",
   "onb.provider.retry": "🔁 Retry test",
   "onb.provider.test_fail_note": "⚠️ The provider was created but the connection test failed: {msg}\nYou can retry the test, continue anyway, or check it later from /ai.",
   "onb.key.junk": "⚠️ That doesn't look like a key; send the API key again.",
   "onb.key.testing": "⏳ Connecting and running a live test…",
   "onb.key.setup_fail": "❌ Failed: {msg}",
-  "onb.key.retry_hint": "Send the key again, or go «Back» to pick another service.",
+  "onb.key.retry_hint": "Send the key again, or tap ‹ Back to pick another service.",
   "onb.key.ok": "✅ Connected! The live test passed.",
-  "onb.group_key_hint": "🔒 Better do this step in a private chat — the key would be visible to the group here.",
-  "onb.profile.title": "🎭 Personality & language",
-  "onb.profile.body": "Pick BOBI's tone and the UI language. You can change them anytime with /personality and /lang.",
+  "onb.group_key_hint": "🔒 Do this step in a private chat — your key would be visible to everyone here.",
+  "onb.profile.title": "🎭 Personality",
+  "onb.profile.body": "Pick BOBI's reply tone. You can change it anytime with /personality.",
   "onb.profile.pers_label": "🎭 Personality:",
   "onb.profile.lang_label": "🌐 Language:",
   "onb.demos.title": "⚡ Try it",
@@ -246,7 +246,7 @@ export const en: LanguagePack = {
   "onb.done.title": "🎉 All set!",
   "onb.done.body": "BOBI is ready. From here, just talk — I'll handle the rest.\n\nRe-run this guide anytime with /start onboarding.",
   "onb.again": "🔁 Re-run the guide",
-  "onb.cancelled": "OK, the guide is cancelled. Come back anytime with /start onboarding. 👋",
+  "onb.cancelled": "Setup guide cancelled. You can restart it anytime with /start onboarding. 👋",
 
   // ---- interactive digest (/digest, dgst:) ----
   "help.cmd.digest": "Interactive daily digest",
@@ -322,11 +322,11 @@ export const en: LanguagePack = {
   "digest.memory_card.saved": "Saved: {date}",
 
   // ---- phase 4: skill sharing (export/import packages) ----
-  "ph4_skill_share.export.not_found": "❌ No skill named “{name}” found.",
-  "ph4_skill_share.export.too_large": "❌ The package for skill “{name}” exceeds the size cap and cannot be exported.",
+  "ph4_skill_share.export.not_found": "❌ No skill named \"{name}\" found.",
+  "ph4_skill_share.export.too_large": "❌ The package for skill \"{name}\" exceeds the size cap and cannot be exported.",
   "ph4_skill_share.export.failed": "❌ Exporting the package failed.",
   "ph4_skill_share.export.done":
-    "📦 Skill package “{name}” is ready (version {version}).\nKeep this `.bobiskill` file or send it to another BOBI instance; install it with “/skill import”.",
+    "📦 Skill package \"{name}\" is ready (version {version}).\nKeep this `.bobiskill` file or send it to another BOBI instance; install it with \"/skill import\".",
   "ph4_skill_share.export.no_version": "no version",
   "ph4_skill_share.import.not_package": "❌ Only `.bobiskill` files can be imported.",
   "ph4_skill_share.import.too_large": "❌ Package size ({bytes}) exceeds the {max} cap.",
@@ -351,10 +351,10 @@ export const en: LanguagePack = {
   "ph4_skill_share.import.exported_at": "Exported: {when} from {instance}",
   "ph4_skill_share.import.capabilities": "Declared capabilities: {caps}",
   "ph4_skill_share.import.disabled_note":
-    "⏸️ This skill will be installed DISABLED; enable it after approval with “/skill enable {name}”.",
+    "⏸️ This skill will be installed DISABLED; enable it after approval with \"/skill enable {name}\".",
   "ph4_skill_share.import.done_disabled":
-    "✅ Skill “{name}” imported and disabled.\nTo enable: /skill enable {name}",
-  "ph4_skill_share.import.rejected": "🚫 Import of “{name}” cancelled.",
+    "✅ Skill \"{name}\" imported and disabled.\nTo enable: /skill enable {name}",
+  "ph4_skill_share.import.rejected": "🚫 Import of \"{name}\" cancelled.",
 
   // ---- phase 5: skill package signing (ed25519) + trusted publishers ----
   "ph5_skill_signing.keygen.done":
@@ -369,10 +369,10 @@ export const en: LanguagePack = {
     "🔑 Skill signing PRIVATE key — strictly confidential!\nKeep this file safe; anyone holding it can sign packages in your name.",
   "ph5_skill_signing.export.signed_note": "🔏 Signed with key `{keyId}`.",
   "ph5_skill_signing.export.sign_no_key":
-    "❌ “--sign” was requested but no signing key exists yet. First: /skill keygen",
+    "❌ \"--sign\" was requested but no signing key exists yet. First: /skill keygen",
   "ph5_skill_signing.export.signer_invalid":
-    "❌ The stored signing key is corrupt, so the package was not signed. Generate a fresh key with “/skill keygen --force”.",
-  "ph5_skill_signing.import.sig_trusted": "✅ Signature: “{label}” — trusted publisher",
+    "❌ The stored signing key is corrupt, so the package was not signed. Generate a fresh key with \"/skill keygen --force\".",
+  "ph5_skill_signing.import.sig_trusted": "✅ Signature: \"{label}\" — trusted publisher",
   "ph5_skill_signing.import.sig_unknown":
     "✏️ Signed with unknown key `{keyId}` — not in your trust list.",
   "ph5_skill_signing.import.sig_unsigned": "⚠️ Unsigned — approve only if you trust the package source.",
@@ -380,21 +380,21 @@ export const en: LanguagePack = {
   "ph5_skill_signing.trust.no_input": "❌ Give a publisher id: /skill trust <key-id|public-key> [label]",
   "ph5_skill_signing.trust.invalid":
     "❌ Invalid input; give the 64-hex key fingerprint or the public key itself (base64).",
-  "ph5_skill_signing.trust.added": "✅ Publisher “{label}” with id `{keyId}` added to the trust list.",
-  "ph5_skill_signing.trust.updated": "ℹ️ This publisher was already trusted; label updated: “{label}”",
+  "ph5_skill_signing.trust.added": "✅ Publisher \"{label}\" with id `{keyId}` added to the trust list.",
+  "ph5_skill_signing.trust.updated": "ℹ️ This publisher was already trusted; label updated: \"{label}\"",
   "ph5_skill_signing.untrust.no_input": "❌ Give a publisher id: /skill untrust <key-id>",
   "ph5_skill_signing.untrust.removed":
-    "🗑️ Publisher “{label}” (`{keyId}`) removed from the trust list.\nInstalled skills from this publisher are flagged in “/skill list”.",
+    "🗑️ Publisher \"{label}\" (`{keyId}`) removed from the trust list.\nInstalled skills from this publisher are flagged in \"/skill list\".",
   "ph5_skill_signing.untrust.missing": "❌ This id is not in the trust list.",
   "ph5_skill_signing.trusted.title": "🤝 Trusted publishers ({count})",
-  "ph5_skill_signing.trusted.empty": "Trust list is empty.\nAdd a publisher with “/skill trust <id> [label]”.",
-  "ph5_skill_signing.trusted.item": "• “{label}” — `{keyId}`",
+  "ph5_skill_signing.trusted.empty": "Trust list is empty.\nAdd a publisher with \"/skill trust <id> [label]\".",
+  "ph5_skill_signing.trusted.item": "• \"{label}\" — `{keyId}`",
   "ph5_skill_signing.list.title": "📦 Installed skills ({count})",
   "ph5_skill_signing.list.empty": "No skills installed yet.",
   "ph5_skill_signing.list.item": "• {name} — {status} — {sig}",
   "ph5_skill_signing.list.enabled": "enabled",
   "ph5_skill_signing.list.disabled": "disabled",
-  "ph5_skill_signing.list.sig_trusted": "✅ “{label}”",
+  "ph5_skill_signing.list.sig_trusted": "✅ \"{label}\"",
   "ph5_skill_signing.list.sig_revoked": "⚠️ valid signature, publisher not trusted",
   "ph5_skill_signing.list.sig_unsigned": "unsigned",
 };

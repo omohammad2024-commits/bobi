@@ -83,7 +83,7 @@ export function createCurateMemoriesTool(deps: CuratorToolDeps): Tool<Record<str
   return {
     name: "curate_memories",
     description:
-      "حافظه‌های بلندمدت را بازبینی کن و پیشنهادهای بهبود (ادغام تکراری‌ها، حذف قدیمی‌ها، تقسیم شلوغ‌ها) را ذخیره کن. خودش هیچ‌چیز را تغییر نمی‌دهد؛ اعمال پیشنهادها فقط با ابزار curator_decide و تأیید مالک است (فقط مالک).",
+      'Review long-term memories and store improvement proposals (merge duplicates, remove stale entries, split overloaded ones). It changes nothing by itself; proposals are applied only via the curator_decide tool with owner approval (owner only).',
     enabled: true,
     ownerOnly: true,
     permission: { requires: [CURATE_MEMORIES_PERMISSION] },
@@ -129,7 +129,7 @@ export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDeci
   return {
     name: "curator_decide",
     description:
-      "دربارهٔ یک پیشنهاد بازبینی حافظه تصمیم بگیر: «approve» یعنی اعمال پیشنهاد روی حافظه، «reject» یعنی فقط بستن پیشنهاد. بدون تأیید صریح، هیچ پیشنهادی اعمال نمی‌شود (فقط مالک).",
+      'Decide on a memory-review proposal: "approve" applies the proposal to memory, "reject" just closes it. No proposal is applied without explicit approval (owner only).',
     enabled: true,
     ownerOnly: true,
     permission: { requires: [CURATOR_DECIDE_PERMISSION] },
@@ -139,14 +139,14 @@ export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDeci
         proposalId: {
           type: "string",
           required: true,
-          description: "شناسهٔ پیشنهاد، از خروجی curate_memories.",
+          description: "Proposal id, from the curate_memories output.",
           minLength: 1,
           maxLength: 128,
         },
         decision: {
           type: "enum",
           required: true,
-          description: "تصمیم مالک.",
+          description: "The owner's decision.",
           choices: ["approve", "reject"] as const,
         },
       },
@@ -161,7 +161,7 @@ export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDeci
       if (!proposal) {
         throw new ToolError(
           "not_found",
-          "پیشنهادی با این شناسه یافت نشد؛ شاید قبلاً تصمیم گرفته شده یا منقضی شده است.",
+          "No proposal found with this id; it may have already been decided or expired.",
         );
       }
 
@@ -219,7 +219,7 @@ export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<Summari
   return {
     name: "summarize_memories",
     description:
-      "بایگانی خودکار حافظه‌های قدیمی (فقط مالک): حافظه‌های به‌روزرسانی‌نشدهٔ قدیمی را در یک ورودی «بایگانی» خلاصه می‌کند و حذف نسخه‌های اصلی را به‌صورت پیشنهاد ثبت می‌کند — حذف فقط با تأیید مالک در curator_decide. پیش‌فرض: قدیمی‌تر از ۹۰ روز.",
+      'Automatically archive old memories (owner only): summarizes not-recently-updated old memories into one "archive" entry and files deletion of the originals as a proposal — deletion only with owner approval in curator_decide. Default: older than 90 days.',
     enabled: true,
     ownerOnly: true,
     permission: { requires: [SUMMARIZE_MEMORIES_PERMISSION] },
@@ -229,14 +229,14 @@ export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<Summari
         olderThanDays: {
           type: "number",
           required: false,
-          description: "آستانهٔ قدمت به روز (پیش‌فرض ۹۰).",
+          description: "Age threshold in days (default 90).",
           minimum: 7,
           maximum: 365,
         },
         maxEntries: {
           type: "number",
           required: false,
-          description: "سقف تعداد حافظه در هر اجرا (پیش‌فرض ۲۰).",
+          description: "Max memories per run (default 20).",
           minimum: 1,
           maximum: 50,
         },
@@ -254,7 +254,7 @@ export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<Summari
       if (input.maxEntries !== undefined) summarizeOpts.maxEntries = input.maxEntries;
       const report = await service.review(userId, summarizeOpts);
       if (!report.archived || report.proposal === undefined) {
-        return { archived: false, summaryFa: report.reason ?? "چیزی بایگانی نشد." };
+        return { archived: false, summaryFa: report.reason ?? "Nothing was archived." };
       }
       // The deletion proposal goes through the standard store, so the owner
       // approves it in curator_decide like any other proposal.
@@ -301,7 +301,7 @@ export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput,
   return {
     name: "note_event",
     description:
-      "ثبت رویداد تاریخ‌دار در حافظه (فقط مالک): تولد، سالگرد، تعهد ماهانه یا رویداد یک‌باره. تاریخ فارسی مثل «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳»؛ رویدادهای پیش رو در خلاصهٔ صبحگاهی می‌آیند و پیشاپیش یادآوری می‌شوند.",
+      "Record a dated event in memory (owner only): birthday, anniversary, monthly commitment or one-off event. Persian date like «۱۵ مرداد» or «۲۰ شهریور ۱۴۰۳»; upcoming events appear in the morning digest and are reminded ahead of time.",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [NOTE_EVENT_PERMISSION] },
@@ -311,27 +311,27 @@ export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput,
         name: {
           type: "string",
           required: true,
-          description: "نام رویداد، مثلاً «علی» یا «قسط وام».",
+          description: "Event name, e.g. «علی» or «قسط وام».",
           minLength: 1,
           maxLength: 120,
         },
         kind: {
           type: "enum",
           required: true,
-          description: "نوع رویداد.",
+          description: "Event type.",
           choices: ["birthday", "anniversary", "monthly", "once"] as const,
         },
         date: {
           type: "string",
           required: true,
-          description: "تاریخ فارسی: «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳».",
+          description: "Persian date: «۱۵ مرداد» or «۲۰ شهریور ۱۴۰۳».",
           minLength: 1,
           maxLength: 40,
         },
         note: {
           type: "string",
           required: false,
-          description: "یادداشت اختیاری.",
+          description: "Optional note.",
           maxLength: 200,
         },
       },
@@ -340,13 +340,13 @@ export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput,
     async run(input: NoteEventInput, ctx: ToolContext): Promise<NoteEventOutput> {
       const userId = ownerOf(ctx, deps);
       if (!EVENT_KINDS.includes(input.kind)) {
-        throw new ToolError("invalid_input", "نوع رویداد نامعتبر است.");
+        throw new ToolError("invalid_input", "Invalid event type.");
       }
       const parsed = parsePersianDate(input.date);
       if (parsed === null) {
         throw new ToolError(
           "invalid_input",
-          "تاریخ را نفهمیدم؛ مثل «۱۵ مرداد» یا «۲۰ شهریور ۱۴۰۳» بنویس.",
+          "I could not parse that date; write it like «۱۵ مرداد» or «۲۰ شهریور ۱۴۰۳».",
         );
       }
       const store = new EventStore(deps.provider);
@@ -365,7 +365,7 @@ export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput,
         name: input.name.trim(),
         kind: parsed.jYear !== undefined ? "once" : input.kind,
         labelFa: parsed.labelFa,
-        summaryFa: `رویداد «${input.name.trim()}» در ${parsed.labelFa} ثبت شد.`,
+        summaryFa: `Event "${input.name.trim()}" recorded for ${parsed.labelFa}.`,
       };
     },
   };
@@ -387,7 +387,7 @@ export interface ListEventsOutput {
 export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string, never>, ListEventsOutput> {
   return {
     name: "list_events",
-    description: "فهرست رویدادهای تاریخ‌دار ثبت‌شده با فاصلهٔ روز تا وقوع بعدی (فقط مالک).",
+    description: "List recorded dated events with days until the next occurrence (owner only).",
     enabled: true,
     ownerOnly: true,
     permission: { requires: [LIST_EVENTS_PERMISSION] },
@@ -425,10 +425,10 @@ export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string,
 function ownerOf(ctx: ToolContext, deps: CuratorToolDeps): string {
   const id = ctx.actor.userId;
   if (typeof id !== "string" || id.length === 0 || id === "unknown") {
-    throw new ToolError("not_allowed", "هویت مشخص نیست.");
+    throw new ToolError("not_allowed", "Identity not resolved.");
   }
   if (!deps.isOwner(id)) {
-    throw new ToolError("not_allowed", "بازبینی حافظه فقط برای مالک است.");
+    throw new ToolError("not_allowed", "Memory review is owner-only.");
   }
   return id;
 }
@@ -457,7 +457,12 @@ async function applyProposalAction(
       for (const key of action.keys) await provider.delete(userId, key);
       break;
     case "update":
-      await provider.upsert(userId, action.key, action.newContent);
+      await provider.upsert(
+        userId,
+        action.key,
+        action.newContent,
+        action.importance !== undefined ? { importance: action.importance } : undefined,
+      );
       break;
     case "split":
       await provider.delete(userId, action.key);
@@ -467,7 +472,13 @@ async function applyProposalAction(
       break;
     case "add":
       // Phase-5: a brand-new memory from an import package (owner reviewed).
-      await provider.upsert(userId, action.key, action.content);
+      // Worker-2: an optional extraction-time importance rides along.
+      await provider.upsert(
+        userId,
+        action.key,
+        action.content,
+        action.importance !== undefined ? { importance: action.importance } : undefined,
+      );
       break;
     case "add_event": {
       // Phase-5: an auto-extracted or imported dated event (owner reviewed).

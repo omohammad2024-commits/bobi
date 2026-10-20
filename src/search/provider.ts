@@ -69,15 +69,15 @@ export interface SearchTemplate {
 export const SEARCH_TEMPLATES: readonly SearchTemplate[] = [
   {
     type: "duckduckgo",
-    label: "DuckDuckGo (بدون کلید)",
+    label: "DuckDuckGo (no key)",
     needsKey: false,
-    notes: "بدون نیاز به حساب؛ از صفحهٔ عمومی نتایج خوانده می‌شود.",
+    notes: "No account needed; reads the public results page.",
   },
   {
     type: "tavily",
-    label: "Tavily (با کلید)",
+    label: "Tavily (API key)",
     needsKey: true,
-    notes: "نیازمند کلید API؛ نتایج پایدارتر و مناسب استفادهٔ جدی.",
+    notes: "Requires an API key; more stable results, suited for serious use.",
   },
 ] as const;
 
@@ -85,16 +85,16 @@ export const SEARCH_TEMPLATES: readonly SearchTemplate[] = [
 export function userMessageForSearch(kind: SearchError["kind"]): string {
   switch (kind) {
     case "config":
-      return "جستجو پیکربندی نشده است.";
+      return "Search is not configured.";
     case "auth":
-      return "کلید سرویس جستجو پذیرفته نشد.";
+      return "The search service key was rejected.";
     case "network":
-      return "ارتباط با سرویس جستجو برقرار نشد.";
+      return "Could not reach the search service.";
     case "timeout":
-      return "جستجو طول کشید و لغو شد.";
+      return "Search timed out and was cancelled.";
     case "rate_limited":
-      return "سرویس جستجو موقتاً محدود شده است؛ کمی بعد تلاش کن.";
+      return "Search service is temporarily rate-limited; try again in a bit.";
     case "parse":
-      return "نتیجهٔ جستجو قابل خواندن نبود.";
+      return "The search result could not be parsed.";
   }
 }

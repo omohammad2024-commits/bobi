@@ -105,7 +105,7 @@ function tehranDateStr(nowMs: number): string {
 
 /** Persian cutoff date for the proposal summary (fa-IR, Tehran). */
 function cutoffFa(cutoffMs: number): string {
-  return new Intl.DateTimeFormat("fa-IR", {
+  return new Intl.DateTimeFormat("en-US", {
     timeZone: TEHRAN_TZ,
     year: "numeric",
     month: "long",
@@ -120,7 +120,7 @@ function heuristicArchiveBody(
 ): string {
   const lines = entries.map((e) => `• ${e.key}: ${e.snippet}`);
   return (
-    `بایگانی حافظه — ${entries.length} مورد قدیمی‌تر از ${cutoffFa(cutoffMs)}:\n` +
+    `Memory archive — ${entries.length} items older than ${cutoffFa(cutoffMs)}:\n` +
     lines.join("\n")
   );
 }
@@ -164,7 +164,7 @@ export class SummarizerService {
       .slice(0, Math.max(1, maxEntries));
 
     if (candidates.length === 0) {
-      return { archived: false, reason: "حافظهٔ قدیمیِ قابل بایگانی پیدا نشد." };
+      return { archived: false, reason: "No archivable old memories found." };
     }
 
     const entries = candidates.map((m) => ({ key: m.key, snippet: snippetOf(m.content) }));
@@ -181,7 +181,7 @@ export class SummarizerService {
       if (existing === undefined) break;
       archiveKey = `${baseKey}-${n}`;
       if (n > 99) {
-        return { archived: false, reason: "کلید بایگانی اشغال است؛ بعداً دوباره تلاش کن." };
+        return { archived: false, reason: "Archive key is taken; retry later." };
       }
     }
 
@@ -194,8 +194,8 @@ export class SummarizerService {
       kind: "archive",
       memoryIds: originalKeys,
       summaryFa:
-        `${candidates.length} حافظهٔ قدیمی (به‌روزرسانی‌شده قبل از ${cutoffFa(cutoffMs)}) ` +
-        `در «${archiveKey}» بایگانی شد. پیشنهاد: حذف نسخه‌های اصلی، چون خلاصه‌شان نگه داشته شده است.`,
+        `${candidates.length} old memories (not updated since ${cutoffFa(cutoffMs)}) ` +
+        `were archived in "${archiveKey}". Suggestion: delete the originals, since their summary is kept.`,
       suggestedAction: { type: "delete", keys: originalKeys },
     };
 

@@ -154,6 +154,22 @@ export interface SkillInstallProvenanceRow {
   signedAtMs: number;
 }
 
+/** One owner-defined custom shortcut: a command alias. */
+export interface CustomShortcut {
+  /** Command name without the leading slash, lowercase, e.g. "صبح". */
+  name: string;
+  /** 'prompt' -> run the action as a prompt; 'tool' -> invoke a tool. */
+  kind: "prompt" | "tool";
+  /** The prompt text (kind='prompt') or the tool name (kind='tool'). */
+  action: string;
+  /** Extra tool arguments for kind='tool', JSON object. */
+  toolArgs?: Record<string, unknown>;
+  /** unix ms */
+  createdAt: number;
+  /** unix ms */
+  updatedAt: number;
+}
+
 /** A conversation's rolling summary plus how far it reaches. */
 export interface ConversationSummary {
   summary: string;
@@ -290,6 +306,8 @@ export interface MemoryRecord {
   createdAt: number;
   /** unix ms */
   updatedAt: number;
+  /** Importance 1-5 (worker-2): retrieval prefers important memories. */
+  importance: number;
 }
 
 /** The single-row web-search selection. */
@@ -598,6 +616,7 @@ CREATE TABLE IF NOT EXISTS memories (
   content    TEXT NOT NULL,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  importance INTEGER NOT NULL DEFAULT 3,
   PRIMARY KEY (user_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(user_id, updated_at DESC);
@@ -766,6 +785,19 @@ CREATE TABLE IF NOT EXISTS skill_install_provenance (
   key_id       TEXT,
   signed_at_ms INTEGER NOT NULL
 );
+
+-- Owner-defined custom command shortcuts (schema 21). name is stored
+-- lowercase, without the leading slash. kind is 'prompt' (action = prompt
+-- text, run through the engine as a user message) or 'tool' (action = tool
+-- name, tool_args = JSON object of extra arguments).
+CREATE TABLE IF NOT EXISTS custom_shortcuts (
+  name       TEXT PRIMARY KEY,
+  kind       TEXT NOT NULL CHECK(kind IN ('prompt','tool')),
+  action     TEXT NOT NULL,
+  tool_args  TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 `;
 
 /**
@@ -774,7 +806,7 @@ CREATE TABLE IF NOT EXISTS skill_install_provenance (
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 20;
+export const SCHEMA_VERSION = 21;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
@@ -874,6 +906,10 @@ export class Storage {
         throw new StorageError("query", `migration failed: ${msg(err)}`);
       }
     }
+    // Worker-2: importance column for memories. Idempotent and outside the
+    // version gate on purpose: no SCHEMA_VERSION bump, so existing databases
+    // are not pushed through the whole migration block again for this.
+    this.addColumnIfMissing("memories", "importance", "INTEGER NOT NULL DEFAULT 3");
   }
 
   /** Add a column when an older database does not have it yet. */
@@ -2149,14 +2185,32 @@ export class Storage {
    * The owner is part of the key, so a write can only ever touch the caller's
    * own memory — there is no way to address another user's row.
    */
-  upsertMemory(m: { userId: string; key: string; content: string }): void {
+  upsertMemory(m: {
+    userId: string;
+    key: string;
+    content: string;
+    /** Importance 1-5. Omitted: an existing row keeps its importance, a new row gets 3. */
+    importance?: number;
+  }): void {
     const now = Date.now();
+    if (m.importance === undefined) {
+      this.exec(
+        `INSERT INTO memories(user_id, key, content, created_at, updated_at)
+         VALUES(?,?,?,?,?)
+         ON CONFLICT(user_id, key) DO UPDATE SET
+           content=excluded.content, updated_at=excluded.updated_at`,
+        [m.userId, m.key, m.content, now, now],
+      );
+      return;
+    }
+    const imp = Math.min(5, Math.max(1, Math.round(m.importance)));
     this.exec(
-      `INSERT INTO memories(user_id, key, content, created_at, updated_at)
-       VALUES(?,?,?,?,?)
+      `INSERT INTO memories(user_id, key, content, created_at, updated_at, importance)
+       VALUES(?,?,?,?,?,?)
        ON CONFLICT(user_id, key) DO UPDATE SET
-         content=excluded.content, updated_at=excluded.updated_at`,
-      [m.userId, m.key, m.content, now, now],
+         content=excluded.content, updated_at=excluded.updated_at,
+         importance=excluded.importance`,
+      [m.userId, m.key, m.content, now, now, imp],
     );
   }
 
@@ -2168,8 +2222,9 @@ export class Storage {
       content: string;
       created_at: number;
       updated_at: number;
+      importance: number;
     }>(
-      `SELECT user_id, key, content, created_at, updated_at
+      `SELECT user_id, key, content, created_at, updated_at, importance
          FROM memories WHERE user_id=? AND key=?`,
       [userId, key],
     )[0];
@@ -2190,12 +2245,47 @@ export class Storage {
       content: string;
       created_at: number;
       updated_at: number;
+      importance: number;
     }>(
-      `SELECT user_id, key, content, created_at, updated_at
+      `SELECT user_id, key, content, created_at, updated_at, importance
          FROM memories WHERE user_id=?
         ORDER BY updated_at DESC, key ASC LIMIT ?`,
       [userId, safeLimit],
     ).map(toMemoryRecord);
+  }
+
+  /**
+   * Summarize-then-drop prune (worker-2): the principled forgetting policy.
+   *
+   * For each drop: the full text is replaced by its one-line summary, the
+   * importance resets to 1 and updatedAt bumps to now — the key stays
+   * stable, so nothing that referenced it breaks, and the summarized row
+   * will not be re-pruned immediately. The ranking (which rows to drop) is
+   * computed by `buildPrunePlan` in src/memory/hybrid.ts; this method only
+   * executes a plan. Returns how many rows were pruned. Scoped to the
+   * owner like every other memory write.
+   */
+  pruneMemories(
+    userId: string,
+    drops: ReadonlyArray<{ key: string; summary: string }>,
+  ): number {
+    if (drops.length === 0) return 0;
+    const now = Date.now();
+    let pruned = 0;
+    for (const d of drops) {
+      const summary = d.summary.trim().slice(0, 500);
+      if (d.key.length === 0 || summary.length === 0) continue;
+      pruned +=
+        this.exec(
+          `UPDATE memories
+              SET content=?, importance=1, updated_at=?
+            WHERE user_id=? AND key=?`,
+          [summary, now, userId, d.key],
+        ).changes > 0
+          ? 1
+          : 0;
+    }
+    return pruned;
   }
 
   /** Delete one memory, scoped to its owner. Returns whether a row went. */
@@ -3010,6 +3100,77 @@ export class Storage {
     return { skillName: r.skill_name, keyId: r.key_id, signedAtMs: r.signed_at_ms };
   }
 
+  // ---- custom shortcuts ----
+
+  /**
+   * All owner-defined shortcuts, alphabetical by name.
+   *
+   * This is owner configuration data, not conversation content; there is no
+   * per-user scoping - the whole table belongs to the bot owner.
+   */
+  listShortcuts(): CustomShortcut[] {
+    return this.query<{
+      name: string;
+      kind: string;
+      action: string;
+      tool_args: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
+      `SELECT name, kind, action, tool_args, created_at, updated_at
+         FROM custom_shortcuts ORDER BY name ASC`,
+    ).map(toCustomShortcut);
+  }
+
+  /** One shortcut by name (lowercase, no leading slash), or undefined. */
+  getShortcut(name: string): CustomShortcut | undefined {
+    const rows = this.query<{
+      name: string;
+      kind: string;
+      action: string;
+      tool_args: string | null;
+      created_at: number;
+      updated_at: number;
+    }>(
+      `SELECT name, kind, action, tool_args, created_at, updated_at
+         FROM custom_shortcuts WHERE name=?`,
+      [name],
+    );
+    const r = rows[0];
+    return r === undefined ? undefined : toCustomShortcut(r);
+  }
+
+  /**
+   * Insert or replace a shortcut. `kind` must be 'prompt' or 'tool';
+   * a bad value is refused here with a clear message rather than at the
+   * database CHECK constraint.
+   */
+  upsertShortcut(s: {
+    name: string;
+    kind: string;
+    action: string;
+    toolArgs?: Record<string, unknown>;
+  }): void {
+    if (s.kind !== "prompt" && s.kind !== "tool") {
+      throw new StorageError("query", `invalid shortcut kind: ${s.kind}`);
+    }
+    const now = Date.now();
+    this.exec(
+      `INSERT INTO custom_shortcuts(name, kind, action, tool_args, created_at, updated_at)
+       VALUES(?,?,?,?,?,?)
+       ON CONFLICT(name) DO UPDATE SET
+         kind=excluded.kind, action=excluded.action,
+         tool_args=excluded.tool_args, updated_at=excluded.updated_at`,
+      [s.name, s.kind, s.action, s.toolArgs ? JSON.stringify(s.toolArgs) : null, now, now],
+    );
+  }
+
+  /** Delete one shortcut. Returns whether a row went. */
+  deleteShortcut(name: string): boolean {
+    const res = this.exec(`DELETE FROM custom_shortcuts WHERE name=?`, [name]);
+    return (res.changes as number) > 0;
+  }
+
   // ---- low-level guarded wrappers ----
   private exec(sql: string, params: unknown[] = []) {
     this.ensureOpen();
@@ -3057,6 +3218,7 @@ function toMemoryRecord(r: {
   content: string;
   created_at: number;
   updated_at: number;
+  importance: number;
 }): MemoryRecord {
   return {
     userId: r.user_id,
@@ -3064,7 +3226,40 @@ function toMemoryRecord(r: {
     content: r.content,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    importance: r.importance,
   };
+}
+
+/** Map a custom_shortcuts row to a record. */
+function toCustomShortcut(r: {
+  name: string;
+  kind: string;
+  action: string;
+  tool_args: string | null;
+  created_at: number;
+  updated_at: number;
+}): CustomShortcut {
+  let toolArgs: Record<string, unknown> | undefined;
+  if (r.tool_args !== null && r.tool_args.length > 0) {
+    try {
+      const parsed: unknown = JSON.parse(r.tool_args);
+      if (typeof parsed === "object" && parsed !== null) {
+        toolArgs = parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Corrupt JSON is treated as "no args" rather than a crash - the
+      // shortcut itself (name/kind/action) is what matters.
+    }
+  }
+  const out: CustomShortcut = {
+    name: r.name,
+    kind: r.kind === "tool" ? "tool" : "prompt",
+    action: r.action,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+  };
+  if (toolArgs !== undefined) out.toolArgs = toolArgs;
+  return out;
 }
 
 /** Map a usage row to a record. */

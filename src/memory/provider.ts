@@ -15,6 +15,28 @@ export interface StoredMemory {
   createdAt: number;
   /** unix ms */
   updatedAt: number;
+  /**
+   * Importance 1-5 (worker-2). Optional: providers that predate it omit it
+   * and readers fall back to `memoryImportance()` (default 3) from
+   * `./hybrid`.
+   */
+  importance?: number;
+}
+
+/** Options for `MemoryProvider.upsert`. All optional, all additive. */
+export interface MemoryUpsertOptions {
+  /**
+   * Importance 1-5 for this write. When omitted, an existing row keeps its
+   * importance and a new row gets the default (3).
+   */
+  importance?: number;
+}
+
+/** One summarize-then-drop prune item, as `pruneMemories` consumes it. */
+export interface MemoryPruneDrop {
+  key: string;
+  /** The one-line summary that survives the drop. */
+  summary: string;
 }
 
 /**
@@ -38,8 +60,17 @@ export interface StoredMemory {
 export interface MemoryProvider {
   /** Stable, lowercase identifier used by BOBI_MEMORY_PROVIDER. */
   readonly name: string;
-  /** Store a memory, replacing the entry under (userId, key) if one exists. */
-  upsert(userId: string, key: string, content: string): void | Promise<void>;
+  /**
+   * Store a memory, replacing the entry under (userId, key) if one exists.
+   * `opts.importance` sets the 1-5 importance; omitted leaves an existing
+   * row's importance untouched (new rows default to 3).
+   */
+  upsert(
+    userId: string,
+    key: string,
+    content: string,
+    opts?: MemoryUpsertOptions,
+  ): void | Promise<void>;
   /** One memory by key, or undefined. Never another user's. */
   get(userId: string, key: string): StoredMemory | undefined | Promise<StoredMemory | undefined>;
   /** The user's memories, newest first, capped at `limit`. */
@@ -48,4 +79,15 @@ export interface MemoryProvider {
   delete(userId: string, key: string): boolean | Promise<boolean>;
   /** How many memories the user has. */
   count(userId: string): number | Promise<number>;
+  /**
+   * Summarize-then-drop prune (worker-2). For each drop: replace the content
+   * with the one-line summary, reset importance to 1 and bump updatedAt —
+   * the key stays stable so existing references keep working. Returns how
+   * many rows were pruned. Optional: providers without it simply don't
+   * prune.
+   */
+  pruneMemories?(
+    userId: string,
+    drops: ReadonlyArray<MemoryPruneDrop>,
+  ): number | Promise<number>;
 }

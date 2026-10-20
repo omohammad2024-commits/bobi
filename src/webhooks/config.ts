@@ -47,14 +47,14 @@ export function loadWebhookConfig(
     if (validated === undefined) {
       // Deliberately not echoing the raw value: it may contain credentials
       // or a mistyped internal host. The operator can see their own .env.
-      console.warn("[webhooks] آدرس نامعتبر نادیده گرفته شد (فقط http/https و بدون اطلاعات ورود).");
+      console.warn("[webhooks] Ignored invalid URL (http/https only, no credentials).");
     } else {
       urls.push(validated);
     }
   }
 
   if (urls.length === 0) {
-    return { enabled: false, urls: [], secret: "", disabledReason: "BOBI_WEBHOOK_URL تنظیم نشده است." };
+    return { enabled: false, urls: [], secret: "", disabledReason: "BOBI_WEBHOOK_URL is not set." };
   }
 
   const secret = (env.BOBI_WEBHOOK_SECRET ?? "").trim();
@@ -62,10 +62,10 @@ export function loadWebhookConfig(
     // Fail closed: POSTing signed-event payloads without a signature is
     // worse than silence — the receiver could not authenticate them anyway.
     console.warn(
-      "[webhooks] هشدار: BOBI_WEBHOOK_URL تنظیم شده ولی BOBI_WEBHOOK_SECRET خالی است؛ " +
-        "وب‌هوک‌ها غیرفعال شدند و هیچ درخواستی ارسال نمی‌شود.",
+      "[webhooks] Warning: BOBI_WEBHOOK_URL is set but BOBI_WEBHOOK_SECRET is empty; " +
+        "Webhooks are disabled and no requests will be sent.",
     );
-    return { enabled: false, urls: [], secret: "", disabledReason: "BOBI_WEBHOOK_URL بدون BOBI_WEBHOOK_SECRET تنظیم شده است." };
+    return { enabled: false, urls: [], secret: "", disabledReason: "BOBI_WEBHOOK_URL is set without BOBI_WEBHOOK_SECRET." };
   }
 
   return { enabled: true, urls, secret, disabledReason: undefined };

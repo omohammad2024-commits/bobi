@@ -9,6 +9,8 @@ import type { AgentRunResult, AgentStep } from "../agent/transcript";
 import { buildSystemPrompt } from "../agent/prompt";
 import { ContextFileCache } from "../context/loader";
 import { MIN_COMPACT_MESSAGES, summariseHistory, summaryMessage } from "./summary";
+import { formatHistoryForModel, labelAssistantTurn, labelUserTurn } from "./speakers";
+import { prioritizeHistory } from "./prioritize";
 import {
   getPersonality,
   type Personality,
@@ -65,6 +67,16 @@ export interface ConversationInput {
    * models get confused by multi-user group context and start mimicking.
    */
   isGroup?: boolean;
+  /**
+   * Trusted display name of this turn's sender, resolved server-side by the
+   * caller (e.g. from Telegram `ctx.from.first_name`).
+   *
+   * Used to label this turn in group history (`[Sara]: ...`) so the model
+   * can tell group members apart. Absent means the turn is labeled
+   * `[Member]:` in groups; private chats never use it. Never derived from
+   * chat text — the model must not be able to claim a name.
+   */
+  senderName?: string;
   /**
    * Whether the current user is the verified owner (resolved server-side
    * from the Telegram ID by the bot). When true, the system prompt tells
@@ -477,13 +489,25 @@ export class ConversationEngine {
     signal: AbortSignal,
   ): Promise<ConversationOutput> {
     return this.semaphore.use(async () => {
-      const history = await this.compactedHistory(input, signal);
+      const rawHistory = await this.compactedHistory(input, signal);
+      const isGroup = input.isGroup === true;
+      // Speaker attribution + priority-aware truncation before the request:
+      // every message the model sees carries an explicit `[Name]:` label it
+      // cannot misread, and the window keeps summaries, facts/corrections,
+      // and recent turns verbatim while dropping middle filler.
+      const history = formatHistoryForModel(
+        prioritizeHistory(rawHistory, { budget: this.historyLimit }),
+        { isGroup },
+      );
 
       // Attachments ride on the live turn only. They are deliberately excluded
       // from `commitTurn`, so history stays text and cannot grow without bound.
       const turn: ChatMessage = {
         role: "user",
-        content: userText,
+        // In groups the live turn carries its speaker label (`[Sara]: ...`);
+        // in private it stays bare — unambiguous next to labeled assistant
+        // turns, and clean.
+        content: labelUserTurn(userText, { isGroup, senderName: input.senderName }),
         ...(input.parts !== undefined && input.parts.length > 0
           ? { parts: input.parts }
           : {}),
@@ -969,16 +993,27 @@ export class ConversationEngine {
    */
   private commitTurn(input: ConversationInput, userText: string, reply: string): void {
     const stored = userText.length > 0 ? userText : this.describeAttachmentsOnly(input);
+    // Group transcripts keep their speaker labels in storage, so a later turn
+    // still knows who said what. Private chats stay clean: one human, and the
+    // request-time labels are enough for the model.
+    const isGroup = input.isGroup === true;
+    const userContent = isGroup
+      ? labelUserTurn(stored, { isGroup: true, senderName: input.senderName })
+      : stored;
+    const assistantContent = isGroup ? labelAssistantTurn(reply) : reply;
 
     if (!this.storage) {
       const h = this.histories.get(input.conversationId) ?? [];
-      h.push({ role: "user", content: stored }, { role: "assistant", content: reply });
+      h.push(
+        { role: "user", content: userContent },
+        { role: "assistant", content: assistantContent },
+      );
       this.histories.set(input.conversationId, h);
       return;
     }
     const { userId, chatId } = this.ownerOf(input);
-    this.storage.appendMessage(userId, chatId, "user", stored);
-    this.storage.appendMessage(userId, chatId, "assistant", reply);
+    this.storage.appendMessage(userId, chatId, "user", userContent);
+    this.storage.appendMessage(userId, chatId, "assistant", assistantContent);
   }
 
   /** Transcript marker for a turn that was attachments only. */

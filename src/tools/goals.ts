@@ -161,7 +161,11 @@ export interface CompleteGoalInput {
 
 export interface CompleteGoalOutput {
   id: number;
-  /** False when there was no active goal with that id for this user. */
+  /**
+   * Always true on success: completing a missing or already-done goal throws
+   * not_found instead of reporting false, so the model gets a clear error
+   * rather than a silent no-op.
+   */
   completed: boolean;
   remaining: number;
 }

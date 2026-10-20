@@ -8,15 +8,31 @@
  * observable behavior — the parity test proves it.
  */
 import type { Storage } from "../storage/storage";
-import type { MemoryProvider, StoredMemory } from "./provider";
+import type {
+  MemoryProvider,
+  MemoryPruneDrop,
+  MemoryUpsertOptions,
+  StoredMemory,
+} from "./provider";
 
 export class SqliteMemoryProvider implements MemoryProvider {
   readonly name = "sqlite";
 
   constructor(private readonly storage: Storage) {}
 
-  upsert(userId: string, key: string, content: string): void {
-    this.storage.upsertMemory({ userId, key, content });
+  upsert(
+    userId: string,
+    key: string,
+    content: string,
+    opts?: MemoryUpsertOptions,
+  ): void {
+    // exactOptionalPropertyTypes: never pass an explicit undefined.
+    const importance = opts?.importance;
+    this.storage.upsertMemory(
+      importance === undefined
+        ? { userId, key, content }
+        : { userId, key, content, importance },
+    );
   }
 
   get(userId: string, key: string): StoredMemory | undefined {
@@ -27,6 +43,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
       content: m.content,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
+      importance: m.importance,
     };
   }
 
@@ -36,6 +53,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
       content: m.content,
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
+      importance: m.importance,
     }));
   }
 
@@ -45,5 +63,13 @@ export class SqliteMemoryProvider implements MemoryProvider {
 
   count(userId: string): number {
     return this.storage.countMemories(userId);
+  }
+
+  /** Worker-2: summarize-then-drop prune, delegated to Storage. */
+  pruneMemories(
+    userId: string,
+    drops: ReadonlyArray<MemoryPruneDrop>,
+  ): number {
+    return this.storage.pruneMemories(userId, drops);
   }
 }

@@ -31,6 +31,9 @@
  *   payload is server-generated from storage ids. Ownership is re-checked
  *   server-side on every tap (see digest_cmd.ts) — hiding buttons is not
  *   the boundary.
+ * - The focus ("what matters to you") highlights reuse the same protocol:
+ *   task/reminder rows get the same run/delete/done buttons as the detail
+ *   sections (same payloads, same strict parsing).
  * - The digest message is sent as PLAIN TEXT (no parse_mode): a memory or
  *   task name containing markdown/control characters cannot break the
  *   message or inject fake buttons.
@@ -166,6 +169,14 @@ function memoriesSection(
     | undefined;
 }
 
+function focusSection(
+  data: readonly DigestSectionData[],
+): Extract<DigestSectionData, { kind: "focus" }> | undefined {
+  return data.find((s) => s.kind === "focus") as
+    | Extract<DigestSectionData, { kind: "focus" }>
+    | undefined;
+}
+
 /**
  * Render the interactive digest: text (fitted to the budget, header always
  * survives) + the tap-to-act keyboard built from the SAME surviving
@@ -195,6 +206,44 @@ export function buildDigestKeyboard(
   const locale: DigestLocale = opts.locale ?? "fa";
   const canRunTask = opts.canRunTask ?? true;
   const kb = new InlineKeyboard();
+
+  // Focus highlights first: the same tap-to-act actions as the detail
+  // sections below, reusing the existing dgst: callback protocol (no new
+  // actions). The two-step delete confirm applies to focus task rows too.
+  const focus = focusSection(data);
+  if (focus !== undefined) {
+    for (const item of focus.items) {
+      if (item.itemKind === "task" && item.refId !== undefined) {
+        if (opts.confirm?.kind === "task" && opts.confirm.id === item.refId) {
+          kb.text(
+            t("digest.btn.task_confirm_yes", "en"),
+            `${DIGEST_CALLBACK_PREFIX}task:delc:${item.refId}`,
+          ).text(
+            t("digest.btn.task_confirm_no", "en"),
+            `${DIGEST_CALLBACK_PREFIX}task:delx:${item.refId}`,
+          );
+        } else {
+          if (canRunTask) {
+            kb.text(
+              t("digest.btn.task_run", "en"),
+              `${DIGEST_CALLBACK_PREFIX}task:run:${item.refId}`,
+            );
+          }
+          kb.text(
+            t("digest.btn.task_delete", "en"),
+            `${DIGEST_CALLBACK_PREFIX}task:del:${item.refId}`,
+          );
+        }
+        kb.row();
+      } else if (item.itemKind === "reminder" && item.refId !== undefined) {
+        kb.text(
+          t("digest.btn.reminder_done", "en"),
+          `${DIGEST_CALLBACK_PREFIX}rem:done:${item.refId}`,
+        ).row();
+      }
+      // Events and interest-matched memories have no action — text only.
+    }
+  }
 
   const tasks = taskSection(data);
   if (tasks !== undefined) {

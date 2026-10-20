@@ -34,7 +34,14 @@
 import { ToolError } from "./errors";
 import type { MemoryProvider } from "../memory/provider";
 import type { SemanticMemoryIndex } from "../memory/semantic";
-import { reciprocalRankFusion } from "../memory/hybrid";
+import {
+  boostByRecencyImportance,
+  dedupeNearIdentical,
+  expandQueryVariants,
+  memoryImportance,
+  normalizeMemoryText,
+  reciprocalRankFusionWithScores,
+} from "../memory/hybrid";
 import type { Tool, ToolActor, ToolContext } from "./types";
 
 export const REMEMBER_PERMISSION = "tools:remember";
@@ -64,6 +71,12 @@ export interface MemoryDeps {
 export interface RememberInput {
   key: string;
   content: string;
+  /**
+   * Importance 1 (trivial) to 5 (critical). Defaults to 3. The user's name,
+   * corrections and explicit «remember this» statements deserve 5;
+   * retrieval prefers important memories.
+   */
+  importance?: number;
 }
 
 export interface RememberOutput {
@@ -72,6 +85,8 @@ export interface RememberOutput {
   replaced: boolean;
   /** Total memories the user now has. */
   total: number;
+  /** The effective importance 1-5 stored for this memory. */
+  importance: number;
 }
 
 export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, RememberOutput> {
@@ -101,6 +116,13 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
           minLength: 1,
           maxLength: MAX_CONTENT_LENGTH,
         },
+        importance: {
+          type: "integer",
+          description:
+            "How important this memory is, 1 (trivial) to 5 (critical). Defaults to 3. Use 5 for the user's name, corrections, and explicit «remember this» statements — recall prefers important memories.",
+          minimum: 1,
+          maximum: 5,
+        },
       },
     },
 
@@ -110,6 +132,14 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
       if (content.length === 0) {
         throw new ToolError("invalid_input", "Memory text is empty.");
       }
+      // Worker-2: importance is validated into 1-5 here too, so a model
+      // passing 0 or 6 cannot corrupt the scale the ranker reads.
+      // (The ternary narrows input.importance to number for the helper,
+      // which keeps exactOptionalPropertyTypes happy.)
+      const importance =
+        input.importance === undefined
+          ? undefined
+          : memoryImportance({ importance: input.importance });
 
       const userId = ownerOf(ctx.actor);
       const existing = await deps.provider.get(userId, key);
@@ -123,7 +153,12 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
         );
       }
 
-      await deps.provider.upsert(userId, key, content);
+      await deps.provider.upsert(
+        userId,
+        key,
+        content,
+        importance === undefined ? undefined : { importance },
+      );
 
       // Phase 4: embed the new memory in the background so future recall can
       // rank by meaning. Fire-and-forget by contract — a slow or failing
@@ -134,6 +169,7 @@ export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, Rememb
         key,
         replaced: existing !== undefined,
         total: await deps.provider.count(userId),
+        importance: importance ?? memoryImportance(existing ?? {}),
       };
     },
   };
@@ -146,15 +182,23 @@ export interface RecallInput {
   limit?: number;
 }
 
+export interface RecalledMemory {
+  key: string;
+  content: string;
+  /** Importance 1-5, so the model can weigh what it got back. */
+  importance: number;
+}
+
 export interface RecallOutput {
   /** Matching memories, best match first. */
-  memories: Array<{ key: string; content: string }>;
+  memories: RecalledMemory[];
   total: number;
   /**
    * How the matches were ranked.
-   * - "hybrid" (phase 5): the vector ranking and the substring ranking were
-   *   fused with Reciprocal Rank Fusion — a memory matching both signals
-   *   outranks one matching only one.
+   * - "hybrid" (phase 5 + worker-2): the vector ranking, the substring
+   *   ranking AND the recency/importance ranking were fused with
+   *   Reciprocal Rank Fusion — a memory matching several signals outranks
+   *   one matching only one, and recent/important memories are preferred.
    * - "semantic": only the vector ranking produced candidates (no
    *   substring match), so the fusion is the semantic order.
    * - "text": the original substring rank (no query, or semantic
@@ -207,11 +251,15 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       // Every read goes through the owner-scoped provider, so there is no path
       // that could return another user's memory.
       const all = await deps.provider.list(userId, MAX_MEMORIES_PER_USER);
+      // Worker-2: near-identical memories surface once, not twice.
+      const candidates = dedupeNearIdentical(all);
 
       const query = input.query?.trim() ?? "";
       if (query.length === 0) {
         return {
-          memories: all.slice(0, limit).map((m) => ({ key: m.key, content: m.content })),
+          memories: candidates
+            .slice(0, limit)
+            .map((m) => toRecalled(m)),
           total: all.length,
           searchMode: "text",
         };
@@ -223,18 +271,23 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       // means "not available right now" — fall back to the original
       // substring ranking, silently. Ranking is an enhancement, never a
       // dependency.
+      //
+      // Worker-2: the fused RRF scores get a bounded recency/importance
+      // boost, so a recent or explicitly-marked-important memory outranks
+      // an older coincidental match — without overriding clear relevance.
       const semanticHits = await safeSemanticSearch(deps, userId, query);
       if (semanticHits !== undefined) {
-        const textRanked = rank(all, query);
-        const fusedKeys = reciprocalRankFusion(
+        const textRanked = rank(candidates, query);
+        const fused = reciprocalRankFusionWithScores(
           [textRanked.map((m) => m.key), semanticHits.map((h) => h.key)],
           limit,
         );
-        const byKey = new Map(all.map((m) => [m.key, m]));
-        const memories: Array<{ key: string; content: string }> = [];
-        for (const key of fusedKeys) {
+        const boosted = boostByRecencyImportance(fused, candidates, Date.now());
+        const byKey = new Map(candidates.map((m) => [m.key, m]));
+        const memories: RecalledMemory[] = [];
+        for (const { key } of boosted) {
           const m = byKey.get(key);
-          if (m !== undefined) memories.push({ key: m.key, content: m.content });
+          if (m !== undefined) memories.push(toRecalled(m));
         }
         // Which signals actually drove the result: both non-empty →
         // "hybrid"; semantic only → "semantic"; neither → "text" (the same
@@ -249,9 +302,9 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
       }
 
       return {
-        memories: rank(all, query)
+        memories: rank(candidates, query)
           .slice(0, limit)
-          .map((m) => ({ key: m.key, content: m.content })),
+          .map((m) => toRecalled(m)),
         total: all.length,
         searchMode: "text",
       };
@@ -288,20 +341,48 @@ async function safeSemanticSearch(
  * model's own label for the memory and is the stronger signal. A scoring model
  * would be harder to reason about and would not beat this for the handful of
  * entries a single user stores.
+ *
+ * Worker-2: the query is expanded (Persian normalization — ي/ك variants,
+ * diacritics, half-spaces — plus a whitespace-free form) and each variant is
+ * tested against the normalized key/content, so «مي‌روم» finds a stored
+ * «میروم». Key tier still outranks content tier, as before.
  */
-function rank(
-  memories: readonly { key: string; content: string }[],
+function rank<T extends { key: string; content: string }>(
+  memories: readonly T[],
   query: string,
-): Array<{ key: string; content: string }> {
-  const needle = query.toLowerCase();
-  const keyHits: Array<{ key: string; content: string }> = [];
-  const contentHits: Array<{ key: string; content: string }> = [];
+): T[] {
+  const variants = expandQueryVariants(query);
+  const keyHits: T[] = [];
+  const contentHits: T[] = [];
 
   for (const m of memories) {
-    if (m.key.toLowerCase().includes(needle)) keyHits.push(m);
-    else if (m.content.toLowerCase().includes(needle)) contentHits.push(m);
+    const keyNorm = normalizeMemoryText(m.key);
+    const contentNorm = normalizeMemoryText(m.content);
+    const keyFlat = keyNorm.replace(/\s+/g, "");
+    const contentFlat = contentNorm.replace(/\s+/g, "");
+    const keyHit = variants.some(
+      (v) => keyNorm.includes(v) || keyFlat.includes(v),
+    );
+    if (keyHit) {
+      keyHits.push(m);
+      continue;
+    }
+    if (
+      variants.some((v) => contentNorm.includes(v) || contentFlat.includes(v))
+    ) {
+      contentHits.push(m);
+    }
   }
   return [...keyHits, ...contentHits];
+}
+
+/** Shape one stored memory for the recall response (importance included). */
+function toRecalled(m: {
+  key: string;
+  content: string;
+  importance?: number | null;
+}): RecalledMemory {
+  return { key: m.key, content: m.content, importance: memoryImportance(m) };
 }
 
 // ---------- forget ----------

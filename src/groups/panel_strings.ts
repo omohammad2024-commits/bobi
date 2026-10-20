@@ -545,6 +545,10 @@ export const PANEL_STRINGS: Record<string, Record<PanelLang, string>> = {
     fa: "جایگزین: {state} — {n} تنظیم‌شده، {a} آماده",
     en: "Failover: {state} — {n} configured, {a} ready",
   },
+  "panel.aistatus.timeouts": {
+    fa: "تایم‌اوت‌ها: پروایدر {p} · موتور {e} · کل ایجنت {a}",
+    en: "Timeouts: provider {p} · engine {e} · agent total {a}",
+  },
   "panel.aistatus.sync": {
     fa: "پیکربندی اجرا با پیکربندی ذخیره‌شده: {v}",
     en: "Runtime config vs stored config: {v}",

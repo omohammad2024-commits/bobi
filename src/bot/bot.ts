@@ -16,6 +16,7 @@ import {
 } from "./menu";
 import { shouldHandleMessage } from "./filter";
 import { toolProgressLabel } from "./ux";
+import { normalizeShortcutName } from "../tools/shortcuts";
 import {
   PALETTE_CALLBACK_PREFIX,
   handlePaletteCallback,
@@ -1074,6 +1075,69 @@ export function isOwnerSender(
 }
 
 /**
+ * Try to run an owner-defined custom shortcut for a "/name" message.
+ *
+ * Returns true when a shortcut matched and was executed (the caller must
+ * not hand the message to downstream handlers). Returns false when there
+ * is no shortcut, the sender is not the owner, or deps are missing — the
+ * message falls through to normal command handling untouched.
+ *
+ * kind="prompt": the stored action is fed to the engine as if the owner
+ * typed it (full conversation context, normal delivery).
+ * kind="tool": the named tool runs via the ToolService under the owner's
+ * actor and its result is delivered as the reply.
+ */
+async function tryRunShortcut(
+  ctx: Context,
+  deps: BotDeps,
+  text: string,
+): Promise<boolean> {
+  const storage = deps.storage;
+  if (!storage || typeof storage.getShortcut !== "function") return false;
+  if (!isOwnerSender(ctx, deps)) return false;
+  // "/name" or "/name@bot" or "/name args..." -> "name"
+  const first = text.slice(1).split(/\s/)[0] ?? "";
+  const atIdx = first.indexOf("@");
+  const raw = atIdx >= 0 ? first.slice(0, atIdx) : first;
+  let name: string;
+  try {
+    name = normalizeShortcutName(raw);
+  } catch {
+    return false;
+  }
+  const shortcut = storage.getShortcut(name);
+  if (!shortcut) return false;
+
+  if (shortcut.kind === "prompt") {
+    await runTurn(ctx, deps, { text: shortcut.action });
+    return true;
+  }
+  // kind === "tool"
+  const tools = deps.tools;
+  if (!tools) return false;
+  const actor = toolActorFor(tools, deps.auth, ctx);
+  try {
+    const result = await tools.runTool({
+      tool: shortcut.action,
+      input: shortcut.toolArgs ?? {},
+      actor,
+    });
+    const out =
+      result.status === "ok"
+        ? typeof result.data === "string"
+          ? result.data
+          : JSON.stringify(result.data)
+        : `Shortcut failed: ${result.message ?? "unknown error"}`;
+    await ctx.reply(out.slice(0, 4000));
+  } catch (err) {
+    await ctx.reply(
+      `Shortcut failed: ${err instanceof Error ? err.message : String(err)}`.slice(0, 4000),
+    );
+  }
+  return true;
+}
+
+/**
  * Build the onboarding wizard's environment for one update, or undefined when
  * the wizard cannot run (no per-user pref store — the wizard's state would
  * not survive a restart).
@@ -1419,21 +1483,37 @@ async function runTurn(
 
   // Private-chat gate: an unapproved user never reaches the engine, so an
   // unknown account cannot spend the owner's API budget.
-  if (!(await gateUser(ctx, deps))) return;
+  if (!(await gateUser(ctx, deps))) {
+    // Muted users are dropped silently by design (gateUser); banned users got
+    // a refusal. Log the group case so the drop is always traceable.
+    if (ctx.chat && (ctx.chat.type === "group" || ctx.chat.type === "supergroup")) {
+      console.error(
+        `[bobi] group drop: user gate denied chat=${ctx.chat.id} user=${ctx.from ? ctx.from.id : "?"}`,
+      );
+    }
+    return;
+  }
 
   // Per-user message budget. The agent makes this necessary: one message can
   // become several provider calls, so a burst of messages is no longer a burst
   // of one call each.
+  // NOTE: takeMessageBudget already replies with a "wait" notice and logs, so
+  // an exhausted budget is never a silent drop — no extra logging here.
   if (!(await takeMessageBudget(ctx, deps))) return;
 
-  if (!ctx.message || !ctx.from || !ctx.chat) return;
+  if (!ctx.message || !ctx.from || !ctx.chat) {
+    console.error(
+      `[bobi] group drop: missing message/from/chat chat=${ctx.chat?.type ?? "?"} text="${ctx.message?.text?.slice(0, 30) ?? ""}"`,
+    );
+    return;
+  }
   // Legacy privacy-mode filter: in groups, only replies-to-the-bot and
   // commands pass. Skipped when the group assistant already approved this
   // message (wake-word / reply-to-bot) — re-filtering would silently discard
   // the exact message the assistant just green-lit.
   if (!input.groupAssistantApproved && !shouldHandleMessage(ctx, ctx.me.id)) {
     console.error(
-      `[bobi] runTurn: message filtered by shouldHandleMessage (chat=${ctx.chat.type}, text="${ctx.message.text?.slice(0, 30) ?? ""}")`,
+      `[bobi] group drop: legacy privacy filter (shouldHandleMessage) chat=${ctx.chat.type} text="${ctx.message.text?.slice(0, 30) ?? ""}"`,
     );
     return;
   }
@@ -2094,7 +2174,15 @@ export function createBot(token: string, deps: BotDeps): Bot {
           // Best effort: the warning is advisory, not load-bearing.
         }
       }
-      if (decision.handled) return; // moderated — never reaches the engine
+      if (decision.handled) {
+        // Moderated — never reaches the engine. The user usually sees a
+        // deletion and/or a warning; log the drop so a moderation decision
+        // can never be mistaken for a silent engine bug.
+        console.error(
+          `[bobi] group drop: moderated (action=${decision.action}, reason=${decision.reason ?? "n/a"}) chat=${ctx.chat.id} user=${ctx.from ? ctx.from.id : "?"} text="${ctx.message.text.slice(0, 30)}"`,
+        );
+        return;
+      }
     }
 
     // ---- Phase-3 group assistant (opt-in per group, owner-managed) ----
@@ -2132,7 +2220,6 @@ export function createBot(token: string, deps: BotDeps): Bot {
       );
       if (!ctx.message.text.startsWith("/")) {
         const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
-        console.error(`[bobi] group msg: chat=${gaChatId} text="${ctx.message.text.slice(0,30)}" enabled=${gaCfg.enabled} replyOnly=${gaCfg.replyOnlyWhenCalled}`);
         if (gaCfg.enabled) {
           const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
           const botUsername = ctx.me.username ?? "";
@@ -2143,9 +2230,14 @@ export function createBot(token: string, deps: BotDeps): Bot {
             enabled: true,
             replyOnlyWhenCalled: gaCfg.replyOnlyWhenCalled,
           });
-          console.error(`[bobi] group shouldReply=${shouldReply} replyToBot=${replyToBot}`);
           if (!shouldReply) {
-            return; // assistant mode: silent unless called
+            // Assistant mode: silent unless called. By design — but never
+            // unlogged, so a missing reply is always traceable to this
+            // decision rather than mistaken for a dropped update.
+            console.error(
+              `[bobi] group drop: assistant mode silent (not mentioned/replied-to) chat=${gaChatId} text="${ctx.message.text.slice(0, 30)}"`,
+            );
+            return;
           }
           // The assistant approved this message — runTurn must not re-filter
           // it out via the legacy replies-and-commands-only rule.
@@ -2184,11 +2276,14 @@ export function createBot(token: string, deps: BotDeps): Bot {
       if (consumed) return;
     }
 
-    // A "/" message may target a command whose handler was registered AFTER
-    // this middleware (e.g. the Hermes parity commands in index.ts). Hand off
-    // via next() so those handlers run; a truly unknown command matches
-    // nothing downstream and stays silent.
-    if (text.startsWith("/")) return await next();
+    // Custom shortcuts (owner-defined command aliases like /صبح). Checked
+    // before downstream handlers: shortcut names cannot collide with
+    // built-ins (enforced at creation), so a hit here is unambiguous.
+    // Owner-only: anyone else's /name falls through to next() untouched.
+    if (text.startsWith("/")) {
+      if (await tryRunShortcut(ctx, deps, text)) return;
+      return await next();
+    }
     await runTurn(ctx, deps, { text, groupAssistantApproved });
   });
 
@@ -2201,7 +2296,57 @@ export function createBot(token: string, deps: BotDeps): Bot {
   for (const kind of ["message:photo", "message:voice", "message:audio", "message:document"] as const) {
     bot.on(kind, async (ctx) => {
       if (!(await gateGroup(ctx, groups, senderLang(ctx, deps.prefs)))) return;
-      await runTurn(ctx, deps, { text: ctx.message.caption ?? "" });
+      const caption = ctx.message.caption ?? "";
+      // Group assistant for media: a caption containing the wake word
+      // ("بابی اینو ببین") must trigger a reply like a text message would.
+      // Without this, media bypassed shouldReplyAssistant and the legacy
+      // filter silently dropped it.
+      let groupAssistantApproved = false;
+      if (
+        (ctx.chat.type === "group" || ctx.chat.type === "supergroup") &&
+        deps.groupAssistant !== undefined &&
+        caption.length > 0
+      ) {
+        const ga = deps.groupAssistant;
+        const gaChatId = String(ctx.chat.id);
+        recordGroupMessage(
+          {
+            ...(deps.storage !== undefined ? { storage: deps.storage } : {}),
+            ownerId: ga.ownerId,
+            history: ga.history,
+          },
+          {
+            chatId: gaChatId,
+            userId: ctx.from ? String(ctx.from.id) : "",
+            name:
+              ctx.from !== undefined
+                ? [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(" ")
+                : "",
+            text: caption,
+            tsMs: Date.now(),
+          },
+        );
+        const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
+        if (gaCfg.enabled) {
+          const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
+          const botUsername = ctx.me.username ?? "";
+          const shouldReply = shouldReplyAssistant({
+            text: caption,
+            botUsername,
+            replyToBot,
+            enabled: true,
+            replyOnlyWhenCalled: gaCfg.replyOnlyWhenCalled,
+          });
+          if (!shouldReply) {
+            console.error(
+              `[bobi] group drop: assistant mode silent for media caption (not mentioned/replied-to) chat=${gaChatId} caption="${caption.slice(0, 30)}"`,
+            );
+            return;
+          }
+          groupAssistantApproved = true;
+        }
+      }
+      await runTurn(ctx, deps, { text: caption, groupAssistantApproved });
     });
   }
 

@@ -265,6 +265,21 @@ export interface StatusView {
     lastTestAt?: number;
   }[];
   runtimeMatchesPersisted: boolean;
+  /**
+   * Per-request provider timeout actually in effect, ms — the value the
+   * gateway reads from `ai_failover_settings.timeout_ms` in the database.
+   */
+  providerTimeoutMs: number;
+  /**
+   * Engine-level AI_TIMEOUT_MS as resolved from the environment, ms. Absent
+   * when the controller was not given the engine config (rendered "Not set").
+   */
+  engineTimeoutMs?: number;
+  /**
+   * Agent-level AGENT_TOTAL_TIMEOUT_MS as resolved from the environment, ms.
+   * Absent when the controller was not given the engine config.
+   */
+  agentTotalTimeoutMs?: number;
   note: string | undefined;
 }
 
@@ -281,6 +296,18 @@ export function statusText(v: StatusView, lang: PanelLang = "fa"): string {
       state: v.failoverEnabled ? tr(lang, "panel.fo.state_on") : tr(lang, "panel.fo.state_off"),
       n: formatNum(v.candidateCount, lang),
       a: formatNum(v.activeCandidateCount, lang),
+    }),
+    // Effective timeouts, one compact line: this is what the owner tunes,
+    // and the values shown are the ones actually in force (DB + resolved env).
+    // The unit travels with each value so an unwired "Not set" never reads
+    // as a broken number.
+    tr(lang, "panel.aistatus.timeouts", {
+      p: `${formatNum(v.providerTimeoutMs, lang)}ms`,
+      e: v.engineTimeoutMs !== undefined ? `${formatNum(v.engineTimeoutMs, lang)}ms` : unset,
+      a:
+        v.agentTotalTimeoutMs !== undefined
+          ? `${formatNum(v.agentTotalTimeoutMs, lang)}ms`
+          : unset,
     }),
     tr(lang, "panel.aistatus.sync", {
       v: v.runtimeMatchesPersisted

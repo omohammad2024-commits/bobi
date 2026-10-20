@@ -8,7 +8,7 @@
  * predicate, so a hand-built actor cannot slip through either.
  *
  * The numbers are token counts (metadata, never message content) and the
- * costs are APPROXIMATE — the report says so in Persian, so nobody mistakes
+ * costs are APPROXIMATE — the report says so in English, so nobody mistakes
  * it for a bill.
  */
 import { UsageTracker } from "../ai/usage";
@@ -30,7 +30,7 @@ export interface UsageReportToolDeps {
 }
 
 export interface UsageReportOutput {
-  /** Persian report text. */
+  /** English report text. */
   text: string;
 }
 

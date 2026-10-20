@@ -1,5 +1,5 @@
 /**
- * Reminder tools — remind_at, list_reminders, cancel_reminder.
+ * Reminder tools — remind_at, remind_nl, list_reminders, cancel_reminder.
  *
  * The due time comes from a MODEL, which makes it untrusted in a specific way:
  * an ISO string can be in the past, absurdly far in the future, or malformed.
@@ -14,8 +14,10 @@ import { ToolError } from "./errors";
 import type { Storage } from "../storage/storage";
 import type { ReminderRepeat } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
+import { TEHRAN_TZ, parsePersianDateTime } from "./persian_datetime";
 
 export const REMIND_AT_PERMISSION = "tools:remind_at";
+export const REMIND_NL_PERMISSION = "tools:remind_nl";
 export const LIST_REMINDERS_PERMISSION = "tools:list_reminders";
 export const CANCEL_REMINDER_PERMISSION = "tools:cancel_reminder";
 
@@ -165,6 +167,83 @@ function parseRepeat(raw: string | undefined): ReminderRepeat {
   return value as ReminderRepeat;
 }
 
+// ---------- remind_nl ----------
+
+export interface RemindNlInput {
+  text: string;
+  /** Persian natural-language time expression, e.g. tomorrow at 9 AM. */
+  when: string;
+}
+
+/** Same confirmation shape as remind_at; a natural-language reminder never repeats. */
+export type RemindNlOutput = RemindAtOutput;
+
+export function createRemindNlTool(deps: ReminderToolDeps): Tool<RemindNlInput, RemindNlOutput> {
+  return {
+    name: "remind_nl",
+    description:
+      "Set a reminder from a Persian natural-language time expression, like tomorrow at 9 in the morning or in 10 minutes. Times are read in Asia/Tehran.",
+    enabled: true,
+    permission: { requires: [REMIND_NL_PERMISSION] },
+    // Two-tier access: owner-only (withheld from public actors by the
+    // authorization bridge; the model is never told it exists).
+    ownerOnly: true,
+    toolset: "schedule",
+    input: {
+      fields: {
+        text: {
+          type: "string",
+          required: true,
+          description: "The text to be reminded of.",
+          minLength: 1,
+          maxLength: MAX_TEXT_LENGTH,
+        },
+        when: {
+          type: "string",
+          required: true,
+          description:
+            "Persian time expression, e.g. tomorrow at 9 AM, in 10 minutes, next Monday at 10.",
+          minLength: 1,
+          maxLength: 120,
+        },
+      },
+    },
+
+    async run(input: RemindNlInput, ctx: ToolContext): Promise<RemindNlOutput> {
+      const userId = ownerOf(ctx);
+      // The destination is the conversation the run came from, supplied by
+      // server code — the model never names a chat id.
+      const chatId = deliveryChat(ctx);
+
+      const text = cleanText(input.text);
+
+      // The expression is model-supplied Persian, so it can be anything: an
+      // unparseable expression is refused before anything is written.
+      const parsed = parsePersianDateTime(input.when, ctx.clock(), TEHRAN_TZ);
+      if (parsed === null) {
+        throw new ToolError(
+          "invalid_input",
+          "The time expression was not understood. Try a form like tomorrow at 9 AM or in 10 minutes.",
+        );
+      }
+
+      // The same instant validation as remind_at: strictly in the future,
+      // inside the one-year horizon, and carrying an explicit zone
+      // (toISOString is Zulu).
+      const dueAt = parseDueAt(parsed.toISOString(), ctx.clock().getTime());
+
+      return insertReminder(deps, {
+        userId,
+        chatId,
+        text,
+        dueAt,
+        repeat: "none",
+        nowMs: ctx.clock().getTime(),
+      });
+    },
+  };
+}
+
 // ---------- list_reminders ----------
 
 export interface ListRemindersInput {
@@ -269,16 +348,77 @@ export function createCancelReminderTool(
   };
 }
 
-/** Build all three reminder tools. */
+/** Build all reminder tools. */
 export function createReminderTools(deps: ReminderToolDeps): readonly Tool<unknown, unknown>[] {
   return [
     createRemindAtTool(deps),
+    createRemindNlTool(deps),
     createListRemindersTool(deps),
     createCancelReminderTool(deps),
   ] as unknown as readonly Tool<unknown, unknown>[];
 }
 
 // ---------- helpers ----------
+
+/**
+ * The delivery chat for this call, taken from the server-supplied
+ * conversation — the model never names a chat id.
+ */
+function deliveryChat(ctx: ToolContext): string {
+  const chatId = ctx.conversationId;
+  if (chatId === undefined || chatId.length === 0) {
+    throw new ToolError("not_allowed", "Reminder destination is unknown.");
+  }
+  return chatId;
+}
+
+/** Trimmed reminder text, refused when empty. */
+function cleanText(raw: string): string {
+  const text = raw.trim();
+  if (text.length === 0) {
+    throw new ToolError("invalid_input", "Reminder text is empty.");
+  }
+  return text;
+}
+
+/**
+ * Shared tail of the reminder-creation tools: the pending-count ceiling, the
+ * row write, and the confirmation shape. The due instant is already
+ * validated by the caller.
+ */
+function insertReminder(
+  deps: ReminderToolDeps,
+  args: {
+    userId: string;
+    chatId: string;
+    text: string;
+    dueAt: number;
+    repeat: ReminderRepeat;
+    nowMs: number;
+  },
+): RemindAtOutput {
+  if (deps.storage.countPendingReminders(args.userId) >= MAX_PENDING_PER_USER) {
+    throw new ToolError(
+      "invalid_input",
+      "Too many active reminders; cancel some first.",
+    );
+  }
+
+  const id = deps.storage.createReminder({
+    userId: args.userId,
+    chatId: args.chatId,
+    text: args.text,
+    dueAt: args.dueAt,
+    repeat: args.repeat,
+  });
+
+  return {
+    id,
+    dueAt: new Date(args.dueAt).toISOString(),
+    repeat: args.repeat,
+    inMinutes: Math.round((args.dueAt - args.nowMs) / 60_000),
+  };
+}
 
 /**
  * The owner id for this call, taken from the server-supplied actor.
