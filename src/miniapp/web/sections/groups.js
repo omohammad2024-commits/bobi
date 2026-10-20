@@ -259,7 +259,7 @@
       I("chevL") + esc(t("nav.back")) + "</button>" +
       '<h2><span dir="ltr">' + esc(gid) + "</span></h2></div>" +
       (asstHtml
-        ? '<div class="card">' + cardHead(I, "bot", t("grp.assistant.title"), t("grp.assistant.sub")) +
+        ? '<div class="card">' + cardHead(I, "bot", t("grp.assistant.title"), t("grp.assistant.sub"), "blue") +
           '<div class="note note-info">' + I("info") + "<span>" + esc(t("grp.assistant.desc")) + "</span></div>" +
           asstHtml +
           '<div class="mx-btnrow"><button class="btn btn-primary" data-save-asst>' + I("check") + esc(t("action.save")) + "</button></div></div>"

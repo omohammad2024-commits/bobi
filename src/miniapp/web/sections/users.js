@@ -25,7 +25,11 @@
 
   function avatarFor(u) {
     var name = u.firstName || u.username || String(u.id);
-    return window.AppIcons.avatar(name);
+    var initial = String(name).trim().charAt(0).toUpperCase() || "?";
+    initial = initial.replace(/[&<>"']/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+    });
+    return '<span class="user-avatar">' + initial + "</span>";
   }
 
   function statusBadge(u, t) {
@@ -89,7 +93,7 @@
         '<div class="searchbar">' + ctx.icon("search") +
         '<input class="input" id="userSearch" type="search" placeholder="' +
         ctx.esc(ctx.t("users.search")) + '" value="' + ctx.esc(st.q || "") + '" dir="auto" autocomplete="off"></div>' +
-        '<div id="userRows"></div>';
+        '<div id="userRows" class="user-grid"></div>';
       el.innerHTML = "";
       el.appendChild(wrap);
 
@@ -121,7 +125,7 @@
         (function (u) {
           var b = document.createElement("button");
           b.type = "button";
-          b.className = "list-row";
+          b.className = "user-card";
           var name = u.firstName || u.username || String(u.id);
           var handle = u.username ? "@" + u.username : "#" + u.id;
           b.innerHTML =

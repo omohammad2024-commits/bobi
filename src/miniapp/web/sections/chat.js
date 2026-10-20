@@ -52,8 +52,28 @@
       return d;
     }
 
+    // ctx.t returns the key itself when a string is missing; fall back to
+    // the inline English copy so the hero never renders a raw key.
+    function tOr(key, fallback) {
+      var v = ctx.t(key);
+      return v === key ? fallback : v;
+    }
+
+    function hero() {
+      var d = document.createElement("div");
+      d.className = "chat-hero";
+      d.innerHTML =
+        '<div class="chat-hero-inner">' +
+        '<span class="orb orb-lg"></span>' +
+        '<h2 class="chat-hero-title">' + ctx.esc(tOr("chat.heroTitle", "What's on your mind today?")) + "</h2>" +
+        '<p class="chat-hero-sub">' + ctx.esc(tOr("chat.heroSub", "Ask me anything — every command works here.")) + "</p>" +
+        "</div>";
+      list.appendChild(d);
+    }
+
     function paint() {
       list.innerHTML = "";
+      if (st.messages.length === 0 && !st.sending) hero();
       for (var i = 0; i < st.messages.length; i++) bubble(st.messages[i].role, st.messages[i].text);
       if (st.sending) bubble("bot", "", true);
       list.scrollTop = list.scrollHeight;
@@ -105,6 +125,8 @@
   if (typeof window !== "undefined" && typeof window.__registerSectionStrings === "function") {
     window.__registerSectionStrings({
       "chat.sub": "Talk to BOBI directly — every bot command works here.",
+      "chat.heroTitle": "What's on your mind today?",
+      "chat.heroSub": "Ask me anything — every command works here.",
     });
   }
 

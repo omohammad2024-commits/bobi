@@ -375,7 +375,7 @@
       actions.className = "card";
       const probeResId = "probeResult";
       actions.innerHTML =
-        '<div class="card-head tight"><div class="card-icon">' + ctx.icon("zap") + "</div>" +
+        '<div class="card-head tight"><div class="card-icon amber">' + ctx.icon("zap") + "</div>" +
         "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.actionsTitle")) + "</h2></div></div>" +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">' +
         '<button type="button" class="btn btn-ghost" id="probeBtn">' + ctx.icon("zap") + ctx.esc(ctx.t("action.probe")) + "</button>" +
@@ -503,7 +503,7 @@
       const mcard = document.createElement("div");
       mcard.className = "card";
       mcard.innerHTML =
-        '<div class="card-head"><div class="card-icon">' + ctx.icon("cpu") + "</div>" +
+        '<div class="card-head"><div class="card-icon blue">' + ctx.icon("cpu") + "</div>" +
         "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.models")) + "</h2>" +
         '<p class="card-sub">' + ctx.esc(ctx.t("prov.discoverHint")) + "</p></div>" +
         '<div class="spacer"></div><span class="badge">' + fmt("prov.modelCount", models.length) + "</span></div>" +
@@ -602,7 +602,7 @@
       const keyCard = document.createElement("div");
       keyCard.className = "card";
       keyCard.innerHTML =
-        '<div class="card-head"><div class="card-icon">' + ctx.icon("key") + "</div>" +
+        '<div class="card-head"><div class="card-icon green">' + ctx.icon("key") + "</div>" +
         "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.keyTitle")) + "</h2>" +
         '<p class="card-sub">' +
         (p.keyPresent
@@ -821,7 +821,7 @@
       card.className = "card";
       card.style.marginTop = "12px";
       card.innerHTML =
-        '<div class="card-head tight"><div class="card-icon">' + ctx.icon("cpu") + "</div>" +
+        '<div class="card-head tight"><div class="card-icon blue">' + ctx.icon("cpu") + "</div>" +
         "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.models")) + "</h2></div></div>" +
         '<div class="hint-text" style="margin-bottom:10px">' + ctx.esc(ctx.t("prov.draftModelsHint")) + "</div>" +
         '<button type="button" class="btn btn-ghost btn-block" id="dmFetch" style="margin-top:0">' +

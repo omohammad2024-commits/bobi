@@ -119,10 +119,10 @@
       r.estimatedUsd !== undefined
     ) {
       return [
-        { label: t("us.k.runs"), value: r.runs || 0, icon: "gauge", ic: "" },
-        { label: t("us.k.inputTokens"), value: r.inputTokens || 0, icon: "download", ic: "blue" },
-        { label: t("us.k.outputTokens"), value: r.outputTokens || 0, icon: "upload", ic: "green" },
-        { label: t("us.k.costUsd"), value: fmtCost(r.estimatedUsd), icon: "trend", ic: "amber", raw: true },
+        { label: t("us.k.runs"), value: r.runs || 0, icon: "gauge", ic: "", key: "runs", sparkCls: "" },
+        { label: t("us.k.inputTokens"), value: r.inputTokens || 0, icon: "download", ic: "blue", key: "inputTokens", sparkCls: "teal" },
+        { label: t("us.k.outputTokens"), value: r.outputTokens || 0, icon: "upload", ic: "green", key: "outputTokens", sparkCls: "green" },
+        { label: t("us.k.costUsd"), value: fmtCost(r.estimatedUsd), icon: "trend", ic: "amber", raw: true, key: "estimatedUsd", sparkCls: "purple" },
       ];
     }
     if (Array.isArray(r.stats)) {
@@ -139,7 +139,45 @@
     return [];
   }
 
-  function statsHtml(stats, t) {
+  /* Sparkline + delta from the usage.daily series (same payload the daily
+   * bar chart already renders): points normalized to a 100x36 viewBox.
+   * Delta = last day vs previous day, only when a previous day exists and
+   * is non-zero — usage.report carries no prior-period totals, so no
+   * period-over-period delta is ever shown. */
+  function sparkSvg(values, cls) {
+    if (!values || values.length < 2) return "";
+    var min = Math.min.apply(null, values);
+    var max = Math.max.apply(null, values);
+    var span = max - min;
+    var pts = values.map(function (v, i) {
+      var x = (i / (values.length - 1)) * 100;
+      var y = span === 0 ? 18 : 34 - ((v - min) / span) * 32;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    });
+    var area = "M0,36 L" + pts.join(" L") + " L100,36 Z";
+    return (
+      '<div class="spark' + (cls ? " " + cls : "") + '">' +
+      '<svg viewBox="0 0 100 36" preserveAspectRatio="none" aria-hidden="true">' +
+      '<path class="spark-area" d="' + area + '"/>' +
+      '<polyline class="spark-line" points="' + pts.join(" ") + '"/>' +
+      "</svg></div>"
+    );
+  }
+
+  function deltaHtml(values) {
+    if (!values || values.length < 2) return "";
+    var prev = values[values.length - 2];
+    var last = values[values.length - 1];
+    if (!isFinite(prev) || !isFinite(last) || prev === 0) return "";
+    var pct = ((last - prev) / Math.abs(prev)) * 100;
+    var up = last >= prev;
+    return (
+      '<span class="stat-delta ' + (up ? "up" : "down") + '" title="vs previous day">' +
+      (up ? "▲ " : "▼ ") + Math.abs(pct).toFixed(1) + "%</span>"
+    );
+  }
+
+  function statsHtml(stats, t, daily) {
     var I = window.AppIcons.svg;
     if (!stats.length) {
       return '<div class="card"><div class="mx-center">' + esc(t("us.empty")) + "</div></div>";
@@ -149,12 +187,19 @@
       stats
         .map(function (s) {
           var val = s.raw ? s.value : typeof s.value === "number" ? num(s.value) : s.value;
+          var series = null;
+          if (s.key && daily && daily.length >= 2) {
+            series = daily.map(function (d) { return Number(d[s.key]) || 0; });
+          }
           return (
             '<div class="stat-card"><div class="stat-top">' +
             '<div class="stat-ic' + (s.ic ? " " + s.ic : "") + '">' + I(s.icon || "chart") + "</div>" +
+            (series ? deltaHtml(series) : "") +
             "</div>" +
             '<div class="stat-value">' + esc(val) + "</div>" +
-            '<div class="stat-label">' + esc(s.label) + "</div></div>"
+            '<div class="stat-label">' + esc(s.label) + "</div>" +
+            (series ? sparkSvg(series, s.sparkCls) : "") +
+            "</div>"
           );
         })
         .join("") +
@@ -327,7 +372,7 @@
           var failed = results[0];
           throw failed && failed.status === "rejected" ? failed.reason : new Error("request failed");
         }
-        var html = statsHtml(normStats(r || {}, t), t);
+        var html = statsHtml(normStats(r || {}, t), t, daily && daily.daily ? daily.daily : null);
         if (daily && daily.daily) html += dailyChartHtml(daily.daily, t);
         if (byProv && byProv.providers) html += providerCardsHtml(byProv.providers, t);
         if (r && r.byModel) html += byModelHtml(r.byModel, t);

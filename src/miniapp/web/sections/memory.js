@@ -225,7 +225,7 @@
           return (
             '<div class="card" style="margin-bottom:9px">' +
             '<div class="card-head tight">' +
-            '<div class="card-icon">' + I("calendar") + "</div>" +
+            '<div class="card-icon blue">' + I("calendar") + "</div>" +
             "<div><div class=\"card-title\">" + esc(ev.name || "") + "</div></div>" +
             '<div class="spacer"></div>' + daysBadge +
             "</div>" +

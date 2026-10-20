@@ -8,35 +8,43 @@
  * English-only, LTR.
  * ============================================================ */
 
+/* ===== FIGMA REDESIGN FOUNDATION (Riff 4 base · Riff 3 orb · Riff 2 toggles · Riff 1 glass) ===== */
+
 :root {
   /* Telegram-provided base (fallbacks = our dark palette). */
-  --tg-theme-bg-color: #0b0f1a;
-  --tg-theme-text-color: #eef1ff;
-  --tg-theme-hint-color: #7b86a3;
-  --tg-theme-link-color: #9aa6ff;
-  --tg-theme-button-color: #6c7cf4;
+  --tg-theme-bg-color: #0B0D10;
+  --tg-theme-text-color: #F4F6F8;
+  --tg-theme-hint-color: #9BA3AF;
+  --tg-theme-link-color: #8AB4FF;
+  --tg-theme-button-color: #3D6BFF;
   --tg-theme-button-text-color: #ffffff;
-  --tg-theme-secondary-bg-color: #121829;
+  --tg-theme-secondary-bg-color: #15181D;
 
   /* Semantic palette — dark (default). */
-  --bg: #0b0f1a;
-  --surface-1: #121829;
-  --surface-2: #171f36;
-  --surface-3: #1f2947;
-  --surface-inset: #0d1322;
-  --border: rgba(148, 163, 255, 0.1);
-  --border-strong: rgba(148, 163, 255, 0.22);
-  --text: #eef1ff;
-  --text-2: #b9c1da;
-  --hint: #7b86a3;
-  --accent: #6c7cf4;
-  --accent-2: #9d6cf5;
-  --accent-ink: #c3cbff;
-  --accent-soft: rgba(108, 124, 244, 0.14);
-  --accent-grad: linear-gradient(135deg, #6c7cf4 0%, #9d6cf5 100%);
-  --link: #9aa6ff;
-  --success: #34d399;
-  --success-soft: rgba(52, 211, 153, 0.13);
+  --bg: #0B0D10;
+  --surface-1: #15181D;
+  --surface-2: #1A1E23;
+  --surface-3: #20242B;
+  --surface-inset: #0B0D10;
+  --border: rgba(255, 255, 255, 0.07);
+  --border-strong: rgba(255, 255, 255, 0.14);
+  --text: #F4F6F8;
+  --text-2: #C7CDD6;
+  --hint: #9BA3AF;
+  --accent: #3D6BFF;
+  --accent-2: #A855F7;
+  --accent-ink: #A8C2FF;
+  --accent-soft: rgba(61, 107, 255, 0.14);
+  --accent-grad: linear-gradient(135deg, #2B4DFF 0%, #A855F7 100%);
+  --link: #8AB4FF;
+  --green: #22C55E;
+  --green-soft: rgba(34, 197, 94, 0.13);
+  --purple: #A855F7;
+  --purple-soft: rgba(168, 85, 247, 0.13);
+  --teal: #14B8A6;
+  --teal-soft: rgba(20, 184, 166, 0.13);
+  --success: #22C55E;
+  --success-soft: rgba(34, 197, 94, 0.13);
   --warning: #fbbf24;
   --warning-soft: rgba(251, 191, 36, 0.12);
   --danger: #f87171;
@@ -44,8 +52,8 @@
   --info: #60a5fa;
   --info-soft: rgba(96, 165, 250, 0.12);
 
-  --radius: 16px;
-  --radius-sm: 11px;
+  --radius: 18px;
+  --radius-sm: 12px;
   --tabbar-h: 68px;
   --header-h: 58px;
 
@@ -70,11 +78,11 @@
   --text: #0f172a;
   --text-2: #3f4a63;
   --hint: #7a86a1;
-  --accent: #5b6cf0;
-  --accent-2: #8b5cf6;
-  --accent-ink: #4c5ce0;
-  --accent-soft: rgba(91, 108, 240, 0.12);
-  --link: #4c5ce0;
+  --accent: #2F5FE8;
+  --accent-2: #9333EA;
+  --accent-ink: #2451C6;
+  --accent-soft: rgba(47, 95, 232, 0.12);
+  --link: #2451C6;
 }
 
 /* ---------- Base ---------- */
@@ -93,12 +101,11 @@ body {
 
 body {
   background:
-    radial-gradient(1200px 500px at 50% -180px, rgba(108, 124, 244, 0.12), transparent 60%),
+    radial-gradient(1200px 500px at 50% -180px, rgba(61, 107, 255, 0.12), transparent 60%),
     var(--bg);
   background-attachment: fixed;
   color: var(--text);
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", "Segoe UI",
-    Roboto, Helvetica, Arial, sans-serif;
+  font-family: "Inter", -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: var(--fs-body);
   line-height: 1.55;
   overscroll-behavior: none;
@@ -115,7 +122,7 @@ button {
 }
 
 ::selection {
-  background: rgba(108, 124, 244, 0.35);
+  background: rgba(61, 107, 255, 0.35);
 }
 
 :focus-visible {
@@ -160,7 +167,7 @@ button {
   width: 34px;
   height: 34px;
   flex: 0 0 auto;
-  filter: drop-shadow(0 3px 10px rgba(108, 124, 244, 0.45));
+  filter: drop-shadow(0 3px 10px rgba(61, 107, 255, 0.45));
 }
 
 .brand-name {
@@ -202,7 +209,7 @@ button {
 
 .status-pill.on {
   color: var(--success);
-  border-color: rgba(52, 211, 153, 0.35);
+  border-color: rgba(34, 197, 94, 0.35);
   background: var(--success-soft);
 }
 
@@ -213,7 +220,7 @@ button {
 .status-pill.off {
   color: var(--hint);
   border-color: var(--border-strong);
-  background: rgba(148, 163, 255, 0.06);
+  background: rgba(148, 163, 184, 0.06);
 }
 
 @keyframes pulse {
@@ -278,7 +285,7 @@ button {
   display: grid;
   place-items: center;
   flex: 0 0 auto;
-  box-shadow: 0 6px 18px rgba(108, 124, 244, 0.4),
+  box-shadow: 0 6px 18px rgba(61, 107, 255, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.25);
 }
 
@@ -291,7 +298,7 @@ button {
 .page-title {
   margin: 0;
   font-size: var(--fs-title);
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: -0.01em;
   line-height: 1.25;
 }
@@ -314,7 +321,7 @@ button {
 .subhead h2 {
   margin: 0;
   font-size: 17px;
-  font-weight: 700;
+  font-weight: 600;
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -433,7 +440,7 @@ button {
 .card-title {
   margin: 0;
   font-size: var(--fs-section);
-  font-weight: 700;
+  font-weight: 600;
   line-height: 1.35;
 }
 
@@ -561,7 +568,7 @@ button {
   letter-spacing: 0.01em;
   padding: 3px 9px;
   border-radius: 999px;
-  background: rgba(148, 163, 255, 0.1);
+  background: rgba(148, 163, 184, 0.1);
   color: var(--text-2);
   border: 1px solid transparent;
   white-space: nowrap;
@@ -576,7 +583,7 @@ button {
 .badge-success {
   background: var(--success-soft);
   color: var(--success);
-  border-color: rgba(52, 211, 153, 0.25);
+  border-color: rgba(34, 197, 94, 0.25);
 }
 
 .badge.nokey,
@@ -601,7 +608,7 @@ button {
 .badge-accent {
   background: var(--accent-soft);
   color: var(--accent-ink);
-  border-color: rgba(108, 124, 244, 0.3);
+  border-color: rgba(61, 107, 255, 0.3);
 }
 
 .dot {
@@ -651,25 +658,25 @@ button {
 .btn-primary {
   background: var(--accent-grad);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(108, 124, 244, 0.38),
+  box-shadow: 0 4px 16px rgba(61, 107, 255, 0.38),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
 
 .btn-primary:hover {
-  box-shadow: 0 6px 22px rgba(108, 124, 244, 0.5),
+  box-shadow: 0 6px 22px rgba(61, 107, 255, 0.5),
     inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 
 .btn-ghost {
-  background: rgba(148, 163, 255, 0.07);
+  background: rgba(148, 163, 184, 0.07);
   color: var(--text);
   border-color: var(--border);
 }
 
 .btn-ghost:hover {
   border-color: var(--border-strong);
-  background: rgba(148, 163, 255, 0.11);
+  background: rgba(148, 163, 184, 0.11);
 }
 
 .btn-danger {
@@ -685,7 +692,7 @@ button {
 .btn-subtle {
   color: var(--accent-ink);
   background: var(--accent-soft);
-  border-color: rgba(108, 124, 244, 0.25);
+  border-color: rgba(61, 107, 255, 0.25);
 }
 
 .btn-block {
@@ -774,7 +781,7 @@ textarea.input {
 .input:focus {
   outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(108, 124, 244, 0.18);
+  box-shadow: 0 0 0 3px rgba(61, 107, 255, 0.18);
 }
 
 .field input::placeholder,
@@ -850,12 +857,12 @@ textarea.input {
 
 .toggle {
   position: relative;
-  width: 52px;
-  height: 31px;
+  width: 56px;
+  height: 32px;
   flex: 0 0 auto;
   border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface-3);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #E8EAEC;
   cursor: pointer;
   transition: background 0.2s, border-color 0.2s;
   padding: 0;
@@ -864,64 +871,74 @@ textarea.input {
 .toggle::after {
   content: "";
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 24px;
-  height: 24px;
+  top: 3px;
+  left: 3px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  background: #fff;
+  background: #FFFFFF;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
-  transition: transform 0.2s cubic-bezier(0.3, 1.2, 0.4, 1);
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s;
 }
 
 .toggle[aria-checked="true"] {
-  background: var(--accent-grad);
-  border-color: transparent;
+  background: #D8F0F8;
+  border-color: rgba(255, 255, 255, 0.12);
 }
 
 .toggle[aria-checked="true"]::after {
-  transform: translateX(21px);
+  transform: translateX(24px);
+  background: #1E9BF0;
+}
+
+.toggle:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 /* Pill toggle with On/Off text (sections set textContent). */
 .mx-toggle {
   position: relative;
-  min-width: 74px;
-  min-height: 40px;
+  width: 56px;
+  min-width: 56px;
+  height: 32px;
+  min-height: 32px;
+  flex: 0 0 auto;
   border-radius: 999px;
-  border: 1px solid var(--border-strong);
-  background: var(--surface-3);
-  color: var(--hint);
-  font-size: var(--fs-caption);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #E8EAEC;
+  /* On/Off text stays in the DOM for a11y but is visually hidden (Riff 2). */
+  color: transparent;
+  font-size: 0;
   font-weight: 700;
   cursor: pointer;
-  padding: 0 14px 0 32px;
-  transition: background 0.2s, color 0.2s, border-color 0.2s, padding 0.2s;
+  padding: 0;
+  transition: background 0.2s, border-color 0.2s;
 }
 
 .mx-toggle::before {
   content: "";
   position: absolute;
-  left: 6px;
+  left: 3px;
   top: 50%;
   transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
-  background: var(--hint);
-  transition: left 0.2s, background 0.2s;
+  background: #FFFFFF;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+  transition: transform 0.28s cubic-bezier(0.34, 1.56, 0.64, 1), background 0.2s;
 }
 
 .mx-toggle[aria-checked="true"] {
-  background: var(--accent-soft);
-  border-color: rgba(108, 124, 244, 0.5);
-  color: var(--accent-ink);
-  padding: 0 32px 0 14px;
+  background: #D8F0F8;
+  border-color: rgba(255, 255, 255, 0.12);
+  color: transparent;
 }
 
 .mx-toggle[aria-checked="true"]::before {
-  left: calc(100% - 24px);
-  background: var(--accent);
+  transform: translate(24px, -50%);
+  background: #1E9BF0;
 }
 
 .mx-toggle:disabled {
@@ -982,7 +999,7 @@ textarea.input {
 .mx-period .btn[aria-pressed="true"] {
   background: var(--accent-grad);
   color: #fff;
-  box-shadow: 0 3px 10px rgba(108, 124, 244, 0.4),
+  box-shadow: 0 3px 10px rgba(61, 107, 255, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.2);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
 }
@@ -999,7 +1016,7 @@ textarea.input {
 
 .stat-card,
 .mx-stat {
-  background: linear-gradient(180deg, var(--surface-2), var(--surface-1));
+  background: var(--surface-1);
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
@@ -1035,8 +1052,8 @@ textarea.input {
 .stat-value,
 .mx-stat b {
   display: block;
-  font-size: 22px;
-  font-weight: 800;
+  font-size: 26px;
+  font-weight: 600;
   letter-spacing: -0.02em;
   line-height: 1.2;
   margin-bottom: 3px;
@@ -1234,7 +1251,7 @@ textarea.input {
 }
 
 .mx-secttl {
-  font-weight: 800;
+  font-weight: 600;
   margin: 2px 0 10px;
   font-size: var(--fs-section);
   letter-spacing: -0.01em;
@@ -1353,10 +1370,16 @@ textarea.input {
   width: 34px;
   height: 34px;
   margin: 0 auto 14px;
-  border: 3px solid var(--border-strong);
-  border-top-color: var(--accent);
+  border: none;
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  background: radial-gradient(ellipse at 32% 28%, #FFFFFF 0%, #BFE6FF 26%, #2B4DFF 62%, #0B1E5B 88%, #060D2B 100%);
+  box-shadow: 0 0 24px rgba(43, 77, 255, 0.55), 0 0 64px rgba(43, 77, 255, 0.25);
+  animation: orbPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes orbPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(0.86); opacity: 0.82; }
 }
 
 @keyframes spin {
@@ -1402,7 +1425,7 @@ textarea.input {
 
 .empty-title {
   font-size: 16.5px;
-  font-weight: 800;
+  font-weight: 600;
   color: var(--text);
   margin: 0 0 7px;
   letter-spacing: -0.01em;
@@ -1491,7 +1514,7 @@ textarea.input {
 }
 
 .toast-ok {
-  border-color: rgba(52, 211, 153, 0.45);
+  border-color: rgba(34, 197, 94, 0.45);
 }
 
 .toast-ok .ic {
@@ -1581,7 +1604,7 @@ textarea.input {
 .sheet-title {
   margin: 0 0 6px;
   font-size: 17px;
-  font-weight: 800;
+  font-weight: 600;
   letter-spacing: -0.01em;
   display: flex;
   align-items: center;
@@ -1669,7 +1692,7 @@ textarea.input {
   background: var(--accent-grad);
   color: #fff;
   border-radius: 19px 19px 6px 19px;
-  box-shadow: 0 4px 14px rgba(108, 124, 244, 0.3);
+  box-shadow: 0 4px 14px rgba(61, 107, 255, 0.3);
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.12);
 }
 
@@ -1709,52 +1732,55 @@ textarea.input {
   gap: 9px;
   align-items: flex-end;
   position: sticky;
-  bottom: 0;
-  background: linear-gradient(180deg, transparent, var(--bg) 28%);
-  padding: 14px 0 4px;
+  bottom: 4px;
+  margin-top: 14px;
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 28px;
+  padding: 6px;
 }
 
 .chat-inputbar textarea {
   flex: 1;
-  min-height: 48px;
+  min-height: 40px;
   max-height: 130px;
-  padding: 13px 17px;
-  border-radius: 24px;
-  border: 1px solid var(--border);
-  background: var(--surface-1);
+  padding: 10px 12px;
+  border-radius: 22px;
+  border: none;
+  background: transparent;
   color: var(--text);
   font-size: 15px;
   font-family: inherit;
   line-height: 1.5;
   resize: none;
-  transition: border-color 0.15s, box-shadow 0.15s;
 }
 
 .chat-inputbar textarea:focus {
   outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(108, 124, 244, 0.18);
+  border-color: transparent;
+  box-shadow: none;
 }
 
 .chat-send {
-  width: 50px;
-  height: 50px;
+  width: 38px;
+  height: 38px;
   border-radius: 50%;
-  border: none;
-  background: var(--accent-grad);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.10);
   color: #fff;
   cursor: pointer;
   flex: 0 0 auto;
+  align-self: flex-end;
   display: grid;
   place-items: center;
-  box-shadow: 0 5px 16px rgba(108, 124, 244, 0.45),
-    inset 0 1px 0 rgba(255, 255, 255, 0.25);
-  transition: transform 0.12s, opacity 0.2s;
+  transition: transform 0.12s, opacity 0.2s, background 0.2s;
 }
 
 .chat-send .ic {
-  width: 21px;
-  height: 21px;
+  width: 18px;
+  height: 18px;
   margin-inline-start: 2px;
 }
 
@@ -1794,7 +1820,7 @@ textarea.input {
 .tg-fatal-card h1 {
   font-size: 18px;
   margin: 8px 0;
-  font-weight: 800;
+  font-weight: 600;
 }
 
 .tg-fatal-card p {
@@ -1890,7 +1916,7 @@ textarea.input {
 .score-hi {
   background: var(--success-soft);
   color: var(--success);
-  border-color: rgba(52, 211, 153, 0.3);
+  border-color: rgba(34, 197, 94, 0.3);
 }
 
 .score-mid {
@@ -1921,7 +1947,7 @@ textarea.input {
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 999px;
-  background: rgba(148, 163, 255, 0.09);
+  background: rgba(148, 163, 184, 0.09);
   color: var(--text-2);
   border: 1px solid var(--border);
 }
@@ -1934,7 +1960,7 @@ textarea.input {
 .meta-chip.lit {
   background: var(--accent-soft);
   color: var(--accent-ink);
-  border-color: rgba(108, 124, 244, 0.35);
+  border-color: rgba(61, 107, 255, 0.35);
 }
 
 /* ---------- Danger zone ---------- */
@@ -2192,5 +2218,297 @@ div:has(> .mx-table) {
   .tab .ic {
     width: 22px;
     height: 22px;
+  }
+}
+
+/* ===== FIGMA REDESIGN FOUNDATION (Riff 4 base · Riff 3 orb · Riff 2 toggles · Riff 1 glass) ===== */
+/*
+ * CLASS CONTRACT — later workers (chat section, other sections) consume
+ * these classes exactly as named; they do NOT add CSS of their own.
+ *
+ *   .orb                      Pure-CSS sphere (Riff 3). Size modifiers:
+ *     .orb-sm   22px          header brand mark
+ *     .orb-md   40px          default / inline use
+ *     .orb-lg   84px          chat hero centerpiece
+ *   .spinner / .mx-spin       Restyled in place above: mini pulsing orb,
+ *                             so every existing loading state is an orb
+ *                             with no markup change.
+ *   .toggle / .mx-toggle      Riff 2 pill switches (restyled in place):
+ *                             [aria-checked="true"] = ON. The On/Off text
+ *                             inside .mx-toggle is visually hidden only.
+ *   .chat-hero                Chat empty-state hero (Riff 1) filling the
+ *                             chat list area.
+ *     .chat-hero-inner        Centered column: orb-lg, headline, sub.
+ *     .chat-hero-title        White 600 headline (~26px mobile scale).
+ *     .chat-hero-sub          Muted 13px supporting line.
+ *   .chat-inputbar            Frosted-glass pill composer (restyled in
+ *                             place); #chatInput / #chatSend ids and
+ *                             markup are unchanged. .chat-send is the
+ *                             38px circular ring button.
+ *   .stat-card / .stat-value  Retuned in place (Riff 4 surface, 26px/600).
+ *     .stat-delta             12px/600 delta; .up = green, .down = danger.
+ *   .spark                    Inline-SVG sparkline box (height 38px).
+ *     .spark-line             The polyline/path stroke (fill: none).
+ *     .spark-area             Optional area path (fill, opacity .14).
+ *     Stroke/fill modifiers:  .spark.teal / .spark.green / .spark.purple
+ *   .user-grid                Responsive card grid: 1 / 2 / 3 columns at
+ *                             0 / 560px / 900px.
+ *     .user-card              Card row; compose with .list-main,
+ *                             .list-title, .list-sub inside.
+ *     .user-avatar            42px gradient circle with initial letter.
+ *   .chip                     Small label pill; modifiers .green,
+ *                             .purple, .teal (soft tinted variants).
+ */
+
+/* ---------- Orb (Riff 3) ---------- */
+
+.orb {
+  position: relative;
+  display: inline-block;
+  width: 40px;
+  height: 40px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  overflow: hidden;
+  background: radial-gradient(ellipse at 32% 28%, #FFFFFF 0%, #BFE6FF 26%, #2B4DFF 62%, #0B1E5B 88%, #060D2B 100%);
+  box-shadow: 0 0 24px rgba(43, 77, 255, 0.55), 0 0 64px rgba(43, 77, 255, 0.25);
+}
+
+.orb::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: linear-gradient(115deg, transparent 32%, rgba(255, 255, 255, 0.55) 50%, transparent 66%);
+  transform: translateX(-72%);
+  animation: orbSweep 5s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes orbSweep {
+  from { transform: translateX(-72%); }
+  to { transform: translateX(72%); }
+}
+
+.orb-sm { width: 22px; height: 22px; }
+.orb-md { width: 40px; height: 40px; }
+.orb-lg { width: 84px; height: 84px; }
+
+/* ---------- Chat hero (Riff 1) ---------- */
+
+.chat-hero {
+  position: relative;
+  overflow: hidden;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 320px;
+  padding: 36px 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background:
+    radial-gradient(120% 90% at 85% 0%, rgba(232, 149, 74, 0.28), transparent 55%),
+    radial-gradient(100% 100% at 50% 0%, #12283F 0%, #0A1522 55%, #0B0D10 100%);
+}
+
+.chat-hero::before {
+  content: "";
+  position: absolute;
+  inset: -20%;
+  background: radial-gradient(40% 32% at 82% 8%, rgba(232, 149, 74, 0.20), transparent 70%);
+  animation: heroDrift 14s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes heroDrift {
+  from { transform: scale(1) translate(0, 0); }
+  to { transform: scale(1.08) translate(-12px, 10px); }
+}
+
+.chat-hero-inner {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  max-width: 420px;
+  margin: 0 auto;
+  text-align: center;
+}
+
+.chat-hero-title {
+  margin: 0;
+  color: #FFFFFF;
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.chat-hero-sub {
+  margin: 0;
+  color: #9BA3AF;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+/* Glass composer on light theme: keep the pill legible. */
+[data-theme="light"] .chat-inputbar {
+  background: rgba(255, 255, 255, 0.65);
+  border-color: rgba(15, 23, 42, 0.12);
+}
+
+[data-theme="light"] .chat-send {
+  background: rgba(15, 23, 42, 0.06);
+  border-color: rgba(15, 23, 42, 0.35);
+  color: var(--text);
+}
+
+/* ---------- Stat deltas + sparklines (Riff 4) ---------- */
+
+.stat-delta {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.stat-delta.up { color: var(--green); }
+.stat-delta.down { color: var(--danger); }
+
+.spark {
+  display: block;
+  height: 38px;
+  margin-top: 8px;
+}
+
+.spark svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.spark .spark-line {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.spark .spark-area {
+  fill: var(--accent);
+  opacity: 0.14;
+  stroke: none;
+}
+
+.spark.teal .spark-line { stroke: var(--teal); }
+.spark.teal .spark-area { fill: var(--teal); }
+.spark.green .spark-line { stroke: var(--green); }
+.spark.green .spark-area { fill: var(--green); }
+.spark.purple .spark-line { stroke: var(--purple); }
+.spark.purple .spark-area { fill: var(--purple); }
+
+/* ---------- User card grid (Riff 4) ---------- */
+
+.user-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
+@media (min-width: 560px) {
+  .user-grid { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (min-width: 900px) {
+  .user-grid { grid-template-columns: repeat(3, 1fr); }
+}
+
+.user-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 14px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  color: var(--text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.user-card:hover {
+  border-color: var(--border-strong);
+}
+
+.user-avatar {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--purple) 100%);
+  color: #FFFFFF;
+  font-weight: 600;
+  font-size: 16px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.25);
+}
+
+/* ---------- Chips ---------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-micro);
+  font-weight: 600;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-2);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.chip.green {
+  background: var(--green-soft);
+  color: var(--green);
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.chip.purple {
+  background: var(--purple-soft);
+  color: var(--purple);
+  border-color: rgba(168, 85, 247, 0.25);
+}
+
+.chip.teal {
+  background: var(--teal-soft);
+  color: var(--teal);
+  border-color: rgba(20, 184, 166, 0.25);
+}
+
+/* ---------- Foundation guards ---------- */
+
+/* The mobile tap-target block above stretches .mx-toggle to 44px;
+   the Riff 2 pill keeps its exact 56x32 geometry at every width. */
+@media (max-width: 1023px) {
+  .toggle { height: 32px; min-height: 32px; }
+  .mx-toggle { height: 32px; min-height: 32px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .orb::after,
+  .chat-hero::before,
+  .spinner,
+  .mx-spin {
+    animation: none !important;
   }
 }

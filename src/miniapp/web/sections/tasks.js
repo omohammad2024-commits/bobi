@@ -41,7 +41,7 @@
 
   var GROUP_META = {
     reminder: { titleKey: "tsk.reminders", icon: "bell", cardIcon: "amber" },
-    task: { titleKey: "tsk.tasks", icon: "clock", cardIcon: "" },
+    task: { titleKey: "tsk.tasks", icon: "clock", cardIcon: "blue" },
     goal: { titleKey: "tsk.goals", icon: "target", cardIcon: "green" },
   };
 

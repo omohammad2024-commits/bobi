@@ -58,15 +58,6 @@
     groups: "sections/groups.js",
   };
 
-  var LOGO_SVG =
-    '<svg class="brand-logo" viewBox="0 0 32 32" aria-hidden="true">' +
-    "<defs><linearGradient id=\"bobi-g\" x1=\"0\" y1=\"0\" x2=\"1\" y2=\"1\">" +
-    '<stop offset="0" stop-color="#6c7cf4"/><stop offset="1" stop-color="#9d6cf5"/>' +
-    "</linearGradient></defs>" +
-    '<rect width="32" height="32" rx="9" fill="url(#bobi-g)"/>' +
-    '<path d="M17.5 6 9 18h6l-1.5 8L22 14h-6l1.5-8z" fill="#fff"/>' +
-    "</svg>";
-
   var sections = {}; // id -> { titleKey, icon, render }
   var sectionState = {}; // id -> arbitrary bag kept across switches
   var scrollPos = {}; // id -> scrollTop
@@ -141,7 +132,7 @@
     var root = document.getElementById("app");
     root.innerHTML =
       '<header class="app-header">' +
-      '<div class="brand">' + LOGO_SVG +
+      '<div class="brand"><span class="orb orb-sm" aria-hidden="true"></span>' +
       '<span class="brand-name">BOBI</span>' +
       '<span class="brand-sub">Control Center</span>' +
       "</div>" +

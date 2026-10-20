@@ -100,9 +100,9 @@
     });
   }
 
-  function cardHead(I, ic, title, sub) {
+  function cardHead(I, ic, title, sub, icCls) {
     return (
-      '<div class="card-head"><div class="card-icon">' + I(ic) + "</div>" +
+      '<div class="card-head"><div class="card-icon' + (icCls ? " " + icCls : "") + '">' + I(ic) + "</div>" +
       "<div><h2 class=\"card-title\">" + esc(title) + "</h2>" +
       (sub ? '<p class="card-sub">' + esc(sub) + "</p>" : "") + "</div></div>"
     );
@@ -186,8 +186,8 @@
 
     el.innerHTML =
       ctx.pageHead("clock", t("sec.schedulers"), t("sch.sub")) +
-      '<div class="card">' + cardHead(I, "layers", t("sch.list.title"), t("sch.list.sub")) + schedHtml + "</div>" +
-      '<div class="card">' + cardHead(I, "bell", t("sch.digest.title"), t("sch.digest.sub")) +
+      '<div class="card">' + cardHead(I, "layers", t("sch.list.title"), t("sch.list.sub"), "blue") + schedHtml + "</div>" +
+      '<div class="card">' + cardHead(I, "bell", t("sch.digest.title"), t("sch.digest.sub"), "amber") +
       '<div data-dpreview></div>' +
       '<div class="mx-btnrow"><button class="btn btn-ghost" data-preview>' + I("eye") + esc(t("sch.digest.preview.btn")) + "</button></div>" +
       (digestHtml
