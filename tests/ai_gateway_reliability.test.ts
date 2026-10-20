@@ -305,10 +305,14 @@ describe("gateway in-call retry (single provider)", () => {
     });
   });
 
-  test("quota (429) is retried; auth/invalid_response/aborted are not", async () => {
+  test("in-call retry: quota/auth/invalid_response/aborted get exactly one send", async () => {
     await withEnv({ BOBI_SMART_ROUTING: "0" }, async () => {
       const cases: Array<{ kind: AiError["kind"]; calls: number }> = [
-        { kind: "quota", calls: 3 },
+        // C2: quota no longer retries the SAME provider in-call — its
+        // redundancy is chain advancement to a different provider
+        // (tests/ai_gateway_quota_failover.test.ts). A single-provider
+        // setup therefore sends exactly once, like the other kinds here.
+        { kind: "quota", calls: 1 },
         { kind: "auth", calls: 1 },
         { kind: "invalid_response", calls: 1 },
         { kind: "aborted", calls: 1 },

@@ -147,9 +147,20 @@ describe("openai adapter status path", () => {
   });
 
   test("probe completions ask for max_tokens 16 through the wire", async () => {
-    let seenBody: Record<string, unknown> | undefined;
+    const seenBodies: Array<Record<string, unknown>> = [];
     const d = await loopback((body, res) => {
-      seenBody = body.length > 0 ? (JSON.parse(body) as Record<string, unknown>) : {};
+      const parsed = body.length > 0 ? (JSON.parse(body) as Record<string, unknown>) : {};
+      seenBodies.push(parsed);
+      if (parsed["stream"] === true) {
+        // H1: the provider probe is two-stage — after the ping, the
+        // realistic stage streams. Answer in SSE so the stage can pass.
+        res.writeHead(200, { "content-type": "text/event-stream" }).end(
+          'data: {"choices":[{"delta":{"content":"pong"}}]}\n\n' +
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+            "data: [DONE]\n\n",
+        );
+        return;
+      }
       res.writeHead(200).end(
         JSON.stringify({ choices: [{ message: { content: "pong" } }], model: "probe-model" }),
       );
@@ -174,7 +185,12 @@ describe("openai adapter status path", () => {
 
       const result = await health.probe(created.data);
       expect(result.ok).toBe(true);
-      expect(seenBody?.["max_tokens"]).toBe(16);
+      // Stage (a), the ping, is the request this test exists to pin: a
+      // 16-token cap, so the probe gets ANY answer fast (H2 made the cap
+      // real on every wire). Stage (b) then streams with its own 300 cap.
+      expect(seenBodies[0]?.["max_tokens"]).toBe(16);
+      const streamBody = seenBodies.find((b) => b["stream"] === true);
+      expect(streamBody?.["max_tokens"]).toBe(300);
       storage.close();
     } finally {
       d.server.close();
