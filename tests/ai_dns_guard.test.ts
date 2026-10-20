@@ -177,26 +177,35 @@ describe("resolveTarget", () => {
     ).rejects.toThrow(AiError);
   });
 
-  test("revalidation happens per request, never trusted forever", async () => {
-    // First answer is a permitted local address; a later answer is metadata.
-    const answers = [["127.0.0.1"], ["169.254.169.254"]];
-    let call = 0;
-    const resolver: DnsResolver = async () => answers[call++] ?? [];
+  test("revalidation happens per request when the DNS cache is disabled", async () => {
+    // BOBI_DNS_CACHE_MS=0 restores the resolve-on-every-request policy:
+    // a validated set is never trusted beyond the request that made it.
+    const prev = process.env.BOBI_DNS_CACHE_MS;
+    process.env.BOBI_DNS_CACHE_MS = "0";
+    try {
+      // First answer is a permitted local address; a later answer is metadata.
+      const answers = [["127.0.0.1"], ["169.254.169.254"]];
+      let call = 0;
+      const resolver: DnsResolver = async () => answers[call++] ?? [];
 
-    const first = await resolveTarget(
-      { baseUrl: "http://rebind.test/v1", apiKey: "k" },
-      { resolver, allowLocalTargets: true },
-    );
-    expect(first.addresses).toEqual(["127.0.0.1"]);
-
-    // The same host, resolved again, must be re-checked and refused.
-    await expect(
-      resolveTarget(
+      const first = await resolveTarget(
         { baseUrl: "http://rebind.test/v1", apiKey: "k" },
         { resolver, allowLocalTargets: true },
-      ),
-    ).rejects.toThrow(AiError);
-    expect(call).toBe(2);
+      );
+      expect(first.addresses).toEqual(["127.0.0.1"]);
+
+      // The same host, resolved again, must be re-checked and refused.
+      await expect(
+        resolveTarget(
+          { baseUrl: "http://rebind.test/v1", apiKey: "k" },
+          { resolver, allowLocalTargets: true },
+        ),
+      ).rejects.toThrow(AiError);
+      expect(call).toBe(2);
+    } finally {
+      if (prev === undefined) delete process.env.BOBI_DNS_CACHE_MS;
+      else process.env.BOBI_DNS_CACHE_MS = prev;
+    }
   });
 
   test("the default resolver queries A and AAAA, not a hosts file", () => {

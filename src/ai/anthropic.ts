@@ -31,6 +31,7 @@ import type {
   RemoteModel,
 } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
+import { statusToAiError } from "./http_status";
 import { pinnedFetch } from "./pinned_transport";
 import { selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
@@ -374,18 +375,8 @@ async function fetchJson(
   return parsed;
 }
 
-function statusToError(status: number): AiError {
-  if (status === 401 || status === 403) {
-    return new AiError("auth", "Service authentication failed.");
-  }
-  if (status === 408) return new AiError("timeout", "The service did not respond in time.");
-  if (status === 429) return new AiError("quota", "Service rate limit exceeded.");
-  if (status >= 500) return new AiError("network", "Service is unavailable.");
-  if (status === 400 || status === 404 || status === 422) {
-    return new AiError("invalid_response", "The request to the service was invalid.");
-  }
-  return new AiError("unknown", "Unknown service error.");
-}
+/** Same status mapping as the OpenAI-compatible adapter (shared implementation). */
+const statusToError = statusToAiError;
 
 
 function isRecord(v: unknown): v is Record<string, unknown> {

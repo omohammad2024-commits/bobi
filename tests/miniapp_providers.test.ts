@@ -74,6 +74,11 @@ function makeDeps(): { deps: MiniAppDeps; turns: CapturedTurn[] } {
       );
       return result;
     },
+    probeModel: async (_id: number, _modelId: string): Promise<ProbeResult> => {
+      // Mirrors the real ProviderHealthService.probeModel: a model test is
+      // NOT recorded to provider health, so no storage write happens here.
+      return { ok: true, checkedAt: Date.now() };
+    },
   };
   const turns: CapturedTurn[] = [];
   const actor = { kind: "owner-test-actor" };

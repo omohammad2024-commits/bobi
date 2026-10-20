@@ -146,6 +146,12 @@ export interface CompletionRequest {
    * is forced to produce an answer rather than leaving the user waiting.
    */
   tools?: readonly ToolSpec[];
+  /**
+   * Per-request cap on generated tokens. Wins over the provider-level
+   * AdapterSettings.maxTokens in adapters that honor it (the health probe
+   * uses a tiny cap so it gets ANY answer fast). Absent = no per-request cap.
+   */
+  maxTokens?: number;
 }
 
 export interface CompletionResponse {
@@ -199,6 +205,13 @@ export class AiError extends Error {
   constructor(
     readonly kind: "auth" | "quota" | "network" | "invalid_response" | "timeout" | "aborted" | "unknown",
     message: string,
+    /**
+     * The HTTP status that produced this error, when it came from an HTTP
+     * response. A number only — never a response body — so diagnostics can
+     * name the real cause (e.g. 402 balance exhausted) instead of collapsing
+     * every unmapped status into an opaque "unknown".
+     */
+    readonly status?: number,
   ) {
     super(message);
     this.name = "AiError";

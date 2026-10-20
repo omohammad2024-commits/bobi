@@ -61,7 +61,7 @@ export interface ProviderApiDeps {
     | "isActive"
     | "enabledModels"
   >;
-  health: Pick<ProviderHealthService, "probe">;
+  health: Pick<ProviderHealthService, "probe" | "probeModel">;
   /** Overridable in tests; defaults to the real registry. */
   adapters?: AdapterRegistry;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -120,6 +120,8 @@ export async function handleProviderApi(
       return deleteModel(params, deps);
     case "models.setActive":
       return setActiveModel(params, deps);
+    case "models.test":
+      return testModel(params, deps);
     default:
       throw new ProviderApiError(404, "Invalid request.");
   }
@@ -905,4 +907,40 @@ function setActiveModel(
     }
     return out;
   })();
+}
+
+/**
+ * Test ONE model with a real completion (the model row's "Test" button).
+ * Unlike the provider probe this never records provider health — it only
+ * reports whether that specific model answers.
+ */
+async function testModel(
+  params: Record<string, unknown>,
+  deps: ProviderApiDeps,
+): Promise<Record<string, unknown>> {
+  const providerId = asId(params["providerId"]);
+  if (providerId === undefined) {
+    throw new ProviderApiError(400, "Invalid provider ID.");
+  }
+  const modelId = asNonEmptyString(params["modelId"], 128);
+  if (modelId === undefined) {
+    throw new ProviderApiError(400, "Model ID is required.");
+  }
+  if (!deps.providerSvc.view(providerId)) {
+    throw new ProviderApiError(404, "Provider not found.");
+  }
+  const started = Date.now();
+  let result: { ok: boolean; message?: string; checkedAt: number };
+  try {
+    result = await deps.health.probeModel(providerId, modelId);
+  } catch {
+    throw new ProviderApiError(500, "Model test failed.");
+  }
+  const out: Record<string, unknown> = {
+    ok: result.ok,
+    latencyMs: Date.now() - started,
+    atMs: result.checkedAt,
+  };
+  if (result.message !== undefined) out["message"] = result.message;
+  return out;
 }

@@ -15,8 +15,13 @@
  *    hostname to an ordinary `fetch()` would leave the rebinding race open,
  *    so that composition is explicitly not used anywhere in this codebase.
  *
- * No cache is kept: the policy is "resolve on every request", which is why a
- * previous validation is never trusted indefinitely.
+ * A short-TTL in-memory cache avoids re-resolving the same name on every
+ * request (DNS is a large slice of provider "ping"). Rebinding stays closed:
+ * entries live at most BOBI_DNS_CACHE_MS (default 60s), failed lookups are
+ * never cached, and every cached address is re-classified against the policy
+ * on EVERY hit, so a cache entry can never bypass a rule it could not pass
+ * when first resolved. Setting BOBI_DNS_CACHE_MS=0 restores "resolve on
+ * every request" exactly.
  */
 import { resolve4, resolve6 } from "node:dns/promises";
 import ipaddr from "ipaddr.js";
@@ -136,6 +141,78 @@ function literalAddress(hostname: string): string | undefined {
 }
 
 /**
+ * Effective DNS cache TTL in milliseconds.
+ *
+ * Read from the environment on every call so tests (and operators) can
+ * change it without a restart: BOBI_DNS_CACHE_MS unset → 60000; a value
+ * that is not a finite number > 0 → 0, which disables the cache.
+ */
+export function dnsCacheTtlMs(): number {
+  const raw = process.env.BOBI_DNS_CACHE_MS;
+  if (raw === undefined) return 60_000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+interface DnsCacheEntry {
+  addresses: string[];
+  baseUrl: string;
+  expiresAt: number;
+}
+
+const dnsCache = new Map<string, DnsCacheEntry>();
+
+/** Bounded so a long-lived process cannot accumulate entries forever. */
+const DNS_CACHE_MAX_ENTRIES = 128;
+
+/**
+ * Resolver identity for cache keys. Production always uses the default
+ * resolver (key suffix ""), but tests inject their own resolvers — keying
+ * entries by the resolver instance keeps one test's cached answer from
+ * satisfying another test's different resolver.
+ */
+const resolverIds = new WeakMap<DnsResolver, number>();
+let nextResolverId = 1;
+
+function dnsCacheKey(
+  hostname: string,
+  allowLocalTargets: boolean,
+  resolver: DnsResolver | undefined,
+): string {
+  const base = `${hostname}|${allowLocalTargets ? "local" : "public"}`;
+  if (resolver === undefined) return base;
+  let id = resolverIds.get(resolver);
+  if (id === undefined) {
+    id = nextResolverId++;
+    resolverIds.set(resolver, id);
+  }
+  return `${base}|r${id}`;
+}
+
+/** Test-only: drop every cached resolution (isolates tests from each other). */
+export function clearDnsCache(): void {
+  dnsCache.clear();
+}
+
+/**
+ * Test-only: inject a cache entry. Lets tests simulate a poisoned set and
+ * verify the guard re-classifies cached addresses on every hit.
+ */
+export function __injectDnsCacheEntry(
+  hostname: string,
+  allowLocalTargets: boolean,
+  baseUrl: string,
+  addresses: string[],
+): void {
+  const ttl = dnsCacheTtlMs();
+  dnsCache.set(dnsCacheKey(hostname, allowLocalTargets, undefined), {
+    addresses: [...addresses],
+    baseUrl,
+    expiresAt: Date.now() + (ttl > 0 ? ttl : 60_000),
+  });
+}
+
+/**
  * Validate a target lexically, resolve it, and approve every address.
  *
  * @throws AiError("invalid_response") when the URL is malformed, the host is
@@ -152,8 +229,28 @@ export async function resolveTarget(
   const hostname = url.hostname.replace(/^\[|\]$/g, "");
   const allowLocal = opts.allowLocalTargets === true;
 
-  let addresses: readonly string[];
+  // Cache hit: only for non-literal hostnames (a literal IP needs no DNS),
+  // only while fresh, and only for the exact same base URL (a config change
+  // must not be masked by a stale entry). Cached addresses are STILL
+  // re-classified below before anything is returned.
+  const ttl = dnsCacheTtlMs();
   const literal = literalAddress(hostname);
+  if (ttl > 0 && literal === undefined) {
+    const hit = dnsCache.get(dnsCacheKey(hostname, allowLocal, opts.resolver));
+    if (hit !== undefined && hit.expiresAt > Date.now() && hit.baseUrl === baseUrl) {
+      for (const address of hit.addresses) {
+        if (!classifyAddress(address, allowLocal).allowed) {
+          throw new AiError(
+            "invalid_response",
+            "The service domain resolves to an internal or private address, which is not allowed.",
+          );
+        }
+      }
+      return { baseUrl: hit.baseUrl, hostname, addresses: [...hit.addresses], allowLocalTargets: allowLocal };
+    }
+  }
+
+  let addresses: readonly string[];
   if (literal !== undefined) {
     addresses = [literal];
   } else {
@@ -178,6 +275,21 @@ export async function resolveTarget(
         "The service domain resolves to an internal or private address, which is not allowed.",
       );
     }
+  }
+
+  // Store a fully-validated set. Failures above throw before this point, so
+  // a poisoned or failed resolution is never cached. Literal IPs are not
+  // cached: they need no DNS and their validation is already free.
+  if (ttl > 0 && literal === undefined) {
+    if (dnsCache.size >= DNS_CACHE_MAX_ENTRIES) {
+      const oldest = dnsCache.keys().next().value;
+      if (oldest !== undefined) dnsCache.delete(oldest);
+    }
+    dnsCache.set(dnsCacheKey(hostname, allowLocal, opts.resolver), {
+      addresses: [...addresses],
+      baseUrl,
+      expiresAt: Date.now() + ttl,
+    });
   }
 
   return { baseUrl, hostname, addresses, allowLocalTargets: allowLocal };

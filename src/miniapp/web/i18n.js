@@ -29,6 +29,8 @@
       "action.retry": "Retry",
       "action.done": "Done",
       "action.probe": "Test connection",
+      "prov.testModel": "Test",
+      "prov.testingModel": "Testing…",
       "action.toggleOn": "On",
       "action.toggleOff": "Off",
 

@@ -33,6 +33,7 @@ import { SearchProviderSecretStore } from "./search/secret_store";
 import { createDelegateTool } from "./tools/delegate";
 import { createConsultModelsTool } from "./tools/consult_models";
 import type { AiProvider } from "./ai/provider";
+import { AiError } from "./ai/provider";
 import { SearchRegistry } from "./search/registry";
 import { SearchSettingsService } from "./search/service";
 import { createWebSearchTool } from "./tools/web_search";
@@ -566,11 +567,16 @@ async function main(): Promise<void> {
     storage,
     adapters,
     secrets,
-    // Diagnostic: a non-AiError mapped to "unknown" hides its cause from the
-    // user message; log the original here so the real failure is debuggable.
+    // Diagnostic: an error that surfaces to the user as a bare "unknown"
+    // hides its cause from the user message; log the original here so the
+    // real failure is debuggable.
     onUnknownError: (err, where) =>
-      log.error(`[gateway] non-AiError mapped to unknown (${where})`, {
+      log.error(`[gateway] error surfaced as "unknown" (${where})`, {
         error: err instanceof Error ? `${err.name}: ${err.message}` : String(err),
+        detail:
+          err instanceof AiError
+            ? { kind: err.kind, ...(err.status !== undefined ? { status: err.status } : {}) }
+            : undefined,
         stack: err instanceof Error ? err.stack?.split("\n").slice(0, 5).join(" | ") : undefined,
       }),
   });

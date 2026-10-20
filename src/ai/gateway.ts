@@ -149,7 +149,7 @@ export class AiGateway implements AiProvider {
   }
 
   /**
-   * Report a non-AiError that is about to be mapped to AiError("unknown").
+   * Report an error that surfaces to the caller as AiError("unknown").
    * The user-safe category hides the real cause; this hook lets it reach
    * the logs. Never throws.
    */
@@ -159,6 +159,39 @@ export class AiGateway implements AiProvider {
     } catch {
       // Diagnostics must never break a turn.
     }
+  }
+
+  /**
+   * Error instances already sent to the diagnostic hook. The call chain
+   * (complete → send → attempt) catches and re-maps the SAME instance at
+   * several layers; without this, one failure would be logged once per
+   * layer instead of once per failure.
+   */
+  private readonly reportedUnknowns = new WeakSet<object>();
+
+  /**
+   * Map a caught error onto the AiError the caller will see, reporting the
+   * opaque cases through reportUnknown exactly once per error instance.
+   *
+   * An adapter can throw an AiError("unknown") directly (e.g. an HTTP status
+   * with no cleaner category); those carry their cause in the status/message
+   * and are reported too — previously only non-AiError exceptions reached
+   * the diagnostic hook, so status-derived unknowns vanished from the logs.
+   */
+  private mapError(err: unknown, where: string): AiError {
+    if (err instanceof AiError) {
+      if (err.kind === "unknown" && !this.reportedUnknowns.has(err)) {
+        this.reportedUnknowns.add(err);
+        this.reportUnknown(err, where);
+      }
+      return err;
+    }
+    this.reportUnknown(err, where);
+    const mapped = new AiError("unknown", "Unknown service error.");
+    // The mapped replacement is what outer layers will catch; mark it so
+    // they do not report the same failure again.
+    this.reportedUnknowns.add(mapped);
+    return mapped;
   }
 
   /**
@@ -299,10 +332,7 @@ export class AiGateway implements AiProvider {
         // Report the model that actually answered, as the engine expects.
         return { text: res.text, model: res.model };
       } catch (err) {
-        const mapped =
-          err instanceof AiError
-            ? err
-            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
+        const mapped = this.mapError(err, "gateway");
         lastError = mapped;
         // Only a retryable class advances to the next candidate. An auth,
         // validation, or configuration failure must NOT be retried through
@@ -357,10 +387,7 @@ export class AiGateway implements AiProvider {
         }
         return;
       } catch (err) {
-        const mapped =
-          err instanceof AiError
-            ? err
-            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
+        const mapped = this.mapError(err, "gateway");
         lastError = mapped;
         // Committed: the consumer already saw events, so failing over to
         // another candidate would DUPLICATE text the user already read.
@@ -580,10 +607,7 @@ export class AiGateway implements AiProvider {
       try {
         return await this.attempt(candidate, req, timeoutMs, key.apiKey);
       } catch (err) {
-        const mapped =
-          err instanceof AiError
-            ? err
-            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
+        const mapped = this.mapError(err, "gateway");
         lastError = mapped;
         if (mapped.kind === "auth") {
           this.coolDown(key.id);
@@ -630,10 +654,7 @@ export class AiGateway implements AiProvider {
         }
         return;
       } catch (err) {
-        const mapped =
-          err instanceof AiError
-            ? err
-            : (this.reportUnknown(err, "gateway"), new AiError("unknown", "Unknown service error."));
+        const mapped = this.mapError(err, "gateway");
         lastError = mapped;
         // Committed: the consumer already saw events, so no key rotation and
         // no failover — the partial stream is the caller's to handle.

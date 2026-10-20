@@ -19,11 +19,11 @@
  * 3xx cannot move the request to another address; adapters still reject 3xx
  * explicitly.
  */
-import { request as httpRequest } from "node:http";
-import { request as httpsRequest } from "node:https";
+import { Agent as HttpAgent, request as httpRequest } from "node:http";
+import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import type { IncomingMessage } from "node:http";
 import { AiError } from "./provider";
-import { classifyAddress } from "./dns_guard";
+import { classifyAddress, dnsCacheTtlMs } from "./dns_guard";
 
 export interface PinnedRequest {
   /** Full request URL. Its hostname must be the validated one. */
@@ -75,6 +75,103 @@ export interface PinnedResponse {
  * a response fault rather than being kept.
  */
 export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Keep-alive connection reuse.
+ *
+ * Every provider request used to pay a fresh TCP + TLS handshake. For a
+ * chat bot making several calls per turn to the same provider, that is a
+ * needless slice of "ping". A small cache maps host → Agent created with
+ * keepAlive and the SAME pinned lookup, so a reused socket still only ever
+ * connects to addresses dns_guard validated — keep-alive narrows the
+ * rebinding window rather than widening it (an established socket talks to
+ * the validated IP, full stop).
+ *
+ * The agent's lifetime ties to the DNS cache TTL: once the TTL passes (or
+ * the validated address set changes), the agent is destroyed and a fresh
+ * one is built against fresh addresses, so a provider that rotates IPs is
+ * never pinned forever. BOBI_KEEPALIVE=0 disables reuse entirely (the
+ * caller passes `agent: false`, which under Bun is the only way to get a
+ * fresh connection per request — Bun's global agent pools by default).
+ */
+interface KeepAliveAgentEntry {
+  agent: HttpAgent | HttpsAgent;
+  createdAt: number;
+  addressesKey: string;
+}
+
+const keepAliveAgents = new Map<string, KeepAliveAgentEntry>();
+
+/** Cap so a long-lived process cannot accumulate agents forever. */
+const KEEPALIVE_AGENT_MAX_ENTRIES = 32;
+
+function keepAliveEnabled(): boolean {
+  return process.env.BOBI_KEEPALIVE !== "0";
+}
+
+/** Test-only: destroy and drop every cached agent. */
+export function resetKeepAliveAgents(): void {
+  for (const entry of keepAliveAgents.values()) entry.agent.destroy();
+  keepAliveAgents.clear();
+}
+
+/** Test-only: how many agents are currently cached. */
+export function keepAliveAgentCount(): number {
+  return keepAliveAgents.size;
+}
+
+/**
+ * The keep-alive agent for this target, or undefined when disabled.
+ *
+ * Returns an existing agent only while it is inside the DNS-cache TTL and
+ * its address set still matches the addresses THIS request was validated
+ * for; any expiry or rotation destroys it and builds a new one.
+ */
+function keepAliveAgentFor(
+  url: URL,
+  addresses: readonly string[],
+  secure: boolean,
+  allowLocalTargets: boolean,
+): (HttpAgent | HttpsAgent) | undefined {
+  if (!keepAliveEnabled()) return undefined;
+  const port = url.port ? Number(url.port) : secure ? 443 : 80;
+  const key = `${secure ? "https" : "http"}://${url.hostname}:${port}|${allowLocalTargets ? "local" : "public"}`;
+  const ttl = dnsCacheTtlMs();
+  // When the DNS cache is disabled ("resolve every request"), revalidating
+  // addresses per request still happens in dns_guard; a pooled socket stays
+  // pinned to a validated address, so a short lifetime is kept rather than
+  // disabling reuse outright.
+  const agentTtl = ttl > 0 ? ttl : 30_000;
+  const addressesKey = [...addresses].sort().join(",");
+  const now = Date.now();
+
+  const hit = keepAliveAgents.get(key);
+  if (
+    hit !== undefined &&
+    hit.addressesKey === addressesKey &&
+    now - hit.createdAt < agentTtl
+  ) {
+    return hit.agent;
+  }
+  if (hit !== undefined) {
+    hit.agent.destroy();
+    keepAliveAgents.delete(key);
+  }
+  if (keepAliveAgents.size >= KEEPALIVE_AGENT_MAX_ENTRIES) {
+    const oldest = keepAliveAgents.keys().next().value;
+    if (oldest !== undefined) {
+      keepAliveAgents.get(oldest)?.agent.destroy();
+      keepAliveAgents.delete(oldest);
+    }
+  }
+
+  const lookup = pinnedLookupAll(addresses);
+  const agent = secure
+    ? new HttpsAgent({ keepAlive: true, maxSockets: 4, lookup })
+    : new HttpAgent({ keepAlive: true, maxSockets: 4, lookup });
+  keepAliveAgents.set(key, { agent, createdAt: now, addressesKey });
+  return agent;
+}
 
 /**
  * The `lookup` handed to `node:http`/`node:https`.
@@ -595,23 +692,26 @@ function attemptOne(
     let outgoing: ReturnType<typeof requestFn> | undefined;
     let deadline: ReturnType<typeof setTimeout> | undefined;
 
-    const teardown = (): void => {
+    // `destroySocket` is false ONLY on a cleanly completed response: the
+    // socket then returns to the keep-alive pool for reuse. Every failure,
+    // abort, and timeout destroys it — a poisoned connection is never kept.
+    const teardown = (destroySocket: boolean): void => {
       if (deadline !== undefined) clearTimeout(deadline);
       req.signal.removeEventListener("abort", onAbort);
-      outgoing?.destroy();
+      if (destroySocket) outgoing?.destroy();
     };
 
     const onAbort = (): void => {
       if (settled) return;
       settled = true;
-      teardown();
+      teardown(true);
       reject(new AiError("aborted", "Request was cancelled."));
     };
 
     const deadlineFn = (): void => {
       if (settled) return;
       settled = true;
-      teardown();
+      teardown(true);
       reject(new AiError("timeout", "The service did not respond in time."));
     };
 
@@ -627,6 +727,15 @@ function attemptOne(
     }
     req.signal.addEventListener("abort", onAbort, { once: true });
 
+    // Optional keep-alive pooling. BOBI_KEEPALIVE=0 → `agent: false`, a
+    // fresh connection per request (under Bun, `agent: undefined` would
+    // silently pool via its global agent). The pooled agent carries the
+    // pinned "all" lookup, and this request's own `lookup` below still
+    // wins per-connection, so pooling never widens the validated address
+    // set.
+    const pooled = keepAliveAgentFor(url, addresses, secure, req.allowLocalTargets === true);
+    const agent: (HttpAgent | HttpsAgent) | false = pooled ?? false;
+
     try {
       outgoing = requestFn({
         hostname: url.hostname,
@@ -636,6 +745,7 @@ function attemptOne(
         headers: req.headers,
         // The connection target comes from here and nowhere else.
         lookup: pinnedLookup(addresses),
+        agent,
         // Keep SNI/cert verification on the configured hostname. `servername`
         // must equal the original name or the certificate check would compare
         // against the IP instead.
@@ -658,10 +768,10 @@ function attemptOne(
       return;
     }
 
-    const settle = (fn: () => void): void => {
+    const settle = (fn: () => void, destroySocket = true): void => {
       if (settled) return;
       settled = true;
-      teardown();
+      teardown(destroySocket);
       fn();
     };
 
@@ -705,6 +815,10 @@ function attemptOne(
         settle(() => reject(new AiError("network", "Could not reach the service.")));
       });
       res.on("end", () => {
+        // Clean completion with a pooled agent: do NOT destroy — the
+        // socket returns to the agent's pool for the next request to this
+        // provider. With pooling disabled the socket is destroyed exactly
+        // as before.
         settle(() => {
           const rawBody = Buffer.concat(chunks);
           resolve({
@@ -713,7 +827,7 @@ function attemptOne(
             body: rawBody.toString("utf8"),
             rawBody,
           });
-        });
+        }, pooled === undefined);
       });
     });
 

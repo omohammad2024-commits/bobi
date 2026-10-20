@@ -32,6 +32,7 @@ import {
 } from "./adapter";
 import type { AdapterTarget } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
+import { statusToAiError } from "./http_status";
 import { pinnedFetch, pinnedStream } from "./pinned_transport";
 import { dataUrl, partDropNote, selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
@@ -332,17 +333,22 @@ export function buildRequestBody(
     }));
   }
 
+  // Output-token cap: a per-request cap (e.g. the health probe's tiny one)
+  // wins over the provider-level default in settings.
   const settings = target.settings;
+  const maxTokens =
+    typeof req.maxTokens === "number" && Number.isFinite(req.maxTokens) && req.maxTokens > 0
+      ? Math.min(Math.trunc(req.maxTokens), 100_000)
+      : typeof settings?.maxTokens === "number" &&
+          Number.isFinite(settings.maxTokens) &&
+          settings.maxTokens > 0
+        ? Math.min(Math.trunc(settings.maxTokens), 100_000)
+        : undefined;
+  if (maxTokens !== undefined) body["max_tokens"] = maxTokens;
+
   if (settings) {
     if (typeof settings.temperature === "number" && Number.isFinite(settings.temperature)) {
       body["temperature"] = clamp(settings.temperature, 0, 2);
-    }
-    if (
-      typeof settings.maxTokens === "number" &&
-      Number.isFinite(settings.maxTokens) &&
-      settings.maxTokens > 0
-    ) {
-      body["max_tokens"] = Math.min(Math.trunc(settings.maxTokens), 100_000);
     }
   }
 
@@ -941,26 +947,8 @@ async function fetchJson(
   return readJson(res.body);
 }
 
-/** Map an HTTP status onto the engine's categories. */
-function statusToError(status: number): AiError {
-  if (status === 401 || status === 403) {
-    return new AiError("auth", "Service authentication failed.");
-  }
-  if (status === 408) {
-    return new AiError("timeout", "The service did not respond in time.");
-  }
-  if (status === 429) {
-    return new AiError("quota", "Service rate limit exceeded.");
-  }
-  if (status >= 500) {
-    return new AiError("network", "Service is unavailable.");
-  }
-  if (status === 400 || status === 404 || status === 422) {
-    // Request-shaped problems are surfaced as invalid, never as the raw body.
-    return new AiError("invalid_response", "The request to the service was invalid.");
-  }
-  return new AiError("unknown", "Unknown service error.");
-}
+/** Map an HTTP status onto the engine's categories (shared implementation). */
+const statusToError = statusToAiError;
 
 
 function isRecord(v: unknown): v is Record<string, unknown> {

@@ -72,6 +72,10 @@ function makeDeps(adapters?: AdapterRegistry): {
       ok: true,
       checkedAt: Date.now(),
     }),
+    probeModel: async (_id: number, _modelId: string): Promise<ProbeResult> => ({
+      ok: true,
+      checkedAt: Date.now(),
+    }),
   };
   const deps: ProviderApiDeps = {
     storage,

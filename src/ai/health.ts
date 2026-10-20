@@ -104,6 +104,9 @@ export class ProviderHealthService {
       await adapter.complete({
         messages: [{ role: "user", content: "ping" }],
         model: this.defaultModelId(providerId) ?? "default",
+        // A probe only needs ANY answer back; capping generation keeps it
+        // fast (and cheap) instead of waiting for a full-length reply.
+        maxTokens: 16,
         timeoutMs,
         signal: neverAborted,
       });
@@ -111,6 +114,72 @@ export class ProviderHealthService {
       return this.record(providerId, true, "Connection succeeded.");
     } catch (err) {
       return this.record(providerId, false, probeMessage(err));
+    }
+  }
+
+  /**
+   * Probe ONE specific model with a real completion, without recording
+   * provider health. Used by the per-model "Test" button in the panel.
+   *
+   * A model test is deliberately NOT provider health: it never touches
+   * storage.setProviderHealth, so testing an individual model cannot
+   * overwrite the provider-level outcome. A flaky model gets reported
+   * inline; the provider row keeps its own status.
+   */
+  async probeModel(
+    providerId: number,
+    modelId: string,
+    opts: ProbeOptions = {},
+  ): Promise<ProbeResult> {
+    const provider = this.storage.getProvider(providerId);
+    if (!provider) {
+      return this.result(false, "Provider not found.");
+    }
+    if (!provider.enabled) {
+      return this.result(false, "Provider is disabled.");
+    }
+    if (
+      this.storage.listModels(providerId).every((m) => m.modelId !== modelId)
+    ) {
+      return this.result(false, "Model not found for this provider.");
+    }
+
+    let apiKey: string | undefined;
+    try {
+      apiKey = this.providers.credentialFor(providerId);
+    } catch {
+      return this.result(false, "Credential could not be decrypted.");
+    }
+
+    if (apiKey === undefined || apiKey.length === 0) {
+      return this.result(false, "Credential is not set.");
+    }
+
+    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
+    // Same reasoning as probe(): the health service supplies a signal it
+    // never fires, so the adapter reports its own timeout diagnosis.
+    const neverAborted = new AbortController().signal;
+
+    try {
+      const adapter = this.adapters.create(provider.adapter, {
+        baseUrl: provider.baseUrl,
+        apiKey,
+        model: modelId,
+        ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
+      });
+
+      await adapter.complete({
+        messages: [{ role: "user", content: "ping" }],
+        model: modelId,
+        // Same cap as probe(): the test needs any answer, fast.
+        maxTokens: 16,
+        timeoutMs,
+        signal: neverAborted,
+      });
+
+      return this.result(true, "Connection succeeded.");
+    } catch (err) {
+      return this.result(false, probeMessage(err));
     }
   }
 
@@ -125,16 +194,47 @@ export class ProviderHealthService {
     this.storage.setProviderHealth({ providerId, ok, message });
     return { ok, message, checkedAt };
   }
+
+  /**
+   * A probe outcome that is reported only to the caller. Unlike record(),
+   * this deliberately skips setProviderHealth — per-model tests must not
+   * overwrite the provider-level health row.
+   */
+  private result(ok: boolean, message: string): ProbeResult {
+    return { ok, message, checkedAt: Date.now() };
+  }
 }
 
-/** Map an adapter failure onto a short, safe English message. */
+/**
+ * Map an adapter failure onto a short, safe English message.
+ *
+ * Messages are chosen here, never copied from a provider response. One
+ * narrow exception, by design: an "unknown" AiError that carries an HTTP
+ * status surfaces its own message, because that status could only have
+ * been attached by the status mapper, whose templates are fixed strings
+ * naming the real cause (e.g. "Unexpected provider response (HTTP 302).").
+ * An unknown with no status has no such provenance and stays opaque:
+ * "Probe failed."
+ */
 function probeMessage(err: unknown): string {
   if (err instanceof AiError) {
+    if (
+      err.kind === "unknown" &&
+      err.status !== undefined &&
+      err.message.trim().length > 0
+    ) {
+      return err.message;
+    }
     switch (err.kind) {
       case "auth":
         return "Key or address was not accepted.";
       case "quota":
-        return "Service rate limit is full.";
+        // 402 is balance exhaustion, not a rate limit — say so (a fixed
+        // string keyed by the status number; the error's own message is
+        // NOT surfaced for this kind).
+        return err.status === 402
+          ? "Provider balance or quota is exhausted (HTTP 402)."
+          : "Service rate limit is full.";
       case "timeout":
         return "No response arrived in time.";
       case "aborted":

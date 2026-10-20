@@ -242,6 +242,12 @@ export class EngineError extends Error {
       /** A newer message replaced this run; the caller should stay silent. */
       | "superseded",
     message: string,
+    /**
+     * The provider HTTP status that caused this error, when known. Carried
+     * from the AiError so the bot layer can name it in diagnostics. A number
+     * only — never response content.
+     */
+    readonly status?: number,
   ) {
     super(message);
     this.name = "EngineError";
@@ -1142,7 +1148,7 @@ export function splitForTelegram(text: string): string[] {
 /** Convert any thrown error into an EngineError with a safe kind. */
 function toEngineError(err: unknown, aborted: boolean): EngineError {
   if (err instanceof EngineError) return err;
-  if (err instanceof AiError) return new EngineError(err.kind, err.message);
+  if (err instanceof AiError) return new EngineError(err.kind, err.message, err.status);
   if (aborted) return new EngineError("timeout", "Request was cancelled or timed out.");
   return new EngineError("unknown", "Unknown error while processing the request.");
 }

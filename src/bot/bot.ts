@@ -2385,6 +2385,12 @@ export function userFacingMessage(err: unknown, lang: Lang): string {
       case "aborted": return t("error.timeout", lang);
       case "overloaded": return t("error.overloaded", lang);
       case "invalid_response": return t("error.invalid_response", lang);
+      case "unknown":
+        // When the provider's HTTP status is known, name it: a bare
+        // "temporary error" hides causes the owner can act on (e.g. 402).
+        return err.status !== undefined
+          ? t("error.unknown_status", lang, { status: err.status })
+          : t("error.unknown", lang);
       default: return t("error.unknown", lang);
     }
   }

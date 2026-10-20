@@ -32,6 +32,7 @@
  *   models.toggle           { id, enabled:boolean } -> { ok:true }
  *   models.delete           { id, confirm:true } -> { ok:true }
  *   models.setActive        { id } -> { ok, providerId, modelId, label, probe:{...} }
+ *   models.test             { providerId, modelId } -> { ok, latencyMs, atMs, message? }
  *   users.list              { q?, limit? } -> { users: [{ id, state, isBanned, username?, firstName? }], total }
  *   users.ban               { id, confirm:true } -> { userId, state }
  *   users.unban             { id } -> { userId, state }

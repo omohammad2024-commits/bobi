@@ -25,6 +25,7 @@
  *   models.toggle     { id, enabled }
  *   models.delete     { id, confirm:true }
  *   models.setActive  { id }
+ *   models.test       { providerId, modelId } -> { ok, latencyMs, atMs, message? }
  */
 (function () {
   "use strict";
@@ -670,6 +671,8 @@
           (m.isActive
             ? ""
             : '<button type="button" class="btn btn-sm btn-subtle act-active">' + ctx.icon("star") + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>") +
+          '<button type="button" class="btn btn-sm btn-subtle act-test">' + ctx.icon("zap") + ctx.esc(ctx.t("prov.testModel")) + "</button>" +
+          '<span class="model-test-out" style="align-self:center"></span>' +
           '<button type="button" class="btn btn-sm btn-danger act-del" aria-label="' + ctx.esc(ctx.t("action.delete")) + '">' + ctx.icon("trash") + "</button>" +
           "</div>";
         row.querySelector(".toggle").addEventListener("click", async function () {
@@ -696,6 +699,29 @@
               ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
             }
             paint();
+          });
+        }
+        const testBtn = row.querySelector(".act-test");
+        const testOut = row.querySelector(".model-test-out");
+        if (testBtn && testOut) {
+          testBtn.addEventListener("click", async function () {
+            testBtn.disabled = true;
+            testOut.style.color = "";
+            testOut.textContent = ctx.t("prov.testingModel");
+            try {
+              const r = await ctx.api("models.test", { providerId: providerId, modelId: m.modelId });
+              if (r && r.ok) {
+                testOut.style.color = "var(--success)";
+                testOut.textContent = "✅ " + (r.latencyMs !== undefined && r.latencyMs !== null ? num(r.latencyMs) + " " + ctx.t("prov.ms") : "");
+              } else {
+                testOut.style.color = "var(--danger)";
+                testOut.textContent = "❌ " + ((r && r.message) || ctx.t("prov.probeFailLine"));
+              }
+            } catch (e) {
+              testOut.style.color = "var(--danger)";
+              testOut.textContent = "❌ " + ((e && (e.message || e.code)) || ctx.t("prov.probeFailLine"));
+            }
+            testBtn.disabled = false;
           });
         }
         row.querySelector(".act-del").addEventListener("click", async function () {
