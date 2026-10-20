@@ -54,6 +54,13 @@ export const searchHistoryManifest: ToolManifest = defineManifest({
   title: "Search History",
   description:
     "Full-text search across conversation history; find earlier messages in any conversation. Only your own conversations are searched.",
+  purpose: "past chat search",
+  useWhen: "asked prior talk",
+  doNotUseWhen: "Stored facts, not past messages — recall retrieves saved memories; this searches raw conversation history only.",
+  confusableWith: [
+    { tool: "recall", difference: "recall returns saved memory facts; search_history finds raw past messages with snippets." },
+  ],
+  latencyTier: "instant",
   outputSummary: "Matching message snippets with conversation ids, best match first.",
   category: "memory",
   triggers: {

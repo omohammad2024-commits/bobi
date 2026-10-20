@@ -87,6 +87,14 @@ export const fetchUrlManifest: ToolManifest = defineManifest({
   title: "Fetch URL",
   description:
     "Read a web page and convert it to text. Use it to read the details behind a link.",
+  purpose: "page as text",
+  useWhen: "link+read request",
+  doNotUseWhen: "User wants the file itself — download_media delivers media files; for finding pages, web_search searches instead.",
+  confusableWith: [
+    { tool: "download_media", difference: "download_media delivers a media file as an attachment; fetch_url returns extracted page text only." },
+    { tool: "web_search", difference: "web_search finds and ranks pages; fetch_url reads one known URL as full text." },
+  ],
+  latencyTier: "seconds",
   outputSummary: "The page's extracted text, URL, status and a truncation flag.",
   category: "web",
   triggers: {

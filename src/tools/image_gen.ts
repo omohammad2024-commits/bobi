@@ -112,6 +112,15 @@ export const generateImageManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Generate Image",
   description: "Generate an image from a text description. Use it when the user wants an image that does not exist; the user sees the result.",
+  purpose: "image from prompt",
+  useWhen: "new image wanted",
+  doNotUseWhen:
+    "user wants an existing image from a link — that is download_media; a moving clip — that is generate_video",
+  confusableWith: [
+    { tool: "generate_video", difference: "generate_video makes a moving clip; this makes one still image" },
+    { tool: "download_media", difference: "download_media fetches an existing file; this creates a new image" },
+  ],
+  latencyTier: "minutes",
   outputSummary: "Returns the generated image as an attachment, with prompt, size and revised prompt.",
   category: "media",
   triggers: { keywordPatterns: ["عکس بساز", "تصویر بساز", "نقاشی کن", "generate (an? )?image", "create (an? )?image", "draw (a|an|me)"] },

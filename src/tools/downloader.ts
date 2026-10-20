@@ -718,6 +718,13 @@ export const downloadMediaManifest: ToolManifest = defineManifest({
   title: "Media Downloader",
   description:
     "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct media file URL. The file is sent to the user as an attachment.",
+  purpose: "file from a link",
+  useWhen: "link+download verb",
+  doNotUseWhen: "User only wants info or text about the link — fetch_url reads page text and delivers no file.",
+  confusableWith: [
+    { tool: "fetch_url", difference: "fetch_url returns page text only; download_media delivers the actual media file as an attachment." },
+  ],
+  latencyTier: "minutes",
   outputSummary: "The downloaded file itself (delivered as an attachment), with platform, title and size.",
   category: "media",
   triggers: {
