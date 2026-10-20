@@ -15,6 +15,8 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import {
   classifyYtDlpError,
   cleanupDownload,
+  cleanupDownloadForPart,
+  createDownloadTool,
   detectPlatform,
   downloadMedia,
   downloadTool,
@@ -25,6 +27,11 @@ import {
   type SpawnResult,
 } from "../src/tools/downloader";
 import { ToolError } from "../src/tools/errors";
+import { ToolExecutor } from "../src/tools/executor";
+import { ToolRegistry } from "../src/tools/registry";
+import type { Tool, ToolActor } from "../src/tools/types";
+import { serialiseToolResult } from "../src/agent/transcript";
+import { deliverToolMedia, type MediaSenders } from "../src/bot/media";
 
 const ctx = {
   clock: () => new Date("2026-10-19T12:00:00Z"),
@@ -305,6 +312,145 @@ describe("downloadTool registration shape", () => {
     // mapping with a stub at the module boundary instead — here we assert the
     // kind mapping the tool applies by reusing classifyYtDlpError's contract.
     expect(classifyYtDlpError("ERROR: Private video.")).toBe("private");
+  });
+});
+
+describe("end-to-end: tool → executor → media parts → delivery → cleanup", () => {
+  const actor: ToolActor = {
+    userId: "owner",
+    permissions: [DOWNLOAD_MEDIA_PERMISSION],
+  };
+
+  function executorWith(spawn: SpawnFn): ToolExecutor {
+    const reg = new ToolRegistry();
+    reg.register(createDownloadTool({ spawn }) as Tool<unknown, unknown>);
+    return new ToolExecutor({ registry: reg });
+  }
+
+  /** Wrap a fake spawn, remembering the download dir it was handed. */
+  function tracking(spawn: SpawnFn): { spawn: SpawnFn; dir: () => string } {
+    let cwd = "";
+    return {
+      spawn: async (argv, opts) => {
+        if (argv[1] !== "--version") cwd = opts.cwd;
+        return spawn(argv, opts);
+      },
+      dir: () => cwd,
+    };
+  }
+
+  function senders(log: string[], failVideo = false): MediaSenders {
+    const make = (kind: string) => async () => {
+      log.push(kind);
+      if (failVideo && kind === "video") throw new Error("telegram rejected it");
+    };
+    return {
+      photo: make("photo"),
+      voice: make("voice"),
+      video: make("video"),
+      audio: make("audio"),
+      document: make("document"),
+    };
+  }
+
+  test("a successful download reaches the run result as a media part — no server path anywhere", async () => {
+    const t = tracking(fakeSuccess(4096));
+    const ex = executorWith(t.spawn);
+    const r = await ex.execute({
+      tool: "download_media",
+      input: { url: "https://www.youtube.com/watch?v=abc123" },
+      actor,
+    });
+    expect(r.status).toBe("ok");
+    // The model-facing data carries NO file path (it used to leak one).
+    expect(JSON.stringify(r.data)).not.toContain("bobi-dl-");
+    expect(JSON.stringify(r.data)).not.toContain(tmpdir());
+    expect(r.data).toMatchObject({ platform: "youtube", ext: "mp4", sizeBytes: 4096 });
+    // The file itself rides as a media part, bytes intact.
+    expect(r.media).toHaveLength(1);
+    const part = r.media![0]!;
+    expect(part.type).toBe("document");
+    if (part.type !== "document") return;
+    expect(part.mediaType).toBe("video/mp4");
+    expect(part.name).toBe("Fake Title.mp4");
+    expect(Buffer.from(part.base64, "base64")).toHaveLength(4096);
+    // Before delivery settles, the temp file is still on disk…
+    expect(t.dir()).not.toBe("");
+    expect(existsSync(join(t.dir(), "bobi-fakeid123.mp4"))).toBe(true);
+    // …and settling the part (what the bot layer does after the send) removes it.
+    await cleanupDownloadForPart(part);
+    expect(existsSync(t.dir())).toBe(false);
+  });
+
+  test("delivery + cleanup on success: the video is sent, then the temp dir is gone", async () => {
+    const t = tracking(fakeSuccess(2048));
+    const ex = executorWith(t.spawn);
+    const r = await ex.execute({
+      tool: "download_media",
+      input: { url: "https://youtu.be/abc" },
+      actor,
+    });
+    expect(r.status).toBe("ok");
+    const sent: string[] = [];
+    await deliverToolMedia(r.media!, senders(sent), cleanupDownloadForPart);
+    expect(sent).toEqual(["video"]);
+    expect(existsSync(t.dir())).toBe(false);
+  });
+
+  test("cleanup on send failure: the send error surfaces AND the temp dir is still removed", async () => {
+    const t = tracking(fakeSuccess(2048));
+    const ex = executorWith(t.spawn);
+    const r = await ex.execute({
+      tool: "download_media",
+      input: { url: "https://youtu.be/abc" },
+      actor,
+    });
+    expect(r.status).toBe("ok");
+    const sent: string[] = [];
+    await expect(
+      deliverToolMedia(r.media!, senders(sent, true), cleanupDownloadForPart),
+    ).rejects.toThrow("telegram rejected it");
+    expect(existsSync(t.dir())).toBe(false);
+  });
+
+  test("oversize: an honest size reason reaches the result, and nothing is left on disk", async () => {
+    const t = tracking(fakeSuccess(2 * 1024 * 1024));
+    const ex = executorWith(t.spawn);
+    const r = await ex.execute({
+      tool: "download_media",
+      input: { url: "https://youtu.be/abc", max_size_mb: 1 },
+      actor,
+    });
+    expect(r.status).toBe("error");
+    expect(r.media).toBeUndefined();
+    // The generic message stays the stable contract…
+    expect(r.message).toBe("The tool returned an invalid result.");
+    // …while the tool's truthful reason rides alongside for the model to relay.
+    expect(r.reason).toContain("larger than the 1 MB limit");
+    expect(serialiseToolResult(r)).toContain("larger than the 1 MB limit");
+    expect(JSON.stringify(r)).not.toContain("bobi-dl-");
+    // downloadMedia removed the oversized temp dir itself.
+    expect(existsSync(t.dir())).toBe(false);
+  });
+
+  test("a private link fails honestly: the reason names the real cause, not a permission wall", async () => {
+    const ex = executorWith(fakeFailure("ERROR: [youtube] abc: Private video."));
+    const r = await ex.execute({
+      tool: "download_media",
+      input: { url: "https://www.youtube.com/watch?v=abc" },
+      actor,
+    });
+    expect(r.status).toBe("not_allowed");
+    expect(r.reason).toBe(
+      "That link is private or needs a login, so it can't be downloaded.",
+    );
+    expect(serialiseToolResult(r)).toContain("private or needs a login");
+  });
+
+  test("cleanupDownloadForPart is a no-op for other tools' parts", async () => {
+    await expect(
+      cleanupDownloadForPart({ type: "image", mediaType: "image/png", base64: "AA==" }),
+    ).resolves.toBeUndefined();
   });
 });
 

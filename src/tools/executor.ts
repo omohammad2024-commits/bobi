@@ -295,7 +295,19 @@ export class ToolExecutor {
     this.report(req, started, err);
     const message =
       err instanceof ToolError ? userMessageFor(err.kind) : userMessageFor("internal");
-    return this.result(req, started, status, message);
+    const base = this.result(req, started, status, message);
+    // A ToolError's message is contractually user-safe (see errors.ts), so
+    // the tool's concrete reason rides along for the model to relay — the
+    // generic `message` above stays the stable, localizable contract. A raw
+    // Error contributes nothing: its text may hold internals.
+    if (
+      err instanceof ToolError &&
+      err.message.length > 0 &&
+      err.message !== message
+    ) {
+      return { ...base, reason: err.message };
+    }
+    return base;
   }
 
   private report(req: ExecuteRequest, started: number, err: unknown): void {

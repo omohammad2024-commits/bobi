@@ -30,6 +30,17 @@ export interface ToolRunResult<T = unknown> {
   /** Short, user-safe message when status !== "ok". */
   message?: string;
   /**
+   * The tool's own specific failure reason, when it threw a ToolError.
+   *
+   * `message` stays the generic per-kind string (a stable contract other
+   * layers localize); `reason` carries the concrete, user-safe explanation
+   * the tool itself gave ("That link is private…", "…larger than the 50 MB
+   * limit") so the model can tell the user the truth instead of guessing
+   * from a status word. Set ONLY from ToolError messages — a raw Error's
+   * text never travels here (it may hold paths, payloads, secrets).
+   */
+  reason?: string;
+  /**
    * Media the tool produced for the end user (e.g. a generated image).
    *
    * Shown to the user by the bot layer; it is NOT fed back to the model as

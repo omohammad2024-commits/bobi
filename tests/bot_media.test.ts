@@ -10,11 +10,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   candidatesIn,
+  deliverToolMedia,
+  describeMediaPart,
   extractMedia,
   hasMedia,
+  MAX_MEDIA_PER_REPLY,
   MAX_VOICE_AUDIO_SECONDS,
+  type MediaSenders,
 } from "../src/bot/media";
 import { MAX_ATTACHMENT_BYTES } from "../src/ai/provider";
+import type { ContentPart } from "../src/ai/provider";
 
 const realFetch = globalThis.fetch;
 
@@ -167,6 +172,113 @@ describe("multiple attachments", () => {
 
   test("a message with nothing yields nothing", () => {
     expect(candidatesIn(msg({ text: "hi" }))).toHaveLength(0);
+  });
+});
+
+describe("describeMediaPart — tool-produced media routing", () => {
+  const b64 = Buffer.from("fake-bytes").toString("base64");
+
+  test("a downloaded video (document part, video type) sends as a video", () => {
+    const part: ContentPart = {
+      type: "document",
+      mediaType: "video/mp4",
+      base64: b64,
+      name: "Clip.mp4",
+    };
+    const m = describeMediaPart(part);
+    expect(m?.kind).toBe("video");
+    expect(m?.file.filename).toBe("Clip.mp4");
+  });
+
+  test("a downloaded song (document part, audio type) sends as audio, not a voice note", () => {
+    const part: ContentPart = {
+      type: "document",
+      mediaType: "audio/mpeg",
+      base64: b64,
+      name: "Song.mp3",
+    };
+    expect(describeMediaPart(part)?.kind).toBe("audio");
+  });
+
+  test("a plain document part stays a document", () => {
+    const part: ContentPart = {
+      type: "document",
+      mediaType: "application/pdf",
+      base64: b64,
+      name: "report.pdf",
+    };
+    expect(describeMediaPart(part)?.kind).toBe("document");
+  });
+
+  test("synthesized speech (audio part) stays a voice note; images stay photos", () => {
+    expect(
+      describeMediaPart({ type: "audio", mediaType: "audio/ogg", base64: b64 })?.kind,
+    ).toBe("voice");
+    expect(
+      describeMediaPart({ type: "image", mediaType: "image/png", base64: b64 })?.kind,
+    ).toBe("photo");
+  });
+
+  test("a text part has nothing to send", () => {
+    expect(describeMediaPart({ type: "text", text: "hi" })).toBeUndefined();
+  });
+});
+
+describe("deliverToolMedia — the delivery contract", () => {
+  const b64 = Buffer.from("fake-bytes").toString("base64");
+  const videoPart: ContentPart = {
+    type: "document",
+    mediaType: "video/mp4",
+    base64: b64,
+    name: "Clip.mp4",
+  };
+  const photoPart: ContentPart = { type: "image", mediaType: "image/png", base64: b64 };
+
+  function recordingSenders(log: string[], failOn?: string): MediaSenders {
+    const make = (kind: string) => async () => {
+      log.push(kind);
+      if (failOn === kind) throw new Error(`send ${kind} failed`);
+    };
+    return {
+      photo: make("photo"),
+      voice: make("voice"),
+      video: make("video"),
+      audio: make("audio"),
+      document: make("document"),
+    };
+  }
+
+  test("routes each part to its sender and settles every part", async () => {
+    const sent: string[] = [];
+    const settled: ContentPart[] = [];
+    await deliverToolMedia([videoPart, photoPart], recordingSenders(sent), async (p) => {
+      settled.push(p);
+    });
+    expect(sent).toEqual(["video", "photo"]);
+    expect(settled).toEqual([videoPart, photoPart]);
+  });
+
+  test("a failed send still settles its part, later parts still go out, and the error surfaces", async () => {
+    const sent: string[] = [];
+    const settled: ContentPart[] = [];
+    await expect(
+      deliverToolMedia([videoPart, photoPart], recordingSenders(sent, "video"), async (p) => {
+        settled.push(p);
+      }),
+    ).rejects.toThrow("send video failed");
+    expect(sent).toEqual(["video", "photo"]);
+    expect(settled).toEqual([videoPart, photoPart]);
+  });
+
+  test("parts past the per-reply cap are not sent but are still settled", async () => {
+    const sent: string[] = [];
+    const settled: ContentPart[] = [];
+    const parts = Array.from({ length: MAX_MEDIA_PER_REPLY + 2 }, () => photoPart);
+    await deliverToolMedia(parts, recordingSenders(sent), async (p) => {
+      settled.push(p);
+    });
+    expect(sent).toHaveLength(MAX_MEDIA_PER_REPLY);
+    expect(settled).toHaveLength(MAX_MEDIA_PER_REPLY + 2);
   });
 });
 
