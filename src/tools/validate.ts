@@ -7,6 +7,19 @@
  *
  * The validator is deliberately strict: unknown fields, wrong JSON types, and
  * values outside the declared bounds are all rejected.
+ *
+ * Validation is recursive, like the spec language: array items are each
+ * checked against the array's `items` spec, and an object WITH `fields` is
+ * validated as a nested ToolInputSpec (unknown nested fields rejected,
+ * required nested fields enforced, nullability as at the top level). An
+ * object WITHOUT `fields` stays a free-form bag, passed through untouched.
+ * Error messages name the offending value by path — `config.port` for a
+ * nested field, `tags[1]` for an array item, `rows[0].id` for the two
+ * combined — so a model caller can find the exact value to fix.
+ *
+ * The one deliberate exception to strictness is a `passthrough` spec (see
+ * ToolInputSpec): there an external protocol is the validating authority,
+ * so only the plain-object shape is checked here.
  */
 import { ToolError } from "./errors";
 import type { FieldSpec, ToolInput, ToolInputSpec } from "./types";
@@ -17,34 +30,62 @@ export function validateInput(spec: ToolInputSpec, raw: unknown): ToolInput {
     throw new ToolError("invalid_input", "Tool input must be an object.");
   }
 
-  const rawObj = raw as Record<string, unknown>;
-  const allowed = new Set(Object.keys(spec.fields));
+  if (spec.passthrough === true) {
+    // The external authority validates; BOBI only guarantees the shape is
+    // an object at all. A shallow copy, so the tool body mutating its
+    // input cannot write back into the caller's object (nested values are
+    // shared — the copy is deliberately shallow, per the contract).
+    return { ...raw };
+  }
+
+  return validateFields(spec.fields, raw, "");
+}
+
+/** Join a parent path and a field name: "" + "a" → "a", "cfg" + "a" → "cfg.a". */
+function fieldPath(prefix: string, field: string): string {
+  return prefix === "" ? field : `${prefix}.${field}`;
+}
+
+/**
+ * Validate a plain object against a field map — the top-level argument
+ * object, or a structured nested object (prefix = its path, used only to
+ * name errors). One implementation for both is what keeps nested rules
+ * (unknown / required / nullable) from drifting away from top-level ones.
+ */
+function validateFields(
+  fields: Record<string, FieldSpec>,
+  rawObj: Record<string, unknown>,
+  prefix: string,
+): ToolInput {
+  const allowed = new Set(Object.keys(fields));
 
   for (const key of Object.keys(rawObj)) {
     if (!allowed.has(key)) {
-      throw new ToolError("invalid_input", `Unknown field: ${key}.`, { field: key });
+      const path = fieldPath(prefix, key);
+      throw new ToolError("invalid_input", `Unknown field: ${path}.`, { field: path });
     }
   }
 
   const out: ToolInput = {};
-  for (const [field, fs] of Object.entries(spec.fields)) {
+  for (const [field, fs] of Object.entries(fields)) {
+    const path = fieldPath(prefix, field);
     const value = rawObj[field];
 
     if (value === undefined) {
       if (fs.required) {
         // NOTE: the message used to read "not required" here — a wrong
         // message for a missing REQUIRED field. Fixed (audit, Oct 2026).
-        throw new ToolError("invalid_input", `Missing required field: ${field}.`, { field });
+        throw new ToolError("invalid_input", `Missing required field: ${path}.`, { field: path });
       }
       continue;
     }
 
     if (value === null) {
       if (fs.nullable) continue;
-      throw new ToolError("invalid_input", `Field must not be null: ${field}.`, { field });
+      throw new ToolError("invalid_input", `Field must not be null: ${path}.`, { field: path });
     }
 
-    out[field] = checkField(field, fs, value);
+    out[field] = checkField(path, fs, value);
   }
 
   return out;
@@ -68,12 +109,18 @@ function checkField(field: string, fs: FieldSpec, value: unknown): unknown {
     case "array":
       return checkArray(field, fs, value);
     case "object":
-      // Passed through as-is: the consumer validates it. Only the shape is
-      // checked here, so a non-object cannot slip through as one.
       if (!isPlainObject(value)) {
         throw new ToolError("invalid_input", `Field must be an object: ${field}.`, { field });
       }
-      return value;
+      if (fs.fields === undefined) {
+        // Free-form bag, passed through as-is: the consumer validates it.
+        // Only the shape is checked here, so a non-object cannot slip
+        // through as one.
+        return value;
+      }
+      // Structured object: validated like a nested ToolInputSpec, which
+      // also rebuilds it from declared fields only (same as the top level).
+      return validateFields(fs.fields, value, field);
   }
 }
 
@@ -138,7 +185,23 @@ function checkArray(field: string, fs: FieldSpec, value: unknown): unknown[] {
   if (fs.maxItems !== undefined && value.length > fs.maxItems) {
     throw new ToolError("invalid_input", `Array is too long: ${field}.`, { field });
   }
-  return value;
+  if (fs.items === undefined) {
+    // Untyped array (the pre-nesting behaviour): items pass through as-is.
+    return value;
+  }
+  const items = fs.items;
+  // Every item is checked against the item spec, named by index
+  // (`tags[1]`) so an error points at the exact offending element. A null
+  // item is kept only when the item spec is nullable — unlike a null
+  // FIELD, a null item cannot be "omitted", so it stays in place.
+  return value.map((item, i) => {
+    const itemPath = `${field}[${i}]`;
+    if (item === null) {
+      if (items.nullable) return null;
+      throw new ToolError("invalid_input", `Field must not be null: ${itemPath}.`, { field: itemPath });
+    }
+    return checkField(itemPath, items, item);
+  });
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {

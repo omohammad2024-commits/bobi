@@ -2,17 +2,24 @@
  * MCP client manager — connects configured servers and exposes their tools.
  *
  * Each MCP server brings its own tools, described by a JSON Schema the server
- * supplies. Rather than re-declaring them in BOBI's own ToolInputSpec, a single
- * generic adapter tool is registered per server: it carries the server's tool
- * list in its arguments and forwards the call.
+ * supplies. Every remote tool becomes its own BOBI tool: the model sees the
+ * remote tool's real name (sanitized into a BOBI tool name), its real
+ * description, and its real `inputSchema` as the tool's parameters — not a
+ * generic envelope it has to guess its way through.
  *
- * Why one adapter per server instead of one tool per MCP tool: BOBI's Executor
- * validates input against a declarative spec, and an MCP tool's schema is
- * arbitrary JSON Schema. Mapping every remote schema into FieldSpec would be a
- * lossy translation, and a lossy validator in front of an untrusted server is
- * worse than no validator. Instead the adapter validates the envelope (tool
- * name, arguments object) and lets the SERVER validate its own arguments — the
- * server is the authority on its own protocol anyway.
+ * Why `passthrough` instead of translating the schema: BOBI's Executor
+ * normally validates input against a declarative FieldSpec, and an MCP tool's
+ * schema is arbitrary JSON Schema — nested objects, arrays of objects,
+ * conditionals a flat FieldSpec cannot express. Mapping every remote schema
+ * into FieldSpec would be a lossy translation, and a lossy validator in front
+ * of an untrusted server is worse than no validator: it would reject arguments
+ * the server would have accepted, and accept shapes it never declared. So
+ * each per-tool adapter declares `fields: {}`, carries the remote schema
+ * verbatim in `jsonSchema` (which `toJsonSchema` hands to the model
+ * unchanged), and sets `passthrough: true` so the Executor accepts any plain
+ * object and forwards it as-is. The SERVER remains the authority on its own
+ * arguments and validates them itself — the honest choice, because it is the
+ * only party that actually knows its protocol.
  *
  * Every connection is per-owner: servers are spawned from owner-supplied config
  * and carry the bot process's authority, so nothing here accepts a server
@@ -261,61 +268,136 @@ export class McpManager {
 }
 
 /**
- * Build the BOBI tool that fronts one MCP server.
+ * Sanitize one remote tool name into the suffix of a BOBI tool name.
  *
- * The tool is disabled when the server has no connected tools, so a dead server
- * does not appear in the model's list.
+ * Remote names are server-supplied and arbitrary ("Get Weather!", "get--weather"),
+ * while BOBI tool names are lowercase snake_case the model and providers can
+ * address unambiguously. Lowercase, collapse every run of characters outside
+ * [a-z0-9_] into a single "_", and trim "_" from both ends; a name with nothing
+ * left becomes "tool" rather than an empty suffix.
  */
-export function createMcpTool(
+export function sanitizeRemoteToolName(remoteName: string): string {
+  const sanitized = remoteName
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return sanitized.length > 0 ? sanitized : "tool";
+}
+
+/**
+ * The BOBI name for one remote tool, ignoring collisions.
+ *
+ * The server name is already validated against a strict pattern, so it is
+ * safe inside a tool name as-is; only the remote part needs sanitizing.
+ */
+export function buildMcpToolName(serverName: string, remoteName: string): string {
+  return `mcp_${serverName}_${sanitizeRemoteToolName(remoteName)}`;
+}
+
+/**
+ * Collision-aware BOBI names for a list of remote names, in listed order.
+ *
+ * Two different remote names can sanitize to the same suffix ("Get Weather!",
+ * "get--weather" and "get_weather" all become "get_weather"). The first in
+ * the server's listed order keeps the plain name; later ones get deterministic
+ * suffixes _2, _3, ... so every remote tool stays individually addressable.
+ * Pure: no connection needed, which is what makes the naming unit-testable.
+ */
+export function buildMcpToolNames(
+  serverName: string,
+  remoteNames: readonly string[],
+): string[] {
+  const counts = new Map<string, number>();
+  const used = new Set<string>();
+  return remoteNames.map((remoteName) => {
+    const base = sanitizeRemoteToolName(remoteName);
+    let n = (counts.get(base) ?? 0) + 1;
+    counts.set(base, n);
+    let candidate = n === 1 ? base : `${base}_${n}`;
+    // A suffixed candidate could itself collide with a different base that
+    // was already handed out (remote names "a", "a", "a_2"): keep bumping
+    // the suffix until the name is actually free.
+    while (used.has(candidate)) {
+      n += 1;
+      counts.set(base, n);
+      candidate = `${base}_${n}`;
+    }
+    used.add(candidate);
+    return `mcp_${serverName}_${candidate}`;
+  });
+}
+
+/**
+ * Collision-aware BOBI names for every tool a connected server reported,
+ * parallel to `server.tools` in listed order.
+ */
+export function mcpToolNames(server: ConnectedServer): string[] {
+  return buildMcpToolNames(
+    server.config.name,
+    server.tools.map((t) => t.name),
+  );
+}
+
+/**
+ * Build one BOBI tool per remote tool on a connected server.
+ *
+ * A server with zero tools yields zero tools, so a dead or empty server
+ * contributes nothing to the model's list — the same net effect the old
+ * single disabled envelope tool had, without the envelope.
+ */
+export function createMcpTools(
   manager: McpManager,
   server: ConnectedServer,
-): Tool<Record<string, unknown>, { server: string; text: string }> {
-  const toolNames = server.tools.map((t) => t.name);
-  const catalogue = server.tools.map((t) => `- ${t.name}: ${t.description}`).join("\n");
+): Tool<Record<string, unknown>, { server: string; text: string }>[] {
+  const serverName = server.config.name;
+  const names = mcpToolNames(server);
 
-  return {
-    // The server name is already validated against a strict pattern, so it is
-    // safe inside a tool name.
-    name: `mcp_${server.config.name}`,
-    description:
-      `ابزارهای سرور MCP «${server.config.name}».\n` +
-      `برای استفاده، نام ابزار را در فیلد tool و آرگومان‌ها را در field arguments بده.\n\n` +
-      catalogue,
-    enabled: toolNames.length > 0,
-    permission: { requires: [`tools:mcp_${server.config.name}`] },
-    input: {
-      fields: {
-        tool: {
-          type: "string",
-          required: true,
-          description: "نام ابزار از فهرست بالا.",
-          minLength: 1,
-          maxLength: 128,
-        },
-        // A free-form object: the remote server validates its own arguments,
-        // and re-declaring them here would be a lossy second opinion.
-        arguments: {
-          type: "object",
-          description: "آرگومان‌های ابزار، مطابق طرح خود سرور.",
-        },
+  return server.tools.map((remote, index) => {
+    // The closure captures the ORIGINAL remote name, never the sanitized
+    // BOBI name: routing must reach the exact tool the server advertised,
+    // even when its BOBI name was sanitized or collision-suffixed.
+    const originalName = remote.name;
+    const description =
+      remote.description.trim().length > 0
+        ? remote.description
+        : `MCP tool "${originalName}" on server "${serverName}".`;
+
+    return {
+      name: names[index]!,
+      description,
+      enabled: true,
+      // The per-server grant model is unchanged: one permission key fronts
+      // every tool a server exposes.
+      permission: { requires: [`tools:mcp_${serverName}`] },
+      input: {
+        fields: {},
+        // See the module header: the remote schema is carried verbatim for
+        // the model, and passthrough lets the server — the authority on its
+        // own arguments — validate them, instead of a lossy FieldSpec
+        // translation second-guessing it here.
+        passthrough: true,
+        jsonSchema: remote.inputSchema,
       },
-    },
 
-    async run(input, ctx) {
-      const toolName = String(input["tool"] ?? "");
-      const args = isRecord(input["arguments"]) ? input["arguments"] : {};
-      // The manager re-checks that this tool exists on this server.
-      const text = await manager.callTool(server.config.name, toolName, args, ctx.signal);
-      return { server: server.config.name, text };
-    },
-  };
+      async run(input, ctx) {
+        // Passthrough validation hands the record through unchanged; it IS
+        // the remote tool's argument object.
+        const args: Record<string, unknown> = isRecord(input) ? input : {};
+        // The manager re-checks that this tool exists on this server.
+        const text = await manager.callTool(serverName, originalName, args, ctx.signal);
+        return { server: serverName, text };
+      },
+    };
+  });
 }
 
 /** BOBI tools for every connected server, for registration at startup. */
 export function mcpTools(manager: McpManager): readonly Tool<unknown, unknown>[] {
   return manager
     .connectedServers()
-    .map((server) => createMcpTool(manager, server) as unknown as Tool<unknown, unknown>);
+    .flatMap(
+      (server) => createMcpTools(manager, server) as unknown as Tool<unknown, unknown>[],
+    );
 }
 
 // ---------- helpers ----------

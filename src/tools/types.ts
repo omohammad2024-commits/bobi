@@ -93,11 +93,56 @@ export interface FieldSpec {
   nullable?: boolean;
   /** For "array": max number of items. */
   maxItems?: number;
+  /**
+   * For "array": the spec every item must satisfy.
+   *
+   * Recursive on purpose — an item spec may itself be an "array" with its
+   * own `items`, or an "object" with its own `fields`, so shapes like
+   * "array of objects with a required `id`" are expressible in the spec
+   * language instead of being smuggled in as an untyped array and checked
+   * (or, worse, not checked) by hand in the tool body. When absent, items
+   * are unchecked, exactly as arrays behaved before this existed; ignored
+   * for non-array types.
+   */
+  items?: FieldSpec;
+  /**
+   * For "object": when present, the object is STRUCTURED — only these
+   * fields are allowed, and each is validated (and emitted as schema)
+   * recursively, with the same rules as a top-level ToolInputSpec.
+   *
+   * When absent, the object stays the free-form bag it has always been
+   * (see the "object" FieldType note above): the MCP-style escape hatch
+   * must not silently become a closed shape just because this field
+   * exists on the type. Ignored for non-object types.
+   */
+  fields?: Record<string, FieldSpec>;
 }
 
 export interface ToolInputSpec {
   /** Field name → spec. Unknown fields are rejected by the validator. */
   fields: Record<string, FieldSpec>;
+  /**
+   * A complete JSON Schema for this tool's arguments, used verbatim.
+   *
+   * When set, `toJsonSchema` returns a deep copy of this value and ignores
+   * `fields` for schema purposes. This is for tools whose arguments are
+   * defined by an external protocol (an MCP server's own inputSchema, say):
+   * that protocol is the authority on the shape, and translating it into
+   * `fields` would be lossy. `fields` still describes the input to the
+   * validator unless `passthrough` is also set — a caller that wants the
+   * external authority to validate end-to-end sets both.
+   */
+  jsonSchema?: Record<string, unknown>;
+  /**
+   * When true, `validateInput` only requires a plain object and returns a
+   * shallow copy of it unchanged — unknown-field rejection is skipped.
+   *
+   * The pair to `jsonSchema`: tools fronting an external protocol cannot
+   * have BOBI's strict validator second-guess arguments BOBI does not
+   * model, because the external authority validates them itself. Never set
+   * this for a tool whose arguments BOBI actually understands.
+   */
+  passthrough?: boolean;
 }
 
 /** Access requirements a tool declares. Checked per request, not per tool. */

@@ -290,7 +290,14 @@ describe("Gemini wire format", () => {
     const tools = body["tools"] as Array<Record<string, unknown>>;
     const decls = tools[0]!["functionDeclarations"] as Array<Record<string, unknown>>;
     expect(decls[0]!["name"]).toBe("calculator");
-    expect(decls[0]!["parameters"]).toEqual(TOOLS[0]!.parameters);
+    // Phase 2: parameters are sanitized for Gemini's OpenAPI-subset Schema
+    // on the way out — `additionalProperties` is not in that subset, so the
+    // wire shape is the declared schema MINUS it (previously sent verbatim).
+    expect(decls[0]!["parameters"]).toEqual({
+      type: "object",
+      properties: { a: { type: "number" } },
+      required: ["a"],
+    });
   });
 
   test("an assistant tool request becomes a model turn with functionCall parts", () => {

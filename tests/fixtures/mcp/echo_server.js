@@ -1,4 +1,5 @@
-// A minimal MCP stdio server: one tool that adds two numbers.
+// A minimal MCP stdio server: `add` adds two numbers, `greet` exercises a
+// nested input schema so tests can prove nested arguments forward intact.
 let buf = "";
 process.stdin.on("data", (chunk) => {
   buf += chunk.toString();
@@ -28,15 +29,42 @@ function handle(msg) {
   }
   if (msg.method === "notifications/initialized") return;
   if (msg.method === "tools/list") {
-    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [{
-      name: "add",
-      description: "Adds two numbers.",
-      inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a","b"] },
-    }]}});
+    send({ jsonrpc: "2.0", id: msg.id, result: { tools: [
+      {
+        name: "add",
+        description: "Adds two numbers.",
+        inputSchema: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a","b"] },
+      },
+      {
+        name: "greet",
+        description: "Greets a person.",
+        inputSchema: {
+          type: "object",
+          properties: {
+            person: {
+              type: "object",
+              properties: { name: { type: "string" }, title: { type: "string" } },
+              required: ["name"],
+            },
+            tags: { type: "array", items: { type: "string" } },
+          },
+          required: ["person"],
+        },
+      },
+    ]}});
     return;
   }
   if (msg.method === "tools/call") {
     const args = msg.params?.arguments ?? {};
+    if (msg.params?.name === "greet") {
+      const person = args.person ?? {};
+      const name = typeof person.name === "string" ? person.name : "";
+      const title = typeof person.title === "string" ? person.title : "";
+      const tags = Array.isArray(args.tags) ? args.tags : [];
+      const text = title ? `hello ${title} ${name} [${tags.length} tags]` : `hello ${name} [${tags.length} tags]`;
+      send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text }] }});
+      return;
+    }
     const sum = Number(args.a) + Number(args.b);
     send({ jsonrpc: "2.0", id: msg.id, result: { content: [{ type: "text", text: `sum=${sum}` }] }});
     return;

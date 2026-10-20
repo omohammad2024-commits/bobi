@@ -39,6 +39,7 @@ import type {
 import type { AdapterRegistry } from "./adapter_registry";
 import type { ChatMessage, CompletionRequest, ToolSpec } from "./provider";
 import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
+import { modelSupportsTools } from "./model_capabilities";
 
 /** Env var that disables smart routing. Default: routing is ON. */
 export const SMART_ROUTING_ENV_VAR = "BOBI_SMART_ROUTING";
@@ -358,10 +359,13 @@ export function requestNeeds(
 /** Adapter types the router knows; unknown types are excluded (fail-closed). */
 const KNOWN_ADAPTERS = new Set(["openai_compatible", "nine_router", "gemini", "anthropic"]);
 
-/** Tool calling works on every adapter BOBI ships (all serialize tool calls). */
-function supportsTools(adapterType: string): boolean {
-  return KNOWN_ADAPTERS.has(adapterType);
-}
+/**
+ * Tool support is per-MODEL, not just per-adapter: every shipped adapter
+ * serializes tool calls, but non-chat models behind one (embedding,
+ * Gemini "aqa", whisper/TTS) cannot use them — modelSupportsTools()
+ * (model_capabilities.ts) carries that distinction. KNOWN_ADAPTERS above
+ * stays as the separate unknown-adapter gate.
+ */
 
 /**
  * The smart router. Constructed per request from the gateway; stateless.
@@ -446,7 +450,7 @@ export class SmartRouter {
 
     // Hard gates: capability must come before cost.
     if (!KNOWN_ADAPTERS.has(provider.adapter)) return undefined;
-    if (needs.needsTools && !supportsTools(provider.adapter)) return undefined;
+    if (needs.needsTools && !modelSupportsTools(provider.adapter, model.modelId)) return undefined;
     if (needs.needsDocuments) {
       // The request explicitly carries documents, so prefer an adapter that
       // reads them natively over one the bot layer would have to extract
@@ -638,7 +642,7 @@ export class SmartRouter {
       for (const candidate of all) {
         const { provider } = candidate;
         if (!KNOWN_ADAPTERS.has(provider.adapter)) continue;
-        if (needs.needsTools && !supportsTools(provider.adapter)) continue;
+        if (needs.needsTools && !modelSupportsTools(provider.adapter, candidate.model.modelId)) continue;
         if (needs.needsDocuments && !this.adapters.describes(provider.adapter).documentInput) continue;
         // Breaker gate applies here too: an open breaker is unusable even
         // as a last resort. (The gateway's own all-open fallback covers
