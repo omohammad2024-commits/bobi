@@ -772,6 +772,10 @@ export class AgentLoop {
    *
    * - Error BEFORE the first text delta: nothing was shown, so a single-shot
    *   retry is invisible to the user.
+   * - A stream that ENDS EMPTY (no text, no tool calls): the same single-shot
+   *   retry — an empty end is a provider failure, not an answer.
+   *   Both retries are ONE per call and both are disabled by
+   *   BOBI_STREAM_FALLBACK=0.
    * - Error AFTER text was shown: tell the sink (`restart`), make ONE
    *   single-shot attempt for the full answer, and on its failure tell the
    *   sink (`error`) and rethrow the ORIGINAL stream error.
@@ -848,6 +852,8 @@ export class AgentLoop {
       if (input.signal.aborted) throw new AgentCancelled();
       if (deadline.timedOut()) throw err;
       if (!sawText) {
+        if (!streamFallbackEnabled()) throw err;
+        logStreamFallback("stream failed before the first token");
         return await raceDeadline(
           this.singleCall(input, messages, tools, startedAt, graceMs),
           deadline,
@@ -863,6 +869,20 @@ export class AgentLoop {
         emit({ type: "error" });
         throw err;
       }
+    }
+
+    // A stream that ENDS EMPTY — no text and no tool calls — is a silent
+    // provider failure, not an answer: free gateways close SSE streams
+    // without emitting a single token. Adapters raise this themselves
+    // now, but a provider that still resolves empty gets exactly ONE
+    // non-streaming retry here (same single-shot rail as the pre-token
+    // failure above) before the empty result can dead-end the turn.
+    if (text.trim().length === 0 && toolCalls.length === 0 && streamFallbackEnabled()) {
+      logStreamFallback("stream ended empty");
+      return await raceDeadline(
+        this.singleCall(input, messages, tools, startedAt, graceMs),
+        deadline,
+      );
     }
 
     if (toolCalls.length > 0) emit({ type: "toolcall" });
@@ -1032,6 +1052,26 @@ function addUsage(
 function nonEmpty(text: string): string {
   const trimmed = text.trim();
   return trimmed.length > 0 ? trimmed : t("error.empty_response");
+}
+
+/** Env var that disables the stream→single-shot fallback. Default: ON. */
+export const STREAM_FALLBACK_ENV_VAR = "BOBI_STREAM_FALLBACK";
+
+/**
+ * Whether a failed or empty stream may fall back to one non-streaming
+ * complete() of the same request. `BOBI_STREAM_FALLBACK=0` (also "false",
+ * "no", "off") restores the pre-fallback behaviour: stream failures and
+ * empty stream ends surface exactly as the provider produced them.
+ */
+export function streamFallbackEnabled(): boolean {
+  const raw = process.env[STREAM_FALLBACK_ENV_VAR];
+  if (raw === undefined) return true;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+}
+
+/** One-line diagnostics for a stream fallback: reason only, never content. */
+function logStreamFallback(reason: string): void {
+  console.info(`[stream-fallback] ${reason}; retrying non-streaming`);
 }
 
 /** True when the error means the provider could not be reached at all. */

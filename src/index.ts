@@ -30,6 +30,7 @@ import { ModelService, ProviderService } from "./ai/provider_service";
 import { ProviderHealthService } from "./ai/health";
 import { AiGateway } from "./ai/gateway";
 import { CircuitBreakerRegistry } from "./ai/circuit_breaker";
+import { sharedModelQuarantine } from "./ai/model_quarantine";
 import {
   connectionManager,
   connectionManagerEnabled,
@@ -615,6 +616,11 @@ async function main(): Promise<void> {
     adapters,
     secrets,
     breakers,
+    // Per-model quarantine: the SHARED registry (same pattern as breakers
+    // above). The gateway writes failure state into it; the health service
+    // reads it for the probe results' `quarantined` flag — one instance is
+    // what makes "the gateway quarantined this model" visible in the panel.
+    quarantine: sharedModelQuarantine,
     // Failover pre-warm: the next candidate's connection is established in
     // the background, so a mid-turn failover skips the connect latency.
     preWarm: (sel) => {

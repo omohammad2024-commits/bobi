@@ -387,6 +387,22 @@ describe("bot.ts error paths", () => {
     expect(userFacingMessage(new Error("weird"), "en")).toBe("Unexpected error.");
   });
 
+  test("failover exhaustion appends the tried-providers count", () => {
+    // attempts >= 2 (carried from the gateway via EngineError.attempts):
+    // the suffix names how many provider candidates were tried.
+    expect(userFacingMessage(new EngineError("network", "boom", undefined, 3), "en")).toBe(
+      "Network error; try again. (tried 3 providers)",
+    );
+    expect(userFacingMessage(new EngineError("quota", "boom", undefined, 2), "en")).toBe(
+      "The usage quota is full; try again in a bit. (tried 2 providers)",
+    );
+    // A single attempt — or none recorded — leaves the message untouched.
+    expect(userFacingMessage(new EngineError("network", "boom", undefined, 1), "en")).toBe(
+      "Network error; try again.",
+    );
+    expect(userFacingMessage(engineErr("network"), "en")).toBe("Network error; try again.");
+  });
+
   test("tool errors render in English (never the tool layer's raw message)", () => {
     const cases: Array<[ConstructorParameters<typeof ToolError>[0], string]> = [
       ["timeout", "The tool run took too long and was cancelled."],

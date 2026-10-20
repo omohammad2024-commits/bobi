@@ -11,7 +11,7 @@
  * URL that could be logged whole: the key is attached by this module at call
  * time only, and error messages never include the URL.
  */
-import { AiError } from "./provider";
+import { AiError, emptyResponseError } from "./provider";
 import type {
   ChatMessage,
   CompletionRequest,
@@ -272,10 +272,17 @@ export function parseResponse(
   res: Record<string, unknown>,
   requestedModel: string,
 ): CompletionResponse {
+  const text = extractText(res);
+  const extras = responseExtras(res);
+  if (text.trim().length === 0 && (extras.toolCalls ?? []).length === 0) {
+    // No text and no function call: a candidate failure, not a silent
+    // empty success (same rule as the OpenAI-compatible adapter).
+    throw emptyResponseError();
+  }
   return {
-    text: extractText(res),
+    text,
     model: extractModel(res, requestedModel),
-    ...responseExtras(res),
+    ...extras,
   };
 }
 

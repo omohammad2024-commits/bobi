@@ -12,7 +12,7 @@
  * A provider's response body is never returned to the caller: it can echo the
  * request, so only a caller-chosen static message leaves this module.
  */
-import { AiError, base64Bytes, MAX_ATTACHMENT_BYTES } from "./provider";
+import { AiError, base64Bytes, MAX_ATTACHMENT_BYTES, emptyResponseError } from "./provider";
 import type {
   ChatMessage,
   CompletionRequest,
@@ -146,6 +146,8 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     const toolDeltas = new Map<number, { id: string; name: string; args: string }>();
     let text = "";
     let usage: TokenUsage | undefined;
+    let hadReasoning = false;
+    let lastFinishReason: string | undefined;
 
     // One event → zero or more stream events. A nested generator (not a
     // closure returning values) so `text`/`usage` stay single-sourced.
@@ -157,6 +159,14 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
         text += content;
         yield { type: "text", delta: content };
       }
+
+      // Reasoning-only streams are still empty answers (the chain-of-thought
+      // is never surfaced); the flag only feeds the failure's detail line.
+      const reasoning = delta !== undefined ? delta["reasoning_content"] : undefined;
+      if (typeof reasoning === "string" && reasoning.length > 0) hadReasoning = true;
+
+      const finish = choiceFinishReason(event);
+      if (finish !== undefined) lastFinishReason = finish;
 
       const calls = delta !== undefined ? delta["tool_calls"] : undefined;
       if (Array.isArray(calls)) accumulateToolCallDeltas(toolDeltas, calls);
@@ -185,11 +195,23 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       await stream.chunks.return(undefined);
     }
 
+    const finalToolCalls = buildStreamedToolCalls(toolDeltas);
+    if (text.trim().length === 0 && finalToolCalls.length === 0) {
+      // A stream that ends without a single token is the same candidate
+      // failure as an empty buffered payload (see parseResponse): raise it
+      // instead of emitting an empty `end`, so the gateway fails over and
+      // the loop's non-streaming fallback engages.
+      const parts: string[] = ["stream"];
+      if (lastFinishReason !== undefined) parts.push(`finish_reason=${lastFinishReason}`);
+      if (hadReasoning) parts.push("the response carried reasoning only");
+      throw emptyResponseError(parts.join(", "));
+    }
+
     yield {
       type: "end",
       text,
       model: req.model,
-      toolCalls: buildStreamedToolCalls(toolDeltas),
+      toolCalls: finalToolCalls,
       ...(usage !== undefined ? { usage } : {}),
     };
   }
@@ -577,11 +599,50 @@ function stringifyArguments(args: unknown): string {
  * assert the wire format without a network round trip.
  */
 export function parseResponse(res: unknown, requestedModel: string): CompletionResponse {
+  const text = extractContent(res);
+  const extras = responseExtras(res);
+  if (text.trim().length === 0 && (extras.toolCalls ?? []).length === 0) {
+    // A structurally valid payload with no answer in it is a candidate
+    // failure, not a silent success: free gateways answer HTTP 200 with an
+    // empty content field (quota quietly exhausted, model warming up), and
+    // an empty string used to sail through as a reply and dead-end the
+    // chat turn. Tool-requesting turns (toolCalls present) stay legal.
+    throw emptyResponseError(emptyPayloadDetail(res));
+  }
   return {
-    text: extractContent(res),
+    text,
     model: extractModel(res, requestedModel),
-    ...responseExtras(res),
+    ...extras,
   };
+}
+
+/**
+ * Machine-safe detail for an empty payload: the finish reason, and whether
+ * the message carried reasoning only. A reasoning-only payload is still
+ * empty — chain-of-thought is never surfaced as the answer.
+ */
+function emptyPayloadDetail(res: unknown): string {
+  const parts: string[] = [];
+  let finishReason: string | undefined;
+  let hadReasoning = false;
+  if (isRecord(res) && Array.isArray(res["choices"]) && res["choices"].length > 0) {
+    const first = res["choices"][0];
+    if (isRecord(first)) {
+      const fr = first["finish_reason"];
+      if (typeof fr === "string" && fr.length > 0) finishReason = fr;
+      const message = first["message"];
+      if (isRecord(message)) {
+        const rc = message["reasoning_content"];
+        const r = message["reasoning"];
+        hadReasoning =
+          (typeof rc === "string" && rc.length > 0) ||
+          (typeof r === "string" && r.length > 0);
+      }
+    }
+  }
+  if (finishReason !== undefined) parts.push(`finish_reason=${finishReason}`);
+  if (hadReasoning) parts.push("the response carried reasoning only");
+  return parts.join(", ");
 }
 
 /**
@@ -679,6 +740,16 @@ function choiceDelta(event: Record<string, unknown>): Record<string, unknown> | 
   if (!isRecord(first)) return undefined;
   const delta = first["delta"];
   return isRecord(delta) ? delta : undefined;
+}
+
+/** The `choices[0].finish_reason` of one streamed event, when present. */
+function choiceFinishReason(event: Record<string, unknown>): string | undefined {
+  const choices = event["choices"];
+  if (!Array.isArray(choices) || choices.length === 0) return undefined;
+  const first = choices[0];
+  if (!isRecord(first)) return undefined;
+  const fr = first["finish_reason"];
+  return typeof fr === "string" && fr.length > 0 ? fr : undefined;
 }
 
 /**

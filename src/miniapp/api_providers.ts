@@ -30,7 +30,7 @@ import type {
   ProviderService,
   ProviderView,
 } from "../ai/provider_service";
-import type { ProviderHealthService } from "../ai/health";
+import type { ProviderHealthService, ProbeResult } from "../ai/health";
 
 const MAX_MODEL_IDS = 200;
 const MAX_URL_CHARS = 512;
@@ -930,7 +930,7 @@ async function testModel(
     throw new ProviderApiError(404, "Provider not found.");
   }
   const started = Date.now();
-  let result: { ok: boolean; message?: string; checkedAt: number };
+  let result: ProbeResult;
   try {
     result = await deps.health.probeModel(providerId, modelId);
   } catch {
@@ -942,5 +942,9 @@ async function testModel(
     atMs: result.checkedAt,
   };
   if (result.message !== undefined) out["message"] = result.message;
+  // Two-stage detail (additive): the UI renders "Ping ✅ x ms · Real ✅/⚠️".
+  if (result.ping !== undefined) out["ping"] = result.ping;
+  if (result.real !== undefined) out["real"] = result.real;
+  if (result.quarantined === true) out["quarantined"] = true;
   return out;
 }

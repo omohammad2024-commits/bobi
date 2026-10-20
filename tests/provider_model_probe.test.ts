@@ -105,9 +105,10 @@ describe("ProviderHealthService.probeModel", () => {
     const result = await h.health.probeModel(providerId, "other-model");
 
     expect(result.ok).toBe(true);
-    // The completion must name the requested model exactly once, and never
-    // fall back to the provider's default.
-    expect(h.adapters.completedModels).toEqual(["other-model"]);
+    // The completions must name the requested model exactly — never the
+    // provider's default. TWO completions since the two-stage probe: the
+    // ping and the realistic turn simulation, both on the requested model.
+    expect(h.adapters.completedModels).toEqual(["other-model", "other-model"]);
   });
 
   test("an unknown model id fails without any request", async () => {
@@ -187,7 +188,8 @@ describe("models.test endpoint", () => {
     expect(out["ok"]).toBe(true);
     expect(typeof out["latencyMs"]).toBe("number");
     expect(out["atMs"]).toBeGreaterThan(0);
-    expect(h.adapters.completedModels).toEqual(["other-model"]);
+    // Two-stage probe: ping + realistic stage, both completions recorded.
+    expect(h.adapters.completedModels).toEqual(["other-model", "other-model"]);
   });
 
   test("an unknown model comes back ok:false with the safe message", async () => {

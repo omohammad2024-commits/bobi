@@ -6,7 +6,9 @@
  * nothing an unauthenticated caller should not have.
  */
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { startHealthServer } from "../src/core/health";
+import { APP_VERSION } from "../src/core/app";
 
 /** Start a server on an ephemeral port and always close it. */
 async function withServer(
@@ -31,6 +33,17 @@ describe("health endpoint", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body["status"]).toBe("ok");
       expect(body["app"]).toBe("BOBI");
+    });
+  });
+
+  test("reports the package.json version (single source of truth)", async () => {
+    const pkg = JSON.parse(
+      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+    ) as { version: string };
+    expect(APP_VERSION).toBe(pkg.version);
+    await withServer({ port: 0 }, async (base) => {
+      const body = (await (await fetch(`${base}/health`)).json()) as Record<string, unknown>;
+      expect(body["version"]).toBe(pkg.version);
     });
   });
 

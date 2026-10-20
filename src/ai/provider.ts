@@ -220,10 +220,61 @@ export class AiError extends Error {
      * only: existing three-arg constructions are unaffected.
      */
     readonly retryAfterMs?: number,
+    /**
+     * True only for the "provider returned an empty response" failure built
+     * by emptyResponseError(). The marker is what the gateway keys on: an
+     * empty answer is a CANDIDATE failure (the next provider/model may
+     * answer), unlike a malformed-request invalid_response, which no other
+     * candidate can fix. Additive only; undefined everywhere else.
+     */
+    readonly emptyResponse?: boolean,
+    /**
+     * How many provider candidates were actually tried before this error
+     * became final. Set by the gateway when it annotates an exhausted
+     * failover chain (see AiGateway.withAttemptCount); carried so the
+     * presentation layer can say "(tried N providers)". Additive only.
+     */
+    readonly attempts?: number,
   ) {
     super(message);
     this.name = "AiError";
   }
+}
+
+/** The fixed, safe message of an empty-response failure. */
+export const EMPTY_RESPONSE_MESSAGE = "Provider returned an empty response";
+
+/**
+ * Build the empty-response failure: a provider answered with NO text and
+ * NO tool calls.
+ *
+ * Free gateways do this constantly — HTTP 200, an empty content field, or
+ * a stream that ends without a single token — and an empty string used to
+ * be treated as a SUCCESS, so the chat turn dead-ended on "I got no
+ * reply" instead of failing over. Raised by the adapters (never by the
+ * caller), so every consumer of complete()/completeStream() sees the same
+ * classified failure.
+ *
+ * `detail` is a short machine-safe parenthetical (finish reason, whether
+ * the payload carried reasoning only). It never contains response content.
+ * When a payload carried ONLY reasoning_content/thinking, the answer is
+ * STILL empty: chain-of-thought is never surfaced as the reply.
+ */
+export function emptyResponseError(detail?: string): AiError {
+  return new AiError(
+    "invalid_response",
+    detail !== undefined && detail.length > 0
+      ? `${EMPTY_RESPONSE_MESSAGE} (${detail})`
+      : EMPTY_RESPONSE_MESSAGE,
+    undefined,
+    undefined,
+    true,
+  );
+}
+
+/** True when `err` is the empty-response failure built above. */
+export function isEmptyResponseError(err: unknown): err is AiError {
+  return err instanceof AiError && err.emptyResponse === true;
 }
 
 export interface AiProvider {

@@ -337,6 +337,13 @@ export class EngineError extends Error {
      * only — never response content.
      */
     readonly status?: number,
+    /**
+     * How many provider candidates the gateway tried before this error
+     * became final, when more than one was attempted. Carried from the
+     * AiError so the presentation layer can append the
+     * `error.tried_providers` note ("(tried N providers)"). Additive only.
+     */
+    readonly attempts?: number,
   ) {
     super(message);
     this.name = "EngineError";
@@ -1504,7 +1511,9 @@ export function splitForTelegram(text: string): string[] {
 /** Convert any thrown error into an EngineError with a safe kind. */
 function toEngineError(err: unknown, aborted: boolean): EngineError {
   if (err instanceof EngineError) return err;
-  if (err instanceof AiError) return new EngineError(err.kind, err.message, err.status);
+  if (err instanceof AiError) {
+    return new EngineError(err.kind, err.message, err.status, err.attempts);
+  }
   if (aborted) return new EngineError("timeout", "Request was cancelled or timed out.");
   return new EngineError("unknown", "Unknown error while processing the request.");
 }

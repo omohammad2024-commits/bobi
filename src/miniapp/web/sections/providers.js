@@ -710,7 +710,25 @@
             testOut.textContent = ctx.t("prov.testingModel");
             try {
               const r = await ctx.api("models.test", { providerId: providerId, modelId: m.modelId });
-              if (r && r.ok) {
+              if (r && r.ping) {
+                // Two-stage test: the cheap ping AND a realistic turn.
+                // A green ping with a failed real stage is the apinex
+                // failure mode — show both so it can never hide again.
+                const ms = function (v) {
+                  return v !== undefined && v !== null ? num(v) + " " + ctx.t("prov.ms") : "";
+                };
+                const pingPart = "Ping " + (r.ping.ok ? "✅ " + ms(r.ping.latencyMs) : "❌ " + (r.ping.error || ""));
+                let realPart = "";
+                if (r.real) {
+                  realPart = r.real.ok
+                    ? "Real ✅ " + ms(r.real.latencyMs)
+                    : "Real ⚠️ " + (r.real.detail === "empty response" ? "empty" : r.real.error || "failed");
+                }
+                testOut.style.color = r.ok ? "var(--success)" : "var(--danger)";
+                testOut.textContent = [pingPart, realPart, r.quarantined ? "⛔ quarantined" : ""]
+                  .filter(Boolean)
+                  .join(" · ");
+              } else if (r && r.ok) {
                 testOut.style.color = "var(--success)";
                 testOut.textContent = "✅ " + (r.latencyMs !== undefined && r.latencyMs !== null ? num(r.latencyMs) + " " + ctx.t("prov.ms") : "");
               } else {

@@ -13,7 +13,12 @@
  * registry so a healed provider returns to rotation without waiting for a
  * user turn to discover it.
  */
-import { AiError } from "./provider";
+import {
+  AiError,
+  emptyResponseError,
+  isEmptyResponseError,
+} from "./provider";
+import type { ChatMessage, ToolSpec } from "./provider";
 import type { AIProviderAdapter } from "./adapter";
 import type { ProviderSecretStore } from "./secret_store";
 import { AdapterRegistry } from "./adapter_registry";
@@ -24,6 +29,10 @@ import {
   connectionManagerEnabled,
   type ConnectionStatsView,
 } from "./connection_manager";
+import {
+  modelQuarantineEnabled,
+  sharedModelQuarantine,
+} from "./model_quarantine";
 
 export interface ProbeResult {
   ok: boolean;
@@ -45,6 +54,40 @@ export interface ProbeResult {
    * (same pattern as the memory recall telemetry fields).
    */
   connection?: ConnectionStatsView;
+  /**
+   * True when the tested model is currently inside its gateway quarantine
+   * window (3+ consecutive failures) — the reason the gateway is skipping
+   * it. Present on probeModel results (and provider probes, via the
+   * default model); sparse — absent when the model is not quarantined.
+   */
+  quarantined?: boolean;
+  /**
+   * Stage detail of a two-stage model test (probeModel): stage (a), the
+   * cheap ping. Absent on provider-level probes and on pre-check failures
+   * (unknown model, missing credential) where no request was sent.
+   */
+  ping?: ModelProbeStage;
+  /**
+   * Stage (b) of a two-stage model test: a REALISTIC turn simulation
+   * (streaming, full tool-spec payload, real-size system prompt). This is
+   * the stage that sees what a Telegram turn sees. Absent when the ping
+   * stage already failed — a provider that cannot answer a postcard is
+   * not billed for the full simulation.
+   */
+  real?: ModelProbeStage;
+}
+
+/** One stage's outcome inside a two-stage model test. */
+export interface ModelProbeStage {
+  ok: boolean;
+  /** Wall-clock ms this stage took. */
+  latencyMs?: number;
+  /** First chars of the model's answer (real stage, on success only). */
+  textPreview?: string;
+  /** Safe message when !ok — chosen by this module, never a raw body. */
+  error?: string;
+  /** Machine-safe note, e.g. "empty response", "stream". */
+  detail?: string;
 }
 
 /**
@@ -79,9 +122,62 @@ export function healthProbeIntervalMs(): number {
 export interface ProbeOptions {
   /** Override the timeout for this probe only. */
   timeoutMs?: number;
+  /**
+   * Tool specs for probeModel's realistic stage — the same payload shape
+   * the agent loop sends (ToolService.toolSpecsFor). When omitted, the
+   * stage derives representative specs from the plugin manifests.
+   */
+  tools?: readonly ToolSpec[];
+  /** System prompt for the realistic stage. Defaults to a representative one. */
+  systemPrompt?: string;
+  /** Timeout for the realistic stage only. Default: max(default, 30s). */
+  realisticTimeoutMs?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
+
+/**
+ * Output cap of the realistic probe stage. A real agent turn generates
+ * hundreds of tokens; 16 (the ping cap) cannot reproduce gateways that
+ * give up — or return reasoning only — on real-size generations.
+ */
+const REALISTIC_PROBE_MAX_TOKENS = 300;
+
+/** Floor for the realistic stage's timeout: real generations are slow. */
+const REALISTIC_PROBE_TIMEOUT_MS = 30_000;
+
+/** Preview length for the realistic stage's answer snippet. */
+const REALISTIC_PREVIEW_CHARS = 120;
+
+/**
+ * A representative system prompt for the realistic probe stage.
+ *
+ * NOT the engine's real prompt (that is assembled per user from private
+ * memory and never leaves the turn) — a fixed stand-in at the same scale:
+ * identity, tone rules, a tool-catalog summary, memory etiquette, safety.
+ * What matters for the gateways this stage exists to catch is the SHAPE
+ * of a real request: a multi-thousand-token prompt, not "ping". Contains
+ * no user data by construction.
+ */
+export const REALISTIC_PROBE_SYSTEM_PROMPT = [
+  "You are BOBI, a personal AI agent living inside Telegram. You were created by Mohammad, your owner, and you serve him and the people he allows. Answer in the language the user writes in (Persian in, Persian out; English in, English out).",
+  "",
+  "PERSONALITY: playful, confident, cheeky, deadpan. Default to 1-3 short lines; write long-form only when explicitly asked, and wrap it in a markdown blockquote. Mirror the user's message length: a one-word hello gets a one-line answer, never an essay. No filler, no corporate politeness, no emoji spam.",
+  "",
+  "TOOLS: you act through tools, you never merely describe acting. When the user sends a media link, use the downloader. When they ask to remember something, use the memory tools; when they ask what you remember, recall before answering. Reminders, scheduled tasks, goals, unit conversion, calculation, date/time (including the Jalali calendar), image and video generation, model consultation, session history and usage reporting are all tools — pick the one whose description matches the intent, extract its arguments from the message, and call it. A denied or failed tool is reported back to you as data; adjust and continue, never invent a result.",
+  "",
+  "MEMORY: durable facts about the owner (names, preferences, projects, people) are worth remembering; transient chatter is not. When stored facts contradict a newer statement, the newer statement wins and the old fact is superseded. Never reveal one user's memories to another user; every conversation is isolated.",
+  "",
+  "SAFETY: owner-only capabilities (providers, keys, admin, user management) are invisible to the public and refused politely when requested by anyone else. Never print API keys, tokens or credentials. Media you download is delivered to the user, not described.",
+  "",
+  "GROUPS: in group chats you answer when addressed by name, by mention, or by a reply to your message. You may summarise the group conversation and run polls when the group assistant is enabled.",
+  "",
+  "If a request is ambiguous, make the reasonable choice and proceed; ask only when the wrong guess would waste real work. When you cannot do something, say so plainly in one line and offer the closest thing you can do.",
+].join("\n");
+
+/** The realistic stage's user turn: a small, ordinary owner-style ask. */
+const REALISTIC_PROBE_USER_MESSAGE =
+  "سلام! ساعت تهران الان چنده؟ یه جمله کوتاه جواب بده.";
 
 export class ProviderHealthService {
   constructor(
@@ -115,6 +211,7 @@ export class ProviderHealthService {
       ...(h.message !== undefined ? { message: h.message } : {}),
       ...this.circuitField(providerId),
       ...this.connectionField(providerId),
+      ...this.quarantineField(providerId, this.defaultModelId(providerId)),
     };
   }
 
@@ -209,13 +306,25 @@ export class ProviderHealthService {
   }
 
   /**
-   * Probe ONE specific model with a real completion, without recording
-   * provider health. Used by the per-model "Test" button in the panel.
+   * Probe ONE specific model, without recording provider health. Used by
+   * the per-model "Test" button in the panel.
    *
    * A model test is deliberately NOT provider health: it never touches
    * storage.setProviderHealth, so testing an individual model cannot
    * overwrite the provider-level outcome. A flaky model gets reported
    * inline; the provider row keeps its own status.
+   *
+   * TWO STAGES (the honest probe):
+   *   (a) ping — the historical cheap check: one 16-token non-streaming
+   *       completion. Free gateways answer this even when they cannot
+   *       serve a real turn, which is exactly how a green ⚡Test used to
+   *       coexist with a dead chat.
+   *   (b) real — a realistic turn simulation: streaming ON, the full
+   *       tool-spec payload the loop sends, a real-size system prompt,
+   *       maxTokens 300. It detects empty streams, empty content, and
+   *       quota/auth failures that only appear on real-size requests.
+   * Stage (b) runs only when (a) passed. The top-level ok is the AND of
+   * both stages; the message names the failing stage's cause.
    */
   async probeModel(
     providerId: number,
@@ -232,18 +341,18 @@ export class ProviderHealthService {
     if (
       this.storage.listModels(providerId).every((m) => m.modelId !== modelId)
     ) {
-      return this.result(providerId, false, "Model not found for this provider.");
+      return this.result(providerId, false, "Model not found for this provider.", modelId);
     }
 
     let apiKey: string | undefined;
     try {
       apiKey = this.providers.credentialFor(providerId);
     } catch {
-      return this.result(providerId, false, "Credential could not be decrypted.");
+      return this.result(providerId, false, "Credential could not be decrypted.", modelId);
     }
 
     if (apiKey === undefined || apiKey.length === 0) {
-      return this.result(providerId, false, "Credential is not set.");
+      return this.result(providerId, false, "Credential is not set.", modelId);
     }
 
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
@@ -251,14 +360,17 @@ export class ProviderHealthService {
     // never fires, so the adapter reports its own timeout diagnosis.
     const neverAborted = new AbortController().signal;
 
-    try {
-      const adapter = this.adapters.create(provider.adapter, {
-        baseUrl: provider.baseUrl,
-        apiKey,
-        model: modelId,
-        ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
-      });
+    const adapter = this.adapters.create(provider.adapter, {
+      baseUrl: provider.baseUrl,
+      apiKey,
+      model: modelId,
+      ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
+    });
 
+    // ---- stage (a): the ping -------------------------------------------
+    const pingStarted = Date.now();
+    let ping: ModelProbeStage;
+    try {
       await adapter.complete({
         messages: [{ role: "user", content: "ping" }],
         model: modelId,
@@ -267,10 +379,118 @@ export class ProviderHealthService {
         timeoutMs,
         signal: neverAborted,
       });
-
-      return this.result(providerId, true, "Connection succeeded.");
+      ping = { ok: true, latencyMs: Date.now() - pingStarted };
     } catch (err) {
-      return this.result(providerId, false, probeMessage(err));
+      ping = {
+        ok: false,
+        latencyMs: Date.now() - pingStarted,
+        error: probeMessage(err),
+        ...(isEmptyResponseError(err) ? { detail: "empty response" } : {}),
+      };
+      return this.result(providerId, false, probeMessage(err), modelId, { ping });
+    }
+
+    // ---- stage (b): the realistic turn ----------------------------------
+    const real = await this.probeRealistic(adapter, modelId, opts, neverAborted);
+    if (!real.ok) {
+      // The stage error already names the cause safely (mapped, or the
+      // fixed empty-response template) — surface it as the test's message
+      // so the panel shows WHY the real turn would fail, not just that.
+      return this.result(
+        providerId,
+        false,
+        real.error ?? "Realistic check failed.",
+        modelId,
+        { ping, real },
+      );
+    }
+    return this.result(providerId, true, "Connection succeeded.", modelId, { ping, real });
+  }
+
+  /**
+   * Stage (b) of probeModel: one realistic turn against the model.
+   *
+   * The request mirrors what the agent loop actually sends — a system
+   * prompt at real scale, one user turn, the full tool-spec payload,
+   * streaming, and a real generation budget — because the failures this
+   * stage exists to catch (empty streams, empty content, size-triggered
+   * quota/auth rejections) are invisible to the 16-token ping.
+   */
+  private async probeRealistic(
+    adapter: AIProviderAdapter,
+    modelId: string,
+    opts: ProbeOptions,
+    signal: AbortSignal,
+  ): Promise<ModelProbeStage> {
+    const timeoutMs =
+      opts.realisticTimeoutMs ?? Math.max(this.defaultTimeoutMs, REALISTIC_PROBE_TIMEOUT_MS);
+    const tools = opts.tools ?? (await defaultRealisticToolSpecs());
+    const messages: ChatMessage[] = [
+      { role: "system", content: opts.systemPrompt ?? REALISTIC_PROBE_SYSTEM_PROMPT },
+      { role: "user", content: REALISTIC_PROBE_USER_MESSAGE },
+    ];
+    const req = {
+      messages,
+      model: modelId,
+      maxTokens: REALISTIC_PROBE_MAX_TOKENS,
+      timeoutMs,
+      signal,
+      ...(tools.length > 0 ? { tools } : {}),
+    };
+    const started = Date.now();
+    const fail = (err: unknown, detail: string): ModelProbeStage => ({
+      ok: false,
+      latencyMs: Date.now() - started,
+      // The empty-response message is a fixed template with machine-safe
+      // detail only (finish reason, reasoning flags) — safe to surface
+      // verbatim; everything else goes through the mapped messages.
+      error: isEmptyResponseError(err) ? err.message : probeMessage(err),
+      detail: isEmptyResponseError(err) ? "empty response" : detail,
+    });
+
+    if (typeof adapter.completeStream === "function") {
+      let text = "";
+      let toolCalls = 0;
+      try {
+        for await (const ev of adapter.completeStream(req)) {
+          if (ev.type === "text") text += ev.delta;
+          if (ev.type === "end") {
+            text = ev.text;
+            toolCalls = ev.toolCalls.length;
+          }
+        }
+      } catch (err) {
+        return fail(err, "stream");
+      }
+      if (text.trim().length === 0 && toolCalls === 0) {
+        // Defensive: adapters raise this themselves now, but a custom
+        // adapter that still returns an empty end must not read as green.
+        return fail(emptyResponseError("stream"), "empty response");
+      }
+      return {
+        ok: true,
+        latencyMs: Date.now() - started,
+        ...(text.trim().length > 0
+          ? { textPreview: text.slice(0, REALISTIC_PREVIEW_CHARS) }
+          : {}),
+        detail: "stream",
+      };
+    }
+
+    try {
+      const res = await adapter.complete(req);
+      if (res.text.trim().length === 0 && (res.toolCalls ?? []).length === 0) {
+        return fail(emptyResponseError(), "empty response");
+      }
+      return {
+        ok: true,
+        latencyMs: Date.now() - started,
+        ...(res.text.trim().length > 0
+          ? { textPreview: res.text.slice(0, REALISTIC_PREVIEW_CHARS) }
+          : {}),
+      };
+    } catch (err) {
+      return fail(err, "complete");
     }
   }
 
@@ -365,7 +585,14 @@ export class ProviderHealthService {
   private record(providerId: number, ok: boolean, message: string): ProbeResult {
     const checkedAt = Date.now();
     this.storage.setProviderHealth({ providerId, ok, message });
-    return { ok, message, checkedAt, ...this.circuitField(providerId), ...this.connectionField(providerId) };
+    return {
+      ok,
+      message,
+      checkedAt,
+      ...this.circuitField(providerId),
+      ...this.connectionField(providerId),
+      ...this.quarantineField(providerId, this.defaultModelId(providerId)),
+    };
   }
 
   /**
@@ -373,8 +600,65 @@ export class ProviderHealthService {
    * this deliberately skips setProviderHealth — per-model tests must not
    * overwrite the provider-level health row.
    */
-  private result(providerId: number, ok: boolean, message: string): ProbeResult {
-    return { ok, message, checkedAt: Date.now(), ...this.circuitField(providerId), ...this.connectionField(providerId) };
+  private result(
+    providerId: number,
+    ok: boolean,
+    message: string,
+    modelId?: string,
+    stages?: { ping?: ModelProbeStage; real?: ModelProbeStage },
+  ): ProbeResult {
+    return {
+      ok,
+      message,
+      checkedAt: Date.now(),
+      ...this.circuitField(providerId),
+      ...this.connectionField(providerId),
+      ...this.quarantineField(providerId, modelId),
+      ...(stages?.ping !== undefined ? { ping: stages.ping } : {}),
+      ...(stages?.real !== undefined ? { real: stages.real } : {}),
+    };
+  }
+
+  /**
+   * The sparse `quarantined: true` spread, read from the SHARED registry
+   * the gateway writes — sparse so a healthy model carries no field at
+   * all (same pattern as the circuit/connection fields).
+   */
+  private quarantineField(
+    providerId: number,
+    modelId: string | undefined,
+  ): { quarantined?: boolean } {
+    if (modelId === undefined || !modelQuarantineEnabled()) return {};
+    try {
+      return sharedModelQuarantine.isQuarantined(providerId, modelId)
+        ? { quarantined: true }
+        : {};
+    } catch {
+      return {};
+    }
+  }
+}
+
+/**
+ * Representative tool specs for the realistic probe stage, derived from
+ * the plugin manifests (name = the tool's registered id, description =
+ * its catalog line). This mirrors the payload SHAPE the loop sends via
+ * ToolService.toolSpecsFor — one entry per tool, real descriptions —
+ * without importing the tool service into the AI layer at module scope:
+ * the barrel is loaded lazily, at probe time, when the module graph is
+ * fully evaluated. Any failure falls back to an empty list (the stage
+ * still exercises streaming + prompt size, just without tools).
+ */
+async function defaultRealisticToolSpecs(): Promise<readonly ToolSpec[]> {
+  try {
+    const { getPluginManifests } = await import("../tools/plugins");
+    return getPluginManifests().map((m) => ({
+      name: m.id,
+      description: m.description,
+      parameters: { type: "object", properties: {}, additionalProperties: true },
+    }));
+  } catch {
+    return [];
   }
 }
 

@@ -179,6 +179,7 @@ export const en: LanguagePack = {
   "error.invalid_response": "The provider returned an invalid response; try again or check the provider.",
   "error.unknown": "Temporary error; try again.",
   "error.unknown_status": "Temporary error; try again. (Provider answered HTTP {status}.)",
+  "error.tried_providers": "(tried {count} providers)",
   "error.unexpected": "Unexpected error.",
 
   // ---- tool errors (short, user-facing; no internals) ----

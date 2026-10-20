@@ -244,7 +244,10 @@ describe("gateway circuit breaker", () => {
   });
 
   test("BOBI_CIRCUIT_BREAKER=0: the breaker never skips anyone", async () => {
-    await withEnv({ BOBI_SMART_ROUTING: "0", BOBI_CIRCUIT_BREAKER: "0" }, async () => {
+    // BOBI_MODEL_QUARANTINE=0 for the same isolation reason as the
+    // failover suite's retry opt-out: per-model quarantine is a separate
+    // skip mechanism with its own switch, and this test pins the BREAKER.
+    await withEnv({ BOBI_SMART_ROUTING: "0", BOBI_CIRCUIT_BREAKER: "0", BOBI_MODEL_QUARANTINE: "0" }, async () => {
       const script = new Map<string, Outcome[]>([
         ["model-a", [net()]],
         ["model-b", ["ok"]],

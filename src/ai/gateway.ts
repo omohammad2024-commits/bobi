@@ -38,11 +38,22 @@
  *  8. Failover pre-warm. When a plan has a next candidate, an optional
  *     hook is fired (never awaited) so the connection layer can establish
  *     that candidate's connection before a failover needs it.
+ *  9. Empty-response failover + per-model quarantine. An adapter-raised
+ *     empty response (AiError marked emptyResponse) is a candidate
+ *     failure: it advances the failover chain despite its invalid_response
+ *     kind, and it is never "committed" mid-stream (no text was shown).
+ *     Independently, a (provider, model) pair with 3 consecutive failures
+ *     is quarantined for BOBI_MODEL_QUARANTINE_MS and skipped while other
+ *     candidates exist (see model_quarantine.ts). Kill switch:
+ *     BOBI_MODEL_QUARANTINE=0 or BOBI_MODEL_QUARANTINE_MS=0.
+ * 10. Attempt transparency. When a request dies after more than one real
+ *     candidate attempt, the final error is annotated "(tried N
+ *     providers)" and carries the count on AiError.attempts.
  *
  * `name` is "ai" so the engine's isFake check stays accurate: the gateway is a
  * real provider, unlike the offline FakeProvider used in tests.
  */
-import { AiError } from "./provider";
+import { AiError, isEmptyResponseError } from "./provider";
 import type {
   AiProvider,
   CompletionRequest,
@@ -63,6 +74,11 @@ import {
   type CircuitStateView,
   type CircuitTransition,
 } from "./circuit_breaker";
+import {
+  ModelQuarantineRegistry,
+  modelQuarantineEnabled,
+  modelQuarantineMs,
+} from "./model_quarantine";
 
 /** Env var that disables in-call retry. Default: retry is ON. */
 export const GATEWAY_RETRY_ENV_VAR = "BOBI_GATEWAY_RETRY";
@@ -205,6 +221,13 @@ export interface GatewayOptions {
    * work and error swallowing; the gateway also invokes it in try/catch.
    */
   preWarm?: (candidate: GatewaySelection) => void;
+  /**
+   * Per-model quarantine registry. Defaults to a registry owned by this
+   * gateway (same pattern as the circuit breakers); pass the process-wide
+   * sharedModelQuarantine to make the state readable from the health
+   * service's probe results. Inject a private registry in tests.
+   */
+  quarantine?: ModelQuarantineRegistry;
 }
 
 /** The provider/model pair a request actually used. Never includes a key. */
@@ -255,6 +278,11 @@ export class AiGateway implements AiProvider {
   /** Optional connection pre-warm hook for the next failover candidate. */
   private readonly preWarm: GatewayOptions["preWarm"];
 
+  /** Per-(provider, model) quarantine (chat reliability). */
+  private readonly quarantine: ModelQuarantineRegistry;
+  /** Kill switches: BOBI_MODEL_QUARANTINE=0 or BOBI_MODEL_QUARANTINE_MS=0. */
+  private readonly quarantineOn: boolean;
+
   /**
    * Cooldowns for keys that failed with auth, keyed by "p:<providerId>" for
    * the primary credential and "pool:<entryId>" for pool keys, mapping to the
@@ -290,6 +318,8 @@ export class AiGateway implements AiProvider {
       opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
     this.random = opts.random ?? Math.random;
     this.preWarm = opts.preWarm;
+    this.quarantine = opts.quarantine ?? new ModelQuarantineRegistry();
+    this.quarantineOn = modelQuarantineEnabled() && modelQuarantineMs() > 0;
     this.breakers =
       opts.breakers ??
       new CircuitBreakerRegistry({
@@ -469,6 +499,73 @@ export class AiGateway implements AiProvider {
     return this.breakers.states();
   }
 
+  /** Quarantine snapshot for one (provider, model) (observability surface). */
+  modelQuarantineState(providerId: number, modelId: string) {
+    return this.quarantine.state(providerId, modelId);
+  }
+
+  /**
+   * Drop quarantined candidates from a plan.
+   *
+   * A model inside its quarantine window is skipped so the chain reaches
+   * a healthy candidate first. Two guards keep this from ever making
+   * things worse: a single-candidate plan is returned untouched (a slim
+   * chance beats a guaranteed no-provider failure), and when EVERY
+   * candidate is quarantined the full list is kept (the soonest-expiring
+   * quarantine may lift mid-turn, and trying beats refusing).
+   */
+  private eligibleCandidates(
+    candidates: readonly GatewaySelection[],
+  ): readonly GatewaySelection[] {
+    if (!this.quarantineOn || candidates.length < 2) return candidates;
+    const live = candidates.filter(
+      (c) => !this.quarantine.isQuarantined(c.providerId, c.modelId),
+    );
+    return live.length > 0 ? live : candidates;
+  }
+
+  /**
+   * Record a candidate's outcome into the model quarantine.
+   *
+   * Success resets the model immediately. Failures count every outcome
+   * EXCEPT aborts (the caller cancelled — not the model's fault) and auth
+   * faults. Auth is a CONFIGURATION error: failover deliberately never
+   * papers over it (isRetryable is false for auth), and quarantining an
+   * auth-failing model would silently reroute around a dead key the
+   * owner must fix — the same rule the circuit breaker follows. Empty
+   * responses, quota, network, timeout and invalid payloads DO count:
+   * those are the model misbehaving. Breaker skips never reach here:
+   * nothing was sent, so nothing is recorded.
+   */
+  private noteModelOutcome(candidate: GatewaySelection, err?: AiError): void {
+    if (!this.quarantineOn) return;
+    if (err === undefined) {
+      this.quarantine.recordSuccess(candidate.providerId, candidate.modelId);
+      return;
+    }
+    if (err.kind === "aborted" || err.kind === "auth") return;
+    this.quarantine.recordFailure(candidate.providerId, candidate.modelId);
+  }
+
+  /**
+   * Annotate an exhausted failover chain's final error with how many
+   * candidates were actually tried, so the surfaced error can say
+   * "(tried N providers)" — a turn that silently cycled through three
+   * dead providers should never read like a single hiccup. Single-attempt
+   * failures are returned untouched.
+   */
+  private withAttemptCount(err: AiError, attempts: number): AiError {
+    if (attempts < 2 || err.attempts !== undefined) return err;
+    return new AiError(
+      err.kind,
+      `${err.message} (tried ${attempts} providers)`,
+      err.status,
+      err.retryAfterMs,
+      err.emptyResponse,
+      attempts,
+    );
+  }
+
   /**
    * Complete a request through the active provider and model.
    *
@@ -489,14 +586,17 @@ export class AiGateway implements AiProvider {
 
     const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
     const timeoutMs = this.attemptTimeout(req, plan);
+    // Per-model quarantine: broken models are skipped up front so the
+    // chain reaches a healthy candidate without burning attempts.
+    const candidates = this.eligibleCandidates(plan.candidates);
     // In-call retry is for the single-provider shape: with failover
     // candidates available, the candidate loop IS the redundancy mechanism,
     // and per-provider repeats would only multiply latency.
-    const allowRetry = plan.candidates.length === 1;
+    const allowRetry = candidates.length === 1;
     let lastError: AiError | undefined;
     let attemptsMade = 0;
 
-    for (const candidate of plan.candidates) {
+    for (const candidate of candidates) {
       // The attempt budget counts real sends, not list positions, so a
       // breaker-skipped candidate never consumes an attempt — failover order
       // is preserved among the candidates that are actually tried.
@@ -514,7 +614,9 @@ export class AiGateway implements AiProvider {
       // validation, or configuration failure must NOT be retried through
       // another provider: it would hide the misconfiguration and could
       // duplicate a non-idempotent request that already went out.
-      if (!isRetryable(result.error)) throw result.error;
+      if (!isRetryable(result.error)) {
+        throw this.withAttemptCount(result.error, attemptsMade);
+      }
     }
 
     // Every candidate was skipped by its circuit breaker: never hard-fail
@@ -522,7 +624,7 @@ export class AiGateway implements AiProvider {
     // gets one forced attempt — if the service recovered early the user
     // still gets an answer, and the outcome re-arms the breaker honestly.
     if (attemptsMade === 0 && maxAttempts >= 1) {
-      const soonest = this.soonestToRetry(plan.candidates);
+      const soonest = this.soonestToRetry(candidates);
       const result = await this.runCandidate(soonest, req, timeoutMs, {
         allowRetry: false,
         force: true,
@@ -533,7 +635,10 @@ export class AiGateway implements AiProvider {
       if (result.kind === "error") throw result.error;
     }
 
-    throw lastError ?? new AiError("unknown", "Unknown service error.");
+    throw this.withAttemptCount(
+      lastError ?? new AiError("unknown", "Unknown service error."),
+      attemptsMade,
+    );
   }
 
   /**
@@ -571,6 +676,7 @@ export class AiGateway implements AiProvider {
       try {
         const res = await this.send(candidate, req, timeoutMs);
         if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+        this.noteModelOutcome(candidate);
         return { kind: "success", res };
       } catch (err) {
         const mapped = this.mapError(err, "gateway");
@@ -586,11 +692,18 @@ export class AiGateway implements AiProvider {
           this.retryOn &&
           retriesUsed < GATEWAY_MAX_RETRIES &&
           isRetryEligible(mapped);
-        if (!canRetry) return { kind: "error", error: mapped };
+        if (!canRetry) {
+          // One quarantine record per candidate outcome, not per retry:
+          // the retries inside this loop are the same model struggling,
+          // and counting each would quarantine after a single bad turn.
+          this.noteModelOutcome(candidate, mapped);
+          return { kind: "error", error: mapped };
+        }
         const { delay, budget } = retryDelayMs(mapped, retriesUsed, this.random);
         // The total added wait is capped: a retry whose backoff would blow
         // the budget is not taken. Failing fast beats a slow maybe.
         if (waitedMs + delay > budget) {
+          this.noteModelOutcome(candidate, mapped);
           return { kind: "error", error: mapped };
         }
         await this.sleep(delay);
@@ -651,12 +764,14 @@ export class AiGateway implements AiProvider {
 
     const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
     const timeoutMs = this.attemptTimeout(req, plan);
+    // Per-model quarantine: same up-front skip as complete().
+    const candidates = this.eligibleCandidates(plan.candidates);
     // Same single-provider retry rule as complete().
-    const allowRetry = plan.candidates.length === 1;
+    const allowRetry = candidates.length === 1;
     let lastError: AiError | undefined;
     let attemptsMade = 0;
 
-    for (const candidate of plan.candidates) {
+    for (const candidate of candidates) {
       // Same budget discipline as complete(): breaker skips are free, real
       // candidate attempts are what the budget counts.
       if (attemptsMade >= maxAttempts) break;
@@ -673,13 +788,15 @@ export class AiGateway implements AiProvider {
       if (outcome.kind === "committed") throw outcome.error;
       lastError = outcome.error;
       // Same rule as complete(): only a retryable class advances.
-      if (!isRetryable(outcome.error)) throw outcome.error;
+      if (!isRetryable(outcome.error)) {
+        throw this.withAttemptCount(outcome.error, attemptsMade);
+      }
     }
 
     // All candidates breaker-skipped: same forced soonest-expiry attempt
     // as complete() — breaker state alone never hard-fails a request.
     if (attemptsMade === 0 && maxAttempts >= 1) {
-      const soonest = this.soonestToRetry(plan.candidates);
+      const soonest = this.soonestToRetry(candidates);
       const outcome = yield* this.runCandidateStream(soonest, req, timeoutMs, {
         allowRetry: false,
         force: true,
@@ -690,7 +807,10 @@ export class AiGateway implements AiProvider {
       }
     }
 
-    throw lastError ?? new AiError("unknown", "Unknown service error.");
+    throw this.withAttemptCount(
+      lastError ?? new AiError("unknown", "Unknown service error."),
+      attemptsMade,
+    );
   }
 
   /**
@@ -734,10 +854,19 @@ export class AiGateway implements AiProvider {
           yield ev;
         }
         if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+        this.noteModelOutcome(candidate);
         return { kind: "success" };
       } catch (err) {
         const mapped = this.mapError(err, "gateway");
-        if (yielded) return { kind: "committed", error: mapped };
+        // Committed normally means "the user saw something". An
+        // empty-response failure is the one exception: by construction no
+        // text was ever produced (usage events render nothing), so the
+        // stream is NOT committed and failover remains legal — treating
+        // it as committed would re-create the dead-end this error exists
+        // to fix.
+        if (yielded && !isEmptyResponseError(mapped)) {
+          return { kind: "committed", error: mapped };
+        }
         if (this.breakersOn) {
           if (tripsBreaker(mapped)) {
             this.breakers.recordFailure(candidate.providerId);
@@ -750,9 +879,13 @@ export class AiGateway implements AiProvider {
           this.retryOn &&
           retriesUsed < GATEWAY_MAX_RETRIES &&
           isRetryEligible(mapped);
-        if (!canRetry) return { kind: "error", error: mapped };
+        if (!canRetry) {
+          this.noteModelOutcome(candidate, mapped);
+          return { kind: "error", error: mapped };
+        }
         const { delay, budget } = retryDelayMs(mapped, retriesUsed, this.random);
         if (waitedMs + delay > budget) {
+          this.noteModelOutcome(candidate, mapped);
           return { kind: "error", error: mapped };
         }
         await this.sleep(delay);
@@ -790,12 +923,14 @@ export class AiGateway implements AiProvider {
     try {
       const res = await this.send(candidate, req, req.timeoutMs);
       if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+      this.noteModelOutcome(candidate);
       return { text: res.text, model: res.model };
     } catch (err) {
       const mapped = this.mapError(err, "gateway");
       if (this.breakersOn && tripsBreaker(mapped)) {
         this.breakers.recordFailure(candidate.providerId);
       }
+      this.noteModelOutcome(candidate, mapped);
       throw mapped;
     }
   }
@@ -1053,8 +1188,10 @@ export class AiGateway implements AiProvider {
         const mapped = this.mapError(err, "gateway");
         lastError = mapped;
         // Committed: the consumer already saw events, so no key rotation and
-        // no failover — the partial stream is the caller's to handle.
-        if (yielded) throw mapped;
+        // no failover — the partial stream is the caller's to handle. An
+        // empty-response failure is exempt for the same reason as in
+        // runCandidateStream: no text was ever produced by it.
+        if (yielded && !isEmptyResponseError(mapped)) throw mapped;
         if (mapped.kind === "auth") {
           this.coolDown(key.id);
           continue;
@@ -1279,8 +1416,16 @@ export class AiGateway implements AiProvider {
  * Retrying an auth failure against a different service would spend that
  * service's quota to paper over a local misconfiguration, and would also risk
  * duplicating a request the first provider may already have acted on.
+ * The ONE exception is the empty-response failure: it carries the
+ * invalid_response kind (the payload was unusable as an answer) but is
+ * marked via isEmptyResponseError, and another candidate CAN fix it —
+ * emptiness is a property of the model that answered, not of the request.
+ * It therefore advances the chain like a network failure does.
  */
 function isRetryable(err: AiError): boolean {
+  // Direct property read, not the isEmptyResponseError predicate: the
+  // predicate narrows `err` to `never` in the negative branch for tsc.
+  if (err.emptyResponse === true) return true;
   switch (err.kind) {
     case "network":
     case "timeout":

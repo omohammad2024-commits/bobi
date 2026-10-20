@@ -15,7 +15,7 @@
  * - Extra headers are exactly the ones the service documents; the key never
  *   appears in a URL, so a logged URL cannot expose it.
  */
-import { AiError } from "./provider";
+import { AiError, emptyResponseError } from "./provider";
 import type {
   ChatMessage,
   CompletionRequest,
@@ -252,10 +252,22 @@ export function parseResponse(
   res: Record<string, unknown>,
   requestedModel: string,
 ): CompletionResponse {
+  const text = extractText(res);
+  const extras = responseExtras(res);
+  if (text.trim().length === 0 && (extras.toolCalls ?? []).length === 0) {
+    // No text block and no tool_use block: a candidate failure, not a
+    // silent empty success. A thinking-only payload is still empty —
+    // chain-of-thought is never surfaced as the answer.
+    const content = res["content"];
+    const thinkingOnly =
+      Array.isArray(content) &&
+      content.some((b) => isRecord(b) && b["type"] === "thinking");
+    throw emptyResponseError(thinkingOnly ? "the response carried reasoning only" : undefined);
+  }
   return {
-    text: extractText(res),
+    text,
     model: extractModel(res, requestedModel),
-    ...responseExtras(res),
+    ...extras,
   };
 }
 

@@ -2375,24 +2375,33 @@ export function userFacingMessage(err: unknown, lang: Lang): string {
   // (the parity test forbids empty translations).
   if (err instanceof EngineError && err.kind === "superseded") return "";
   if (err instanceof EngineError) {
+    let message: string;
     switch (err.kind) {
-      case "empty_input": return t("media.empty", lang);
-      case "empty_response": return t("error.empty_response", lang);
-      case "auth": return t("error.auth", lang);
-      case "quota": return t("error.quota", lang);
-      case "network": return t("error.network", lang);
+      case "empty_input": message = t("media.empty", lang); break;
+      case "empty_response": message = t("error.empty_response", lang); break;
+      case "auth": message = t("error.auth", lang); break;
+      case "quota": message = t("error.quota", lang); break;
+      case "network": message = t("error.network", lang); break;
       case "timeout":
-      case "aborted": return t("error.timeout", lang);
-      case "overloaded": return t("error.overloaded", lang);
-      case "invalid_response": return t("error.invalid_response", lang);
+      case "aborted": message = t("error.timeout", lang); break;
+      case "overloaded": message = t("error.overloaded", lang); break;
+      case "invalid_response": message = t("error.invalid_response", lang); break;
       case "unknown":
         // When the provider's HTTP status is known, name it: a bare
         // "temporary error" hides causes the owner can act on (e.g. 402).
-        return err.status !== undefined
+        message = err.status !== undefined
           ? t("error.unknown_status", lang, { status: err.status })
           : t("error.unknown", lang);
-      default: return t("error.unknown", lang);
+        break;
+      default: message = t("error.unknown", lang);
     }
+    // Failover transparency: when the gateway exhausted several provider
+    // candidates before this error became final, say so — the owner sees
+    // the chain was actually tried, not a single silent failure.
+    if (err.attempts !== undefined && err.attempts >= 2) {
+      message += ` ${t("error.tried_providers", lang, { count: err.attempts })}`;
+    }
+    return message;
   }
   if (isToolError(err)) return t(`error.tool.${err.kind}`, lang);
   return t("error.unexpected", lang);
