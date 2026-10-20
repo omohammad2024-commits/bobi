@@ -81,8 +81,18 @@ class StubAdapters extends AdapterRegistry {
   constructor(
     private readonly err: unknown,
     private readonly remoteModels?: RemoteModel[],
+    private readonly listModelsCapable?: boolean,
   ) {
     super();
+  }
+  override describes(type: string) {
+    // The panel gates discovery on describes(), not on the created
+    // adapter. Unset (the default) keeps the real registry's answer;
+    // an explicit value pins the gate for the capability tests.
+    const base = super.describes(type);
+    return this.listModelsCapable === undefined
+      ? base
+      : { ...base, listModels: this.listModelsCapable };
   }
   override create(_type: string, _cfg: AdapterConfig): AIProviderAdapter {
     const err = this.err;
@@ -550,7 +560,12 @@ describe("model discovery", () => {
   });
 
   test("unsupported adapter gives a clear error, not silence", async () => {
-    const h = harness();
+    // Every shipped adapter type declares listModels now (anthropic
+    // included), so the no-capability gate is exercised through a
+    // registry that reports the capability absent.
+    const h = harness({
+      adapters: new StubAdapters(new Error("no complete"), undefined, false),
+    });
     const pid = providerWithKey(h, "anthropic");
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));

@@ -8,10 +8,12 @@
  */
 import { describe, expect, test } from "bun:test";
 import {
+  ADAPTER_TEMPLATES,
   isProviderPreset,
   providerPreset,
   PROVIDER_PRESETS,
 } from "../src/ai/adapter";
+import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { encode, decode } from "../src/groups/callbacks";
 
 describe("the preset list", () => {
@@ -46,6 +48,16 @@ describe("the preset list", () => {
     expect(isProviderPreset("not-a-service")).toBe(false);
   });
 
+  test("kimi (moonshot) is offered on the OpenAI-compatible wire (audit L8)", () => {
+    // The owner's acceptance list names Kimi; the preset was missing.
+    const p = providerPreset("kimi");
+    expect(p).toBeDefined();
+    expect(p?.label).toBe("Kimi (Moonshot AI)");
+    expect(p?.baseUrl).toBe("https://api.moonshot.ai/v1");
+    expect(p?.suggestedModel).toBe("kimi-k2.5");
+    expect(isProviderPreset("kimi")).toBe(true);
+  });
+
   test("opencode zen is offered at the owner's request", () => {
     // The owner explicitly asked for the OpenCode Zen preset (Oct 19, 2026).
     // It used to be excluded because the free tier may refuse requests from
@@ -55,6 +67,20 @@ describe("the preset list", () => {
     expect(p?.baseUrl).toBe("https://opencode.ai/zen/v1");
     expect(p?.note).toContain("403");
     expect(isProviderPreset("opencode")).toBe(true);
+  });
+});
+
+describe("template display metadata", () => {
+  test("template listModels never understates the registry's describes()", () => {
+    // Templates don't gate discovery (describes() does), but a template
+    // that omits a real capability teaches the surfaces to hide it —
+    // anthropic and nine_router both serve listModels (audit L8/G3).
+    const registry = new AdapterRegistry();
+    for (const t of ADAPTER_TEMPLATES) {
+      expect(t.capabilities.listModels ?? false).toBe(
+        registry.describes(t.type).listModels,
+      );
+    }
   });
 });
 

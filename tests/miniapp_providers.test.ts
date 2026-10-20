@@ -20,6 +20,13 @@ import type { ProbeResult } from "../src/ai/health";
 const BOT_TOKEN = "fixed-test-bot-token-123";
 const OWNER_ID = "777000";
 
+/** Registry whose describes() reports no listModels, for the gate test. */
+class NoListModelsRegistry extends AdapterRegistry {
+  override describes(type: string) {
+    return { ...super.describes(type), listModels: false };
+  }
+}
+
 function signInitData(fields: Record<string, string>): string {
   const pairs = Object.entries(fields)
     .map(([k, v]) => `${k}=${v}`)
@@ -289,7 +296,7 @@ describe("miniapp turn", () => {
 // -------------------------------------------------------------- providers ----
 
 describe("miniapp providers api", () => {
-  test("providers.presets returns the 8 presets plus all adapter templates (incl. native gemini/anthropic)", async () => {
+  test("providers.presets returns the 9 presets plus all adapter templates (incl. native gemini/anthropic)", async () => {
     const { deps } = makeDeps();
     const handler = createMiniAppHandler(deps);
     const { status, json } = await apiJson(handler, "providers.presets", {
@@ -297,8 +304,9 @@ describe("miniapp providers api", () => {
     });
     expect(status).toBe(200);
     const presets = json["presets"] as Record<string, unknown>[];
-    expect(presets.length).toBe(8);
+    expect(presets.length).toBe(9);
     expect(presets.map((p) => p["id"])).toContain("openrouter");
+    expect(presets.map((p) => p["id"])).toContain("kimi");
     const templates = json["templates"] as Record<string, unknown>[];
     expect(templates.map((t) => t["type"]).sort()).toEqual([
       "anthropic",
@@ -616,7 +624,11 @@ describe("miniapp models api", () => {
   });
 
   test("models.discover reports a clear error for adapters without listModels", async () => {
+    // Every shipped adapter type declares listModels now (nine_router
+    // included), so the gate is exercised through a registry that
+    // reports the capability absent.
     const { deps } = makeDeps();
+    deps.adapters = new NoListModelsRegistry();
     const handler = createMiniAppHandler(deps);
     const added = await apiJson(handler, "providers.add", {
       initData: initData(),

@@ -560,7 +560,7 @@ describe("AI admin workflow", () => {
     h.storage.close();
   });
 
-  test("a provider without an adapter model-list capability offers no discover button", async () => {
+  test("an anthropic provider offers the discover button (adapter declares listModels)", async () => {
     const h = harness();
     const p = h.providers.create({
       label: "P",
@@ -572,8 +572,9 @@ describe("AI admin workflow", () => {
     const c = fakeCtx({ id: OWNER_ID });
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_provider", providerId: p.data }));
     const labels = labelsOf(c.sent[0]?.keyboard);
-    // Anthropic's adapter does not declare listModels.
-    expect(labels).not.toContain("دریافت مدل‌ها");
+    // Anthropic's adapter declares listModels (GET /models), so the
+    // discover affordance is offered like every other adapter's.
+    expect(labels).toContain("Fetch models");
     h.storage.close();
   });
 });

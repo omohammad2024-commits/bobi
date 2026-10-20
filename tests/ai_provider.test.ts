@@ -36,9 +36,10 @@ describe("adapter registry", () => {
   test("declares capabilities per adapter, not uniformly", () => {
     expect(adapters.describes("openai_compatible").listModels).toBe(true);
     expect(adapters.describes("gemini").listModels).toBe(true);
-    // Anthropic's model list is not a simple GET for this adapter's needs.
-    expect(adapters.describes("anthropic").listModels).toBe(false);
-    expect(adapters.describes("nine_router").listModels).toBe(false);
+    // Anthropic lists models via GET /models; nine_router inherits
+    // listModels from the OpenAI-compatible adapter it maps to.
+    expect(adapters.describes("anthropic").listModels).toBe(true);
+    expect(adapters.describes("nine_router").listModels).toBe(true);
   });
 
   test("isAdapterType rejects unknown strings", () => {

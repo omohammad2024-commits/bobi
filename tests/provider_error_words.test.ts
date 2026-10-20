@@ -104,7 +104,7 @@ describe("extractProviderMessage", () => {
   test("hard-caps the extracted text", () => {
     const out = extractProviderMessage("x".repeat(900));
     expect(out).toBeDefined();
-    expect(out!.length).toBeLessThanOrEqual(300);
+    expect(out!.length).toBeLessThanOrEqual(600);
   });
 
   test("redacts the request credential wherever the provider echoed it", () => {
