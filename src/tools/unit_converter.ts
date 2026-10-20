@@ -12,6 +12,8 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const UNIT_CONVERTER_PERMISSION = "tools:unit_converter";
 
@@ -75,8 +77,28 @@ export interface UnitOutput {
   category: Category | "temperature";
 }
 
+export const unitConverterManifest: ToolManifest = defineManifest({
+  id: "unit_converter",
+  version: "1.0.0",
+  title: "Unit Converter",
+  description: "Convert length, mass, volume and temperature units.",
+  outputSummary: "The converted value with source/target units and category.",
+  category: "utils",
+  triggers: {
+    keywordPatterns: [
+      "تبدیل کن",
+      "تبدیل",
+      "convert",
+      "چند کیلو",
+      "چند گرم",
+    ],
+  },
+  costTier: "free",
+});
+
 export const unitConverterTool: Tool<UnitInput, UnitOutput> = {
   name: "unit_converter",
+  manifest: unitConverterManifest,
   description: "Convert length, mass, volume and temperature units.",
   enabled: true,
   permission: { requires: [UNIT_CONVERTER_PERMISSION] },

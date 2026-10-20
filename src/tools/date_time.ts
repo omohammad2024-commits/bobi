@@ -12,6 +12,8 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const DATE_TIME_PERMISSION = "tools:date_time";
 
@@ -45,8 +47,30 @@ export function isValidTimeZone(tz: string): boolean {
   }
 }
 
+export const dateTimeManifest: ToolManifest = defineManifest({
+  id: "date_time",
+  version: "1.0.0",
+  title: "Date & Time",
+  description: "Current date, time and weekday in a valid IANA timezone.",
+  outputSummary: "ISO instant, date, time and weekday in the requested timezone.",
+  category: "utils",
+  triggers: {
+    keywordPatterns: [
+      "ساعت چنده",
+      "الان ساعت چنده",
+      "تاریخ امروز",
+      "امروز چندمه",
+      "what(?:'s| is) the time",
+      "current time",
+      "what day is (it|today)",
+    ],
+  },
+  costTier: "free",
+});
+
 export const dateTimeTool: Tool<DateTimeInput, DateTimeOutput> = {
   name: "date_time",
+  manifest: dateTimeManifest,
   description: "Current date, time and weekday in a valid IANA timezone.",
   enabled: true,
   permission: { requires: [DATE_TIME_PERMISSION] },

@@ -15,6 +15,8 @@ import { UsageTracker } from "../ai/usage";
 import type { Storage } from "../storage/storage";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const USAGE_REPORT_PERMISSION = "tools:usage_report";
 
@@ -52,9 +54,22 @@ function enCost(usd: number): string {
   return `$${usd.toFixed(2)}`;
 }
 
+/** Plugin discovery manifest for `usage_report`. */
+export const usageReportManifest: ToolManifest = defineManifest({
+  id: "usage_report",
+  version: "1.0.0",
+  title: "Usage Report",
+  description: "Token usage and approximate cost report for today and the last 7 days, by model (owner only).",
+  outputSummary: "Returns the English token usage and cost report text.",
+  category: "system",
+  triggers: { keywordPatterns: ["گزارش مصرف", "میزان مصرف", "هزینه‌ها", "usage report", "token usage", "how much have i used"] },
+  costTier: "free",
+});
+
 export function createUsageReportTool(deps: UsageReportToolDeps): Tool<Record<string, never>, UsageReportOutput> {
   return {
     name: "usage_report",
+    manifest: usageReportManifest,
     description:
       "Token usage and approximate cost report for today and the last 7 days, by model (owner only).",
     enabled: true,

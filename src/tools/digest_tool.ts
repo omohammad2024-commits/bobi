@@ -29,6 +29,8 @@ import type { SearchHeadlinesFn } from "../digest/builder";
 import { buildDigest, formatDigest } from "../digest/builder";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const BUILD_DIGEST_PERMISSION = "tools:build_digest";
 
@@ -50,9 +52,22 @@ export interface DigestToolOutput {
   text: string;
 }
 
+/** Plugin discovery manifest for `build_digest`. */
+export const buildDigestManifest: ToolManifest = defineManifest({
+  id: "build_digest",
+  version: "1.0.0",
+  title: "Build Digest",
+  description: "Morning digest: today's work, reminders, memory suggestions, yesterday's usage, headlines and memory notes (owner only).",
+  outputSummary: "Returns the formatted morning digest text.",
+  category: "system",
+  triggers: { keywordPatterns: ["دایجست", "خلاصه صبح", "morning digest", "daily digest"] },
+  costTier: "cheap",
+});
+
 export function createDigestTool(deps: DigestToolDeps): Tool<Record<string, never>, DigestToolOutput> {
   return {
     name: "build_digest",
+    manifest: buildDigestManifest,
     description:
       "Morning digest: today's work, reminders, memory suggestions, yesterday's usage, headlines and memory notes (owner only).",
     enabled: true,

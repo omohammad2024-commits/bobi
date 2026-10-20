@@ -308,6 +308,10 @@ export interface MemoryRecord {
   updatedAt: number;
   /** Importance 1-5 (worker-2): retrieval prefers important memories. */
   importance: number;
+  /** Schema 22: how often retrieval has surfaced this memory. */
+  recallCount: number;
+  /** Schema 22: unix ms of the most recent recall, undefined if never. */
+  lastRecalledAt?: number;
 }
 
 /** The single-row web-search selection. */
@@ -617,6 +621,8 @@ CREATE TABLE IF NOT EXISTS memories (
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   importance INTEGER NOT NULL DEFAULT 3,
+  recall_count INTEGER NOT NULL DEFAULT 0,
+  last_recalled_at INTEGER,
   PRIMARY KEY (user_id, key)
 );
 CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(user_id, updated_at DESC);
@@ -806,7 +812,7 @@ CREATE TABLE IF NOT EXISTS custom_shortcuts (
  * Exported so a test can assert it by name rather than repeating the literal:
  * a hardcoded copy silently rots each time this is bumped.
  */
-export const SCHEMA_VERSION = 21;
+export const SCHEMA_VERSION = 22;
 
 /**
  * Hard cap on audit rows. Oldest rows are pruned once the count exceeds this,
@@ -910,6 +916,12 @@ export class Storage {
     // version gate on purpose: no SCHEMA_VERSION bump, so existing databases
     // are not pushed through the whole migration block again for this.
     this.addColumnIfMissing("memories", "importance", "INTEGER NOT NULL DEFAULT 3");
+    // Schema 22 (memory core): recall telemetry for memories. recall_count
+    // feeds consolidation's promotion rule; last_recalled_at lets staleness
+    // mean "not written AND not recalled". Same idempotent ALTER pattern;
+    // fresh databases get both columns from the SCHEMA block above.
+    this.addColumnIfMissing("memories", "recall_count", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing("memories", "last_recalled_at", "INTEGER");
   }
 
   /** Add a column when an older database does not have it yet. */
@@ -2223,8 +2235,11 @@ export class Storage {
       created_at: number;
       updated_at: number;
       importance: number;
+      recall_count: number;
+      last_recalled_at: number | null;
     }>(
-      `SELECT user_id, key, content, created_at, updated_at, importance
+      `SELECT user_id, key, content, created_at, updated_at, importance,
+              recall_count, last_recalled_at
          FROM memories WHERE user_id=? AND key=?`,
       [userId, key],
     )[0];
@@ -2246,12 +2261,63 @@ export class Storage {
       created_at: number;
       updated_at: number;
       importance: number;
+      recall_count: number;
+      last_recalled_at: number | null;
     }>(
-      `SELECT user_id, key, content, created_at, updated_at, importance
+      `SELECT user_id, key, content, created_at, updated_at, importance,
+              recall_count, last_recalled_at
          FROM memories WHERE user_id=?
         ORDER BY updated_at DESC, key ASC LIMIT ?`,
       [userId, safeLimit],
     ).map(toMemoryRecord);
+  }
+
+  /**
+   * Schema 22: record that retrieval surfaced these memories.
+   *
+   * Increments recall_count and stamps last_recalled_at per key — and
+   * deliberately does NOT touch updated_at: a recall is a read, and
+   * bumping the write clock would make every recalled memory look freshly
+   * written (defeating consolidation's staleness rule and the recency
+   * ranking). Scoped to the owner like every memory write. Returns how
+   * many rows actually matched.
+   *
+   * Addressing note: memories are keyed by (user_id, key) — there is no
+   * numeric id column — so callers pass the keys a recall returned.
+   */
+  bumpMemoryRecall(userId: string, keys: readonly string[]): number {
+    if (keys.length === 0) return 0;
+    const now = Date.now();
+    let bumped = 0;
+    for (const key of new Set(keys)) {
+      if (key.length === 0) continue;
+      bumped +=
+        this.exec(
+          `UPDATE memories
+              SET recall_count = recall_count + 1, last_recalled_at = ?
+            WHERE user_id = ? AND key = ?`,
+          [now, userId, key],
+        ).changes > 0
+          ? 1
+          : 0;
+    }
+    return bumped;
+  }
+
+  /**
+   * Schema 22: set one memory's importance (1-5, clamped) WITHOUT bumping
+   * updated_at — importance bookkeeping (consolidation promote/decay) is
+   * not a content edit and must not re-arm the row's write clock.
+   * Scoped to the owner. Returns whether a row matched.
+   */
+  setMemoryImportance(userId: string, key: string, importance: number): boolean {
+    const imp = Math.min(5, Math.max(1, Math.round(importance)));
+    return (
+      this.exec(
+        `UPDATE memories SET importance = ? WHERE user_id = ? AND key = ?`,
+        [imp, userId, key],
+      ).changes > 0
+    );
   }
 
   /**
@@ -3219,6 +3285,8 @@ function toMemoryRecord(r: {
   created_at: number;
   updated_at: number;
   importance: number;
+  recall_count: number;
+  last_recalled_at: number | null;
 }): MemoryRecord {
   return {
     userId: r.user_id,
@@ -3227,6 +3295,8 @@ function toMemoryRecord(r: {
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     importance: r.importance,
+    recallCount: r.recall_count,
+    ...(r.last_recalled_at !== null ? { lastRecalledAt: r.last_recalled_at } : {}),
   };
 }
 

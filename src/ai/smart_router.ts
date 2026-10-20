@@ -18,6 +18,9 @@
  *   (passed as a hint), then tie-break on (providerId, modelId).
  * - Kill switch: BOBI_SMART_ROUTING=0 ("false"/"no"/"off" too) disables
  *   routing entirely; the gateway then keeps its existing behavior.
+ * - Breaker-aware: when the gateway injects its circuit-breaker registry,
+ *   a provider whose breaker is open is never picked, and a half-open one
+ *   is heavily penalized (it may serve one probe, not the main traffic).
  * - The router never touches credentials or the network: it reads storage
  *   rows and the registry's static capability descriptions only.
  */
@@ -28,6 +31,7 @@ import type {
 } from "../storage/storage";
 import type { AdapterRegistry } from "./adapter_registry";
 import type { ChatMessage, CompletionRequest, ToolSpec } from "./provider";
+import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
 
 /** Env var that disables smart routing. Default: routing is ON. */
 export const SMART_ROUTING_ENV_VAR = "BOBI_SMART_ROUTING";
@@ -85,6 +89,12 @@ export interface CostHintTable {
   patterns: Array<{ match: string; cost: number }>;
 }
 
+/**
+ * A breaker whose provider is serving a half-open probe should be
+ * selectable — but never preferred. In score points.
+ */
+const CIRCUIT_HALF_OPEN_PENALTY = 500;
+
 /** Optional tuning for SmartRouter; everything has sane defaults. */
 export interface SmartRouterOptions {
   /**
@@ -93,6 +103,12 @@ export interface SmartRouterOptions {
    * win over default patterns on first-match ordering).
    */
   costHints?: Partial<CostHintTable>;
+  /**
+   * Breaker state source (the gateway passes its registry). Providers whose
+   * breaker is open are hard-excluded from routing; half-open providers are
+   * selectable but heavily penalized. Absent = no breaker awareness.
+   */
+  circuit?: CircuitStateReader;
 }
 
 /** What a request needs from a candidate, derived from its content. */
@@ -307,10 +323,12 @@ export class SmartRouter {
   private readonly storage: Storage;
   private readonly adapters: AdapterRegistry;
   private readonly costs: CostHintTable;
+  private readonly circuit: CircuitStateReader | undefined;
 
   constructor(storage: Storage, adapters: AdapterRegistry, opts: SmartRouterOptions = {}) {
     this.storage = storage;
     this.adapters = adapters;
+    this.circuit = opts.circuit;
     this.costs = {
       exact: { ...DEFAULT_COST_HINTS.exact, ...(opts.costHints?.exact ?? {}) },
       patterns: [
@@ -379,6 +397,11 @@ export class SmartRouter {
     const floor = tierMinimumRank(needs.tier);
     if (rank < floor) return undefined;
 
+    // Breaker gate: an open breaker means the gateway would skip this
+    // provider anyway, so routing to it only wastes the primary slot.
+    const circuitPenalty = this.circuitPenalty(provider.id);
+    if (circuitPenalty === undefined) return undefined;
+
     let score = 1000;
 
     // Cost dominates: pick the cheapest candidate that satisfies the tier.
@@ -388,10 +411,38 @@ export class SmartRouter {
     const bonus = this.healthBonus(provider.id);
     score += bonus;
 
+    // A half-open (or cooldown-expired open) provider may serve one probe;
+    // it must not beat a healthy candidate.
+    score -= circuitPenalty;
+
     // Among equals, prefer a streaming adapter (faster perceived latency).
     if (provider.adapter === "openai_compatible") score += 2;
 
     return score;
+  }
+
+  /**
+   * Breaker penalty for a provider: undefined = hard-excluded (open breaker
+   * whose cooldown has not elapsed), 0 = healthy, CIRCUIT_HALF_OPEN_PENALTY
+   * = may serve one probe. Never throws: a broken reader must not break
+   * routing, so the candidate is simply treated as healthy.
+   */
+  private circuitPenalty(providerId: number): number | undefined {
+    if (this.circuit === undefined) return 0;
+    let view: CircuitStateView;
+    try {
+      view = this.circuit.state(providerId);
+    } catch {
+      return 0;
+    }
+    if (view.state === "closed") return 0;
+    if (view.state === "half_open") return CIRCUIT_HALF_OPEN_PENALTY;
+    // An open breaker whose cooldown has elapsed will admit a probe on the
+    // next acquire, so it ranks like half-open; before that it is unusable.
+    if (view.nextRetryAt !== undefined && view.nextRetryAt <= Date.now()) {
+      return CIRCUIT_HALF_OPEN_PENALTY;
+    }
+    return undefined;
   }
 
   /**
@@ -447,6 +498,10 @@ export class SmartRouter {
         if (!KNOWN_ADAPTERS.has(provider.adapter)) continue;
         if (needs.needsTools && !supportsTools(provider.adapter)) continue;
         if (needs.needsDocuments && !this.adapters.describes(provider.adapter).documentInput) continue;
+        // Breaker gate applies here too: an open breaker is unusable even
+        // as a last resort. (The gateway's own all-open fallback covers
+        // the case where every candidate is open.)
+        if (this.circuitPenalty(provider.id) === undefined) continue;
         const rank = modelCapabilityRank(candidate.model.modelId);
         if (rank > bestRank) {
           bestRank = rank;
@@ -462,7 +517,8 @@ export class SmartRouter {
         score:
           1000 -
           costHint(candidate.model.modelId, this.costs) * 10 +
-          this.healthBonus(candidate.provider.id),
+          this.healthBonus(candidate.provider.id) -
+          (this.circuitPenalty(candidate.provider.id) ?? 0),
       }));
     }
 

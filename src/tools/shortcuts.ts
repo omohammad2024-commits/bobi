@@ -31,6 +31,8 @@ import { ToolError } from "./errors";
 import type { ToolRegistry } from "./registry";
 import type { CustomShortcut, Storage } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const SHORTCUT_ADD_PERMISSION = "tools:shortcut_add";
 export const SHORTCUT_LIST_PERMISSION = "tools:shortcut_list";
@@ -173,9 +175,29 @@ export interface ShortcutAddOutput {
   updated: boolean;
 }
 
+export const shortcutAddManifest: ToolManifest = defineManifest({
+  id: "shortcut_add",
+  version: "1.0.0",
+  title: "Add Shortcut",
+  description:
+    "Define or replace a custom command shortcut, e.g. /صبح → morning digest prompt. Owner only.",
+  outputSummary: "The shortcut name, kind and whether an existing one was updated.",
+  category: "system",
+  triggers: {
+    keywordPatterns: [
+      "شورتکات بساز",
+      "میانبر بساز",
+      "add (a )?shortcut",
+      "create (a )?shortcut",
+    ],
+  },
+  costTier: "free",
+});
+
 function createShortcutAddTool(deps: ShortcutToolDeps): Tool<ShortcutAddInput, ShortcutAddOutput> {
   return {
     name: "shortcut_add",
+    manifest: shortcutAddManifest,
     description:
       "Define or replace a custom command shortcut, e.g. /صبح → morning digest prompt. Owner only.",
     enabled: true,
@@ -274,11 +296,30 @@ export interface ShortcutListOutput {
   }>;
 }
 
+export const shortcutListManifest: ToolManifest = defineManifest({
+  id: "shortcut_list",
+  version: "1.0.0",
+  title: "List Shortcuts",
+  description: "List all custom command shortcuts. Owner only.",
+  outputSummary: "All custom shortcuts with name, kind, action preview and update time.",
+  category: "system",
+  triggers: {
+    keywordPatterns: [
+      "شورتکاتهام",
+      "میانبرهام",
+      "list (my )?shortcuts",
+      "show (my )?shortcuts",
+    ],
+  },
+  costTier: "free",
+});
+
 function createShortcutListTool(
   deps: ShortcutToolDeps,
 ): Tool<Record<string, never>, ShortcutListOutput> {
   return {
     name: "shortcut_list",
+    manifest: shortcutListManifest,
     description: "List all custom command shortcuts. Owner only.",
     enabled: true,
     ownerOnly: true,
@@ -312,11 +353,29 @@ export interface ShortcutDeleteOutput {
   deleted: boolean;
 }
 
+export const shortcutDeleteManifest: ToolManifest = defineManifest({
+  id: "shortcut_delete",
+  version: "1.0.0",
+  title: "Delete Shortcut",
+  description: "Delete a custom command shortcut by name. Owner only.",
+  outputSummary: "The shortcut name and whether it was deleted.",
+  category: "system",
+  triggers: {
+    keywordPatterns: [
+      "شورتکات.*(حذف|پاک)",
+      "delete (the|my) shortcut",
+      "remove (the|my) shortcut",
+    ],
+  },
+  costTier: "free",
+});
+
 function createShortcutDeleteTool(
   deps: ShortcutToolDeps,
 ): Tool<ShortcutDeleteInput, ShortcutDeleteOutput> {
   return {
     name: "shortcut_delete",
+    manifest: shortcutDeleteManifest,
     description: "Delete a custom command shortcut by name. Owner only.",
     enabled: true,
     ownerOnly: true,

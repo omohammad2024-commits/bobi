@@ -41,6 +41,8 @@ import type { Lang } from "../i18n/types";
 import { DEFAULT_TOOLS, ToolService } from "./service";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const DELEGATE_TOOL_NAME = "delegate";
 export const DELEGATE_PERMISSION = "tools:delegate";
@@ -118,9 +120,22 @@ export function createChildToolService(parent: ToolService): ToolService {
 }
 
 /** Build the delegate tool. Two-tier access: owner-only — the public chats, it never delegates. */
+/** Plugin discovery manifest for `delegate`. */
+export const delegateManifest: ToolManifest = defineManifest({
+  id: "delegate",
+  version: "1.0.0",
+  title: "Delegate Subtask",
+  description: "Hand an independent subtask to a child agent with limited tools and a time budget. Use it for side work that should not clutter the main conversation; returns a short summary.",
+  outputSummary: "Returns the child agent's short summary, or an error on failure.",
+  category: "agents",
+  timeoutMs: 60000,
+  costTier: "heavy",
+});
+
 export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, DelegateOutput> {
   return {
     name: DELEGATE_TOOL_NAME,
+    manifest: delegateManifest,
     description:
       "Hand an independent subtask to a child agent with limited tools and a time budget. " +
       "Use it for side work that should not clutter the main conversation; returns a short summary.",

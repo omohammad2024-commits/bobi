@@ -3,7 +3,9 @@
  * internal API used to run them.
  *
  * Design notes:
- * - Tools are registered here, in one list, so a new tool needs one line.
+ * - Built-in tools are listed in ONE barrel (plugins.ts), never imported
+ *   here by name: this module knows the plugin catalog exists, not what
+ *   is in it. Adding a tool = one line in plugins.ts.
  * - `runTool` requires an explicit actor (userId + permissions). The caller
  *   of this function is trusted server code; the tool input is not. This is
  *   the boundary the future Conversation Engine will call through, and it is
@@ -11,36 +13,28 @@
  *   comes out, nothing internal escapes.
  * - Nothing here logs tool input or output.
  */
-import { calculatorTool } from "./calculator";
-import { dateTimeTool } from "./date_time";
 import { ToolExecutor } from "./executor";
 import type { ExecuteRequest, ExecutorOptions, ToolFailureInfo } from "./executor";
-import { fetchUrlTool } from "./fetch_url";
 import { toJsonSchema } from "./json_schema";
+import { pluginTools, assertPluginCatalog, getPluginManifests } from "./plugins";
+import type { ToolManifest } from "./manifest";
 import type {
   ToolSearchDeps,
   VisibleToolInfo,
 } from "./tool_search";
-import { unitConverterTool } from "./unit_converter";
-import { textUtilitiesTool } from "./text_utilities";
 import { ToolRegistry } from "./registry";
 import type { Tool, ToolActor, ToolRunResult } from "./types";
 import type { ToolSpec } from "../ai/provider";
 
 /**
- * Tools that always ship, in menu order.
- *
- * `web_search` is absent on purpose: it needs a configured provider, so it is
- * built and registered at the call site only when one exists. Listing a tool
- * the model cannot use would spend context and invite a request that fails.
+ * Tools that always ship, in menu order — the statically constructible
+ * plugins from the barrel (plugins.ts). Factory tools and `web_search`
+ * (which needs a configured provider) are built by the composition
+ * root and registered via ToolServiceOptions.extraTools. Listing a
+ * tool the model cannot use would spend context and invite a request
+ * that fails.
  */
-export const DEFAULT_TOOLS: readonly Tool<unknown, unknown>[] = [
-  calculatorTool,
-  dateTimeTool,
-  textUtilitiesTool,
-  unitConverterTool,
-  fetchUrlTool,
-] as unknown as readonly Tool<unknown, unknown>[];
+export const DEFAULT_TOOLS: readonly Tool<unknown, unknown>[] = pluginTools;
 
 export interface ToolServiceOptions {
   /** Extra or replacement tools, registered after the defaults. */
@@ -92,6 +86,9 @@ export class ToolService {
   private activeToolsets: readonly string[] | undefined;
 
   constructor(opts: ToolServiceOptions = {}) {
+    // Boot assert: a malformed or duplicated plugin manifest fails the
+    // service construction (and therefore the boot), naming the file.
+    assertPluginCatalog();
     this.registry = new ToolRegistry();
     for (const tool of [...DEFAULT_TOOLS, ...(opts.extraTools ?? [])]) {
       this.registry.register(tool);
@@ -190,6 +187,19 @@ export class ToolService {
    * requested by mistake — and if it requests one anyway, the Executor refuses
    * it independently. This is an ergonomic filter, never the security boundary.
    */
+  /**
+   * The full built-in plugin manifest catalog — the router's hint space.
+   *
+   * Served through the service (not a bare barrel import) so modules that
+   * load before service.ts (conversation engine, router) can reach the
+   * catalog without creating a module-evaluation cycle: service.ts is the
+   * side of the cycle that must evaluate the barrel first, so every other
+   * consumer goes through it. A construction-time field, not a method:
+   * the service's method surface is pinned by test (nothing on it may
+   * hand out a tool), and a metadata snapshot does not belong there.
+   */
+  readonly pluginCatalog: readonly ToolManifest[] = getPluginManifests();
+
   toolSpecsFor(actor: ToolActor): ToolSpec[] {
     const specs: ToolSpec[] = [];
     for (const tool of this.registry.list()) {

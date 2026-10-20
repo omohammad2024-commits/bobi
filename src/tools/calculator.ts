@@ -7,6 +7,8 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const CALCULATOR_PERMISSION = "tools:calculator";
 
@@ -35,8 +37,27 @@ const OPS: Readonly<Record<CalcOp, (a: number, b: number) => number>> = {
 /** Guards against overflow to Infinity, which is not a usable number. */
 const MAGNITUDE_LIMIT = 1e308;
 
+export const calculatorManifest: ToolManifest = defineManifest({
+  id: "calculator",
+  version: "1.0.0",
+  title: "Calculator",
+  description: "Add, subtract, multiply or divide two numbers.",
+  outputSummary: "The computed result as a number.",
+  category: "utils",
+  triggers: {
+    keywordPatterns: [
+      "حساب کن",
+      "محاسبه کن",
+      "calculate",
+      "what is \\d+\\s*[+\\-*/x×]\\s*\\d+",
+    ],
+  },
+  costTier: "free",
+});
+
 export const calculatorTool: Tool<CalcInput, CalcOutput> = {
   name: "calculator",
+  manifest: calculatorManifest,
   description: "Add, subtract, multiply or divide two numbers.",
   enabled: true,
   permission: { requires: [CALCULATOR_PERMISSION] },

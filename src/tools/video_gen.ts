@@ -47,6 +47,8 @@ import { pinnedFetch, MAX_RESPONSE_BYTES } from "../ai/pinned_transport";
 import { AiError, base64Bytes } from "../ai/provider";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const GENERATE_VIDEO_PERMISSION = "tools:generate_video";
 
@@ -176,6 +178,18 @@ export function videoGenDepsFromEnv(env: NodeJS.ProcessEnv = process.env): {
  */
 const mediaBytes = new WeakMap<object, { base64: string; mediaType: string; name: string }>();
 
+/** Plugin discovery manifest for `generate_video`. */
+export const generateVideoManifest: ToolManifest = defineManifest({
+  id: "generate_video",
+  version: "1.0.0",
+  title: "Generate Video",
+  description: "Generate a short video from a text description. Use it when the user wants a video that does not exist; the user sees the result. Generation may take a few minutes.",
+  outputSummary: "Returns the generated video as an attachment, with prompt, size and duration.",
+  category: "media",
+  triggers: { keywordPatterns: ["ویدیو بساز", "ویدئو بساز", "کلیپ بساز", "generate (a )?video", "create (a )?video", "make (a )?video"] },
+  costTier: "heavy",
+});
+
 export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, VideoGenOutput> {
   if (!videoGenConfigured(deps.baseUrl)) {
     throw new ToolError("disabled", "Video generation is not configured.");
@@ -185,6 +199,7 @@ export function createVideoGenTool(deps: VideoGenDeps): Tool<VideoGenInput, Vide
 
   return {
     name: "generate_video",
+    manifest: generateVideoManifest,
     description:
       "Generate a short video from a text description. Use it when the user wants a video that does not exist; the user sees the result. Generation may take a few minutes.",
     enabled: true,

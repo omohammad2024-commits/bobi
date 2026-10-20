@@ -13,6 +13,7 @@ import type { ProviderSecretStore } from "./secret_store";
 import { AdapterRegistry } from "./adapter_registry";
 import type { Storage } from "../storage/storage";
 import type { ProviderService } from "./provider_service";
+import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
 
 export interface ProbeResult {
   ok: boolean;
@@ -20,6 +21,13 @@ export interface ProbeResult {
   message?: string;
   /** unix ms */
   checkedAt: number;
+  /**
+   * The gateway's circuit-breaker snapshot for this provider, when a
+   * breaker source was injected (the constructor's trailing optional).
+   * The probe never consults the breaker — its whole job is to test the
+   * provider directly — this is read-only observability for the panel.
+   */
+  circuit?: CircuitStateView;
 }
 
 export interface ProbeOptions {
@@ -37,6 +45,12 @@ export class ProviderHealthService {
     private readonly adapters: AdapterRegistry = new AdapterRegistry(),
     /** Overridable for tests that must not wait on a real deadline. */
     private readonly defaultTimeoutMs: number = DEFAULT_TIMEOUT_MS,
+    /**
+     * Optional breaker-state reader (the gateway's shared registry).
+     * Populates `circuit` on results for panel observability. Trailing
+     * optional, so existing constructions keep working unchanged.
+     */
+    private readonly circuitSource?: CircuitStateReader,
   ) {}
 
   /** Latest recorded outcome for a provider. */
@@ -47,7 +61,18 @@ export class ProviderHealthService {
       ok: h.ok,
       checkedAt: h.checkedAt,
       ...(h.message !== undefined ? { message: h.message } : {}),
+      ...this.circuitField(providerId),
     };
+  }
+
+  /** The breaker snapshot spread, when a source was injected. */
+  private circuitField(providerId: number): { circuit?: CircuitStateView } {
+    if (this.circuitSource === undefined) return {};
+    try {
+      return { circuit: this.circuitSource.state(providerId) };
+    } catch {
+      return {};
+    }
   }
 
   /**
@@ -133,26 +158,26 @@ export class ProviderHealthService {
   ): Promise<ProbeResult> {
     const provider = this.storage.getProvider(providerId);
     if (!provider) {
-      return this.result(false, "Provider not found.");
+      return this.result(providerId, false, "Provider not found.");
     }
     if (!provider.enabled) {
-      return this.result(false, "Provider is disabled.");
+      return this.result(providerId, false, "Provider is disabled.");
     }
     if (
       this.storage.listModels(providerId).every((m) => m.modelId !== modelId)
     ) {
-      return this.result(false, "Model not found for this provider.");
+      return this.result(providerId, false, "Model not found for this provider.");
     }
 
     let apiKey: string | undefined;
     try {
       apiKey = this.providers.credentialFor(providerId);
     } catch {
-      return this.result(false, "Credential could not be decrypted.");
+      return this.result(providerId, false, "Credential could not be decrypted.");
     }
 
     if (apiKey === undefined || apiKey.length === 0) {
-      return this.result(false, "Credential is not set.");
+      return this.result(providerId, false, "Credential is not set.");
     }
 
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
@@ -177,9 +202,9 @@ export class ProviderHealthService {
         signal: neverAborted,
       });
 
-      return this.result(true, "Connection succeeded.");
+      return this.result(providerId, true, "Connection succeeded.");
     } catch (err) {
-      return this.result(false, probeMessage(err));
+      return this.result(providerId, false, probeMessage(err));
     }
   }
 
@@ -192,7 +217,7 @@ export class ProviderHealthService {
   private record(providerId: number, ok: boolean, message: string): ProbeResult {
     const checkedAt = Date.now();
     this.storage.setProviderHealth({ providerId, ok, message });
-    return { ok, message, checkedAt };
+    return { ok, message, checkedAt, ...this.circuitField(providerId) };
   }
 
   /**
@@ -200,8 +225,8 @@ export class ProviderHealthService {
    * this deliberately skips setProviderHealth — per-model tests must not
    * overwrite the provider-level health row.
    */
-  private result(ok: boolean, message: string): ProbeResult {
-    return { ok, message, checkedAt: Date.now() };
+  private result(providerId: number, ok: boolean, message: string): ProbeResult {
+    return { ok, message, checkedAt: Date.now(), ...this.circuitField(providerId) };
   }
 }
 

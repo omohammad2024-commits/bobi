@@ -21,6 +21,19 @@
  *     minutes and moves to the next key; network/timeout moves on without
  *     cooldown; anything else (notably invalid_response) is never retried.
  *
+ *  6. Circuit breaker (per provider, in-memory). Transient failures
+ *     (quota/429, network/5xx, timeout) count toward tripping a provider's
+ *     breaker; after N consecutive failures the provider is skipped for a
+ *     cooldown that doubles per opening. A half-open breaker admits one
+ *     probe call. If every candidate is skipped, the breaker whose cooldown
+ *     expires soonest still gets one forced attempt — the gateway never
+ *     hard-fails solely on breaker state. Auth/validation/abort errors never
+ *     trip a breaker: they are config, not health.
+ *  7. Bounded in-call retry. When no failover candidate is available (a
+ *     single-candidate plan), a transient failure is retried up to 2 extra
+ *     times with jittered exponential backoff, capped at 3s of added wait.
+ *     Kill switch: BOBI_GATEWAY_RETRY=0.
+ *
  * `name` is "ai" so the engine's isFake check stays accurate: the gateway is a
  * real provider, unlike the offline FakeProvider used in tests.
  */
@@ -38,6 +51,67 @@ import { CredentialPoolStore } from "./secret_store";
 import type { Storage } from "../storage/storage";
 // --- smart routing (worker-1) ---
 import { SmartRouter } from "./smart_router";
+// --- circuit breaker (reliability core) ---
+import {
+  CircuitBreakerRegistry,
+  circuitBreakerEnabled,
+  type CircuitStateView,
+  type CircuitTransition,
+} from "./circuit_breaker";
+
+/** Env var that disables in-call retry. Default: retry is ON. */
+export const GATEWAY_RETRY_ENV_VAR = "BOBI_GATEWAY_RETRY";
+
+/** Added wait per retry: 400ms, then 800ms, ±25% jitter. */
+const GATEWAY_RETRY_BASE_MS = 400;
+/** Extra attempts per send() when no failover candidate is available. */
+const GATEWAY_MAX_RETRIES = 2;
+/** Total added retry wait is capped here — the owner's latency bar is strict. */
+const GATEWAY_RETRY_BUDGET_MS = 3000;
+
+export function gatewayRetryEnabled(): boolean {
+  const raw = process.env[GATEWAY_RETRY_ENV_VAR];
+  if (raw === undefined) return true;
+  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+}
+
+/**
+ * Jittered exponential backoff: base * 2^retryIndex, ±25%.
+ * random() is injected so tests stay deterministic.
+ */
+function backoffDelayMs(retryIndex: number, random: () => number): number {
+  const base = GATEWAY_RETRY_BASE_MS * 2 ** retryIndex;
+  const jitter = 0.75 + random() * 0.5;
+  return Math.round(base * jitter);
+}
+
+/**
+ * Failures the circuit breaker counts: transient, provider-side faults the
+ * provider itself (not the config) is responsible for. 429 quota, network
+ * and timeout failures mean the service is down or saturated; auth,
+ * validation, abort and unknown failures mean something else — the breaker
+ * must not punish the provider for those. This is also the retry-eligibility
+ * set for in-call retry.
+ */
+function isTransientFailure(err: AiError): boolean {
+  switch (err.kind) {
+    case "quota":
+    case "network":
+    case "timeout":
+      return true;
+    case "auth":
+    case "invalid_response":
+    case "aborted":
+    case "unknown":
+      return false;
+  }
+}
+
+/** Alias that reads better at the retry call sites. */
+const isRetryEligible = isTransientFailure;
+
+/** Alias that reads better at the breaker call sites. */
+const tripsBreaker = isTransientFailure;
 
 /**
  * What the usage listener receives for one attempt that returned usage.
@@ -78,6 +152,24 @@ export interface GatewayOptions {
    * Never throws: invoked inside try/catch.
    */
   onUnknownError?: (err: unknown, where: string) => void;
+  /**
+   * Shared circuit-breaker registry. The gateway creates its own when this
+   * is omitted; pass one in to share breaker state with other readers (the
+   * health service's probe surface, the panel). When a registry is
+   * supplied, `onCircuitTransition` is ignored — the registry's owner
+   * configures its transition hook.
+   */
+  breakers?: CircuitBreakerRegistry;
+  /**
+   * Optional transition hook for the gateway's own registry. Default:
+   * logged at info level (provider id + states only, never key material).
+   * Never throws: the registry invokes it inside try/catch.
+   */
+  onCircuitTransition?: (t: CircuitTransition) => void;
+  /** Injectable backoff sleep, for deterministic tests. */
+  sleep?: (ms: number) => Promise<void>;
+  /** Injectable randomness for backoff jitter, for deterministic tests. */
+  random?: () => number;
 }
 
 /** The provider/model pair a request actually used. Never includes a key. */
@@ -117,6 +209,15 @@ export class AiGateway implements AiProvider {
   private readonly onUsage: GatewayOptions["onUsage"];
   private readonly onUnknownError: GatewayOptions["onUnknownError"];
 
+  /** Per-provider circuit breakers (reliability core). */
+  private readonly breakers: CircuitBreakerRegistry;
+  /** Kill switch BOBI_CIRCUIT_BREAKER=0: breakers are never consulted. */
+  private readonly breakersOn: boolean;
+  /** Kill switch BOBI_GATEWAY_RETRY=0: no in-call retry. */
+  private readonly retryOn: boolean;
+  private readonly sleep: (ms: number) => Promise<void>;
+  private readonly random: () => number;
+
   /**
    * Cooldowns for keys that failed with auth, keyed by "p:<providerId>" for
    * the primary credential and "pool:<entryId>" for pool keys, mapping to the
@@ -146,6 +247,25 @@ export class AiGateway implements AiProvider {
     this.pool = new CredentialPoolStore(opts.storage, opts.secrets);
     this.onUsage = opts.onUsage;
     this.onUnknownError = opts.onUnknownError;
+    this.breakersOn = circuitBreakerEnabled();
+    this.retryOn = gatewayRetryEnabled();
+    this.sleep =
+      opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+    this.random = opts.random ?? Math.random;
+    this.breakers =
+      opts.breakers ??
+      new CircuitBreakerRegistry({
+        now: this.now,
+        onTransition:
+          opts.onCircuitTransition ??
+          ((t: CircuitTransition) => {
+            // Info level: provider ids and state names only — no key
+            // material, no addresses, no request content.
+            console.info(
+              `[circuit-breaker] provider ${t.providerId}: ${t.from} -> ${t.to}`,
+            );
+          }),
+      });
   }
 
   /**
@@ -301,6 +421,16 @@ export class AiGateway implements AiProvider {
     return this.adapters.describes(sel.adapterType).documentInput;
   }
 
+  /** Circuit-breaker snapshot for one provider (observability surface). */
+  circuitState(providerId: number): CircuitStateView {
+    return this.breakers.state(providerId);
+  }
+
+  /** Circuit-breaker snapshots for every provider seen this process. */
+  circuitStates(): Array<{ providerId: number } & CircuitStateView> {
+    return this.breakers.states();
+  }
+
   /**
    * Complete a request through the active provider and model.
    *
@@ -320,29 +450,137 @@ export class AiGateway implements AiProvider {
     }
 
     const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
+    const timeoutMs = this.attemptTimeout(req, plan);
+    // In-call retry is for the single-provider shape: with failover
+    // candidates available, the candidate loop IS the redundancy mechanism,
+    // and per-provider repeats would only multiply latency.
+    const allowRetry = plan.candidates.length === 1;
     let lastError: AiError | undefined;
+    let attemptsMade = 0;
 
     for (const candidate of plan.candidates) {
-      // The attempt budget is per request, across all candidates, so a long
-      // candidate list can never turn into an unbounded loop.
-      if (usedAttempts(plan.candidates, candidate) >= maxAttempts) break;
+      // The attempt budget counts real sends, not list positions, so a
+      // breaker-skipped candidate never consumes an attempt — failover order
+      // is preserved among the candidates that are actually tried.
+      if (attemptsMade >= maxAttempts) break;
 
-      try {
-        const res = await this.send(candidate, req, this.attemptTimeout(req, plan));
+      const result = await this.runCandidate(candidate, req, timeoutMs, { allowRetry });
+      if (result.kind === "skipped") continue;
+      attemptsMade += 1;
+      if (result.kind === "success") {
         // Report the model that actually answered, as the engine expects.
-        return { text: res.text, model: res.model };
-      } catch (err) {
-        const mapped = this.mapError(err, "gateway");
-        lastError = mapped;
-        // Only a retryable class advances to the next candidate. An auth,
-        // validation, or configuration failure must NOT be retried through
-        // another provider: it would hide the misconfiguration and could
-        // duplicate a non-idempotent request that already went out.
-        if (!isRetryable(mapped)) throw mapped;
+        return { text: result.res.text, model: result.res.model };
       }
+      lastError = result.error;
+      // Only a retryable class advances to the next candidate. An auth,
+      // validation, or configuration failure must NOT be retried through
+      // another provider: it would hide the misconfiguration and could
+      // duplicate a non-idempotent request that already went out.
+      if (!isRetryable(result.error)) throw result.error;
+    }
+
+    // Every candidate was skipped by its circuit breaker: never hard-fail
+    // on breaker state alone. The breaker whose cooldown expires soonest
+    // gets one forced attempt — if the service recovered early the user
+    // still gets an answer, and the outcome re-arms the breaker honestly.
+    if (attemptsMade === 0 && maxAttempts >= 1) {
+      const soonest = this.soonestToRetry(plan.candidates);
+      const result = await this.runCandidate(soonest, req, timeoutMs, {
+        allowRetry: false,
+        force: true,
+      });
+      if (result.kind === "success") {
+        return { text: result.res.text, model: result.res.model };
+      }
+      if (result.kind === "error") throw result.error;
     }
 
     throw lastError ?? new AiError("unknown", "Unknown service error.");
+  }
+
+  /**
+   * Run one candidate under its circuit breaker, with the bounded in-call
+   * retry for the single-provider shape.
+   *
+   * Breaker bookkeeping is per real send(): a success closes the breaker; a
+   * transient failure (quota/network/timeout) counts toward tripping it;
+   * any other error leaves the breaker untouched (a half-open probe slot
+   * held by such an error is released unrecorded, so the next request may
+   * probe again). `force` bypasses the breaker CHECK (the all-open
+   * fallback) but still records the outcome: a failed forced attempt
+   * re-opens with a doubled cooldown, a successful one closes the breaker.
+   */
+  private async runCandidate(
+    candidate: GatewaySelection,
+    req: CompletionRequest,
+    timeoutMs: number,
+    opts: { allowRetry: boolean; force?: boolean },
+  ): Promise<
+    | { kind: "success"; res: CompletionResponse }
+    | { kind: "error"; error: AiError }
+    | { kind: "skipped" }
+  > {
+    let probe = false;
+    if (this.breakersOn && opts.force !== true) {
+      const slot = this.breakers.tryAcquire(candidate.providerId);
+      if (slot === undefined) return { kind: "skipped" };
+      probe = slot === "probe";
+    }
+
+    let retriesUsed = 0;
+    let waitedMs = 0;
+    for (;;) {
+      try {
+        const res = await this.send(candidate, req, timeoutMs);
+        if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+        return { kind: "success", res };
+      } catch (err) {
+        const mapped = this.mapError(err, "gateway");
+        if (this.breakersOn) {
+          if (tripsBreaker(mapped)) {
+            this.breakers.recordFailure(candidate.providerId);
+          } else if (probe) {
+            this.breakers.releaseProbe(candidate.providerId);
+          }
+        }
+        const canRetry =
+          opts.allowRetry &&
+          this.retryOn &&
+          retriesUsed < GATEWAY_MAX_RETRIES &&
+          isRetryEligible(mapped);
+        if (!canRetry) return { kind: "error", error: mapped };
+        const delay = backoffDelayMs(retriesUsed, this.random);
+        // The total added wait is capped: a retry whose backoff would blow
+        // the budget is not taken. Failing fast beats a slow maybe.
+        if (waitedMs + delay > GATEWAY_RETRY_BUDGET_MS) {
+          return { kind: "error", error: mapped };
+        }
+        await this.sleep(delay);
+        waitedMs += delay;
+        retriesUsed += 1;
+        if (req.signal.aborted) {
+          return { kind: "error", error: new AiError("aborted", "Request was cancelled.") };
+        }
+      }
+    }
+  }
+
+  /** The candidate whose open breaker expires soonest (ties: plan order). */
+  private soonestToRetry(
+    candidates: readonly GatewaySelection[],
+  ): GatewaySelection {
+    let best = candidates[0]!;
+    let bestAt =
+      this.breakers.state(best.providerId).nextRetryAt ?? Number.POSITIVE_INFINITY;
+    for (const c of candidates.slice(1)) {
+      const at =
+        this.breakers.state(c.providerId).nextRetryAt ?? Number.POSITIVE_INFINITY;
+      if (at < bestAt) {
+        best = c;
+        bestAt = at;
+      }
+    }
+    return best;
   }
 
   /**
@@ -374,31 +612,119 @@ export class AiGateway implements AiProvider {
     }
 
     const maxAttempts = plan.failover.enabled ? plan.failover.maxAttempts : 1;
+    const timeoutMs = this.attemptTimeout(req, plan);
+    // Same single-provider retry rule as complete().
+    const allowRetry = plan.candidates.length === 1;
     let lastError: AiError | undefined;
+    let attemptsMade = 0;
 
     for (const candidate of plan.candidates) {
-      if (usedAttempts(plan.candidates, candidate) >= maxAttempts) break;
+      // Same budget discipline as complete(): breaker skips are free, real
+      // candidate attempts are what the budget counts.
+      if (attemptsMade >= maxAttempts) break;
 
-      let yielded = false;
-      try {
-        for await (const ev of this.sendStream(candidate, req, this.attemptTimeout(req, plan))) {
-          yielded = true;
-          yield ev;
-        }
-        return;
-      } catch (err) {
-        const mapped = this.mapError(err, "gateway");
-        lastError = mapped;
-        // Committed: the consumer already saw events, so failing over to
-        // another candidate would DUPLICATE text the user already read.
-        // The partial stream is the caller's to handle.
-        if (yielded) throw mapped;
-        // Same rule as complete(): only a retryable class advances.
-        if (!isRetryable(mapped)) throw mapped;
+      const outcome = yield* this.runCandidateStream(candidate, req, timeoutMs, {
+        allowRetry,
+      });
+      if (outcome.kind === "skipped") continue;
+      attemptsMade += 1;
+      if (outcome.kind === "success") return;
+      // Committed: the consumer already saw events, so failing over to
+      // another candidate would DUPLICATE text the user already read.
+      // The partial stream is the caller's to handle.
+      if (outcome.kind === "committed") throw outcome.error;
+      lastError = outcome.error;
+      // Same rule as complete(): only a retryable class advances.
+      if (!isRetryable(outcome.error)) throw outcome.error;
+    }
+
+    // All candidates breaker-skipped: same forced soonest-expiry attempt
+    // as complete() — breaker state alone never hard-fails a request.
+    if (attemptsMade === 0 && maxAttempts >= 1) {
+      const soonest = this.soonestToRetry(plan.candidates);
+      const outcome = yield* this.runCandidateStream(soonest, req, timeoutMs, {
+        allowRetry: false,
+        force: true,
+      });
+      if (outcome.kind === "success") return;
+      if (outcome.kind === "error" || outcome.kind === "committed") {
+        throw outcome.error;
       }
     }
 
     throw lastError ?? new AiError("unknown", "Unknown service error.");
+  }
+
+  /**
+   * Stream one candidate under its circuit breaker, with the bounded
+   * in-call retry for the single-provider shape.
+   *
+   * The retry only re-runs a stream that failed BEFORE its first event —
+   * retrying after partial text would duplicate what the user already
+   * saw. A failure after the first event is reported as "committed" and
+   * is NOT breaker evidence either: the provider answered, then the pipe
+   * broke mid-answer; the pre-existing failover rule (propagate as-is)
+   * is unchanged.
+   */
+  private async *runCandidateStream(
+    candidate: GatewaySelection,
+    req: CompletionRequest,
+    timeoutMs: number,
+    opts: { allowRetry: boolean; force?: boolean },
+  ): AsyncGenerator<
+    StreamEvent,
+    | { kind: "success" }
+    | { kind: "skipped" }
+    | { kind: "error"; error: AiError }
+    | { kind: "committed"; error: AiError },
+    undefined
+  > {
+    let probe = false;
+    if (this.breakersOn && opts.force !== true) {
+      const slot = this.breakers.tryAcquire(candidate.providerId);
+      if (slot === undefined) return { kind: "skipped" };
+      probe = slot === "probe";
+    }
+
+    let retriesUsed = 0;
+    let waitedMs = 0;
+    for (;;) {
+      let yielded = false;
+      try {
+        for await (const ev of this.sendStream(candidate, req, timeoutMs)) {
+          yielded = true;
+          yield ev;
+        }
+        if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+        return { kind: "success" };
+      } catch (err) {
+        const mapped = this.mapError(err, "gateway");
+        if (yielded) return { kind: "committed", error: mapped };
+        if (this.breakersOn) {
+          if (tripsBreaker(mapped)) {
+            this.breakers.recordFailure(candidate.providerId);
+          } else if (probe) {
+            this.breakers.releaseProbe(candidate.providerId);
+          }
+        }
+        const canRetry =
+          opts.allowRetry &&
+          this.retryOn &&
+          retriesUsed < GATEWAY_MAX_RETRIES &&
+          isRetryEligible(mapped);
+        if (!canRetry) return { kind: "error", error: mapped };
+        const delay = backoffDelayMs(retriesUsed, this.random);
+        if (waitedMs + delay > GATEWAY_RETRY_BUDGET_MS) {
+          return { kind: "error", error: mapped };
+        }
+        await this.sleep(delay);
+        waitedMs += delay;
+        retriesUsed += 1;
+        if (req.signal.aborted) {
+          return { kind: "error", error: new AiError("aborted", "Request was cancelled.") };
+        }
+      }
+    }
   }
 
   /**
@@ -420,8 +746,20 @@ export class AiGateway implements AiProvider {
     if (!candidate) {
       throw new AiError("invalid_response", "This model is not configured or is disabled.");
     }
-    const res = await this.send(candidate, req, req.timeoutMs);
-    return { text: res.text, model: res.model };
+    // An explicit model request is the caller's demand for THIS provider:
+    // the breaker never vetoes it, but outcomes are recorded so the
+    // breaker's picture of provider health stays honest.
+    try {
+      const res = await this.send(candidate, req, req.timeoutMs);
+      if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
+      return { text: res.text, model: res.model };
+    } catch (err) {
+      const mapped = this.mapError(err, "gateway");
+      if (this.breakersOn && tripsBreaker(mapped)) {
+        this.breakers.recordFailure(candidate.providerId);
+      }
+      throw mapped;
+    }
   }
 
   /**
@@ -516,7 +854,14 @@ export class AiGateway implements AiProvider {
   private routedPrimary(req: CompletionRequest | undefined): GatewaySelection | undefined {
     if (req === undefined) return undefined;
     try {
-      const router = new SmartRouter(this.storage, this.adapters);
+      const router = new SmartRouter(
+        this.storage,
+        this.adapters,
+        // --- reliability core: the router hard-excludes open breakers and
+        // penalizes half-open ones when scoring. With the feature off the
+        // router sees no circuit state and scores exactly as before.
+        this.breakersOn ? { circuit: this.breakers } : {},
+      );
       if (!router.shouldRoute()) return undefined;
       // The owner's active selection is the tie-break preference: the router
       // deviates from it only when another candidate scores strictly better.
@@ -869,17 +1214,6 @@ export class AiGateway implements AiProvider {
       // Nothing references the key after this call; it goes out of scope here.
     }
   }
-}
-
-/**
- * How many attempts precede this candidate in the plan.
- * Used to enforce the bounded attempt budget without counting again.
- */
-function usedAttempts(
-  candidates: readonly GatewaySelection[],
-  current: GatewaySelection,
-): number {
-  return candidates.indexOf(current);
 }
 
 /**

@@ -29,6 +29,7 @@ import { ProviderSecretStore } from "./ai/secret_store";
 import { ModelService, ProviderService } from "./ai/provider_service";
 import { ProviderHealthService } from "./ai/health";
 import { AiGateway } from "./ai/gateway";
+import { CircuitBreakerRegistry } from "./ai/circuit_breaker";
 import { SearchProviderSecretStore } from "./search/secret_store";
 import { createDelegateTool } from "./tools/delegate";
 import { createConsultModelsTool } from "./tools/consult_models";
@@ -42,6 +43,9 @@ import { createVideoGenTool, videoGenConfigured, videoGenDepsFromEnv } from "./t
 import { createMemoryTools } from "./tools/memory";
 import { createHistoryTools } from "./tools/history";
 import { resolveMemoryProvider } from "./memory/factory";
+import { isEpisodesEnabled, latestEpisode, scanEndedConversations } from "./memory/episodes";
+import { consolidateMemories } from "./memory/consolidate";
+import { recallFor } from "./memory/proactive_recall";
 import {
   MemoryVectorStore,
   ProviderEmbedder,
@@ -562,11 +566,29 @@ async function main(): Promise<void> {
   // provider embedder needs it too); reused here for the provider services.
   const providerSvc = new ProviderService(storage, secrets, adapters);
   const modelSvc = new ModelService(storage);
-  const healthSvc = new ProviderHealthService(storage, providerSvc, secrets, adapters);
+  // Reliability core: ONE shared breaker registry. The gateway consults it
+  // when choosing candidates; the health service only READS it (its probe
+  // results gain a `circuit` field for panel observability — probes never
+  // consult the breaker, a probe's whole job is to test the provider
+  // directly). Sharing one instance is what makes "gateway skipped the
+  // provider" visible on the panel instead of a mystery.
+  const breakers = new CircuitBreakerRegistry({
+    onTransition: (tr) =>
+      log.info(`[circuit-breaker] provider ${tr.providerId}: ${tr.from} -> ${tr.to}`),
+  });
+  const healthSvc = new ProviderHealthService(
+    storage,
+    providerSvc,
+    secrets,
+    adapters,
+    undefined,
+    breakers,
+  );
   const gateway = new AiGateway({
     storage,
     adapters,
     secrets,
+    breakers,
     // Diagnostic: an error that surfaces to the user as a bare "unknown"
     // hides its cause from the user message; log the original here so the
     // real failure is debuggable.
@@ -738,6 +760,9 @@ async function main(): Promise<void> {
     tools,
     skills,
     contextFiles,
+    // Context-core events (budget enforcement, compaction, summary folds)
+    // log through the app logger so the configured level applies.
+    log,
     // Per-run token/cost accounting → usage_ledger (diagnostic, never throws).
     onRunUsage: recordRunUsage,
     // Phase E2: lifecycle hooks. `agent:start` fires before each agent loop,
@@ -745,6 +770,29 @@ async function main(): Promise<void> {
     hooks: hookRunner,
     timezone: config.timezone,
     memoryCount: (userId) => storage.countMemories(userId),
+    // Core upgrade (memory core): prompt memory for the turn — the newest
+    // episode summary plus proactive recall for the incoming message.
+    // Each half degrades independently (a failure yields no block, never
+    // a broken turn); recallFor honours BOBI_MEMORY_PROACTIVE_RECALL=0
+    // and the score floor itself, episodes check their own switch here.
+    memoryPrompt: async (userId, userText) => {
+      const [episode, recalled] = await Promise.all([
+        isEpisodesEnabled()
+          ? latestEpisode(memoryProvider, userId).catch(() => undefined)
+          : Promise.resolve(undefined),
+        recallFor(
+          { provider: memoryProvider, semantic: semanticMemory },
+          userId,
+          userText,
+        ).catch(() => []),
+      ]);
+      return {
+        ...(episode !== undefined ? { episode: episode.content } : {}),
+        ...(recalled.length > 0
+          ? { recalled: recalled.map((r) => r.content) }
+          : {}),
+      };
+    },
     // Phase G1: per-user personality skin, validated against the built-in
     // list — only a canonical skin name ever reaches the prompt.
     personalityFor: (userId: string) =>
@@ -1248,6 +1296,10 @@ async function main(): Promise<void> {
   // EventStore rides on the same MemoryProvider, so per-user scoping is
   // free and public users get nothing new.
   const eventStore = new EventStore(resolveMemoryProvider(storage));
+  // Core upgrade (memory core): the maintenance pass inside the sweep
+  // below is throttled to this cadence (see the sweep for why).
+  const MEMORY_MAINTENANCE_MIN_INTERVAL_MS = 30 * 60 * 1000;
+  let lastMemoryMaintenanceMs = 0;
   const nudgeSweepTimer = setInterval(() => {
     void (async () => {
       try {
@@ -1293,6 +1345,45 @@ async function main(): Promise<void> {
             }
           } catch (err) {
             log.error("auto event extraction sweep failed", { error: errToLog(err) });
+          }
+        }
+        // Core upgrade (memory core): background memory maintenance for
+        // the owner, on this same sweep timer but throttled — episode
+        // detection works on a 30-minute idle window, so a faster cadence
+        // buys nothing, and consolidation is a whole-store pass. Each pass
+        // is self-limiting (consolidation is idempotent; episodes are
+        // keyed idempotently) and both honour their kill switches
+        // (BOBI_MEMORY_CONSOLIDATE=0 / BOBI_MEMORY_EPISODES=0). Failures
+        // are logged with counts only and never disturb the sweep.
+        if (identity.ownerId !== undefined) {
+          const sweepNow = Date.now();
+          if (sweepNow - lastMemoryMaintenanceMs >= MEMORY_MAINTENANCE_MIN_INTERVAL_MS) {
+            lastMemoryMaintenanceMs = sweepNow;
+            const maintenanceOwner = String(identity.ownerId);
+            try {
+              const c = await consolidateMemories(memoryProvider, maintenanceOwner);
+              if (!c.disabled && c.merged + c.decayed + c.promoted + c.pruned > 0) {
+                log.info("memory consolidation", {
+                  merged: c.merged,
+                  decayed: c.decayed,
+                  promoted: c.promoted,
+                  pruned: c.pruned,
+                });
+              }
+            } catch (err) {
+              log.error("memory consolidation sweep failed", { error: errToLog(err) });
+            }
+            try {
+              const ep = await scanEndedConversations(
+                { conversations: storage, provider: memoryProvider },
+                maintenanceOwner,
+              );
+              if (ep.stored > 0) {
+                log.info("memory episodes stored", { count: ep.stored });
+              }
+            } catch (err) {
+              log.error("memory episode sweep failed", { error: errToLog(err) });
+            }
           }
         }
       } catch (err) {
@@ -1398,6 +1489,8 @@ async function main(): Promise<void> {
     storage,
     tools,
     timezone: config.timezone,
+    // Same app logger as the main engine (context-core events).
+    log,
     // Heartbeat turns are accounted too (they run as the owner).
     onRunUsage: recordRunUsage,
     // A beat is a small autonomous pass, never a full conversation: a

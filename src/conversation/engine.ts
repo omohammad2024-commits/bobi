@@ -8,7 +8,15 @@ import { raceDeadline, withDeadline } from "../core/deadline";
 import type { AgentRunResult, AgentStep } from "../agent/transcript";
 import { buildSystemPrompt } from "../agent/prompt";
 import { ContextFileCache } from "../context/loader";
-import { MIN_COMPACT_MESSAGES, summariseHistory, summaryMessage } from "./summary";
+import { MIN_COMPACT_MESSAGES, summariseHistory, summaryMessage, SUMMARY_MESSAGE_HEADER } from "./summary";
+import { Logger } from "../core/logger";
+import { estimateMessageTokens, estimateMessagesTokens, estimateTokens } from "./tokens";
+import {
+  compactHistoryToolResults,
+  enforceContextBudget,
+  DEFAULT_CONTEXT_TOKEN_BUDGET,
+  SUMMARY_TRIGGER_RATIO,
+} from "./context_budget";
 import { formatHistoryForModel, labelAssistantTurn, labelUserTurn } from "./speakers";
 import { prioritizeHistory } from "./prioritize";
 import {
@@ -16,6 +24,7 @@ import {
   type Personality,
 } from "../personality/personalities";
 import type { ToolService } from "../tools/service";
+import { applyIntentRouting } from "../routing/route_specs";
 import type { ToolActor } from "../tools/types";
 import type { SkillCache } from "../skills/loader";
 import { buildSkillsContext } from "../skills/context";
@@ -43,6 +52,17 @@ interface RunOutcome {
 
 /** Telegram's hard limit for a single message. */
 export const TELEGRAM_MAX_LENGTH = 4096;
+
+/**
+ * One history row with its storage id when storage-backed (in-memory rows
+ * carry no id). The id lets compactedHistory match rows against the
+ * summary watermark precisely.
+ */
+interface HistoryRow {
+  id?: number;
+  role: ChatMessage["role"];
+  content: string;
+}
 
 
 export interface ConversationInput {
@@ -143,6 +163,29 @@ export interface EngineOptions {  provider: AiProvider;
   /** Max messages sent to the model (memory window). */
   historyLimit?: number;
   /**
+   * Per-turn context target in estimated tokens: system prompt + history +
+   * live turn must fit it. Default: env BOBI_CONTEXT_TOKEN_BUDGET, else
+   * 32000 (the engine does not know the model's true window — this is the
+   * configured ceiling the context core budgets against).
+   */
+  contextTokenBudget?: number;
+  /**
+   * Master switch for token budgeting and tool-result compaction.
+   * Env BOBI_CONTEXT_BUDGET=0 disables both (legacy behavior). Default true.
+   */
+  contextBudgetEnabled?: boolean;
+  /**
+   * Tool-result compaction only (oversized history tool results are kept
+   * head+tail). Env BOBI_TOOL_RESULT_COMPACT=0 disables it. Default true.
+   */
+  toolResultCompactEnabled?: boolean;
+  /**
+   * Logger for context-budget events (counts only, never content).
+   * Defaults to a module-level info Logger; inject the app logger so the
+   * configured level applies.
+   */
+  log?: Pick<Logger, "info">;
+  /**
    * Tools the agent may run. When absent the engine is a plain chat bot and
    * every run answers from the model alone.
    */
@@ -187,6 +230,18 @@ export interface EngineOptions {  provider: AiProvider;
    */
   memoryCount?: (userId: string) => number;
   /**
+   * Core upgrade (memory core): per-turn prompt memory context — the user's
+   * latest episode summary plus proactively recalled memories for THIS
+   * message. Fetched by the app from the memory provider (index wires it);
+   * the engine only pastes. Absent = no episode/recall blocks in the
+   * prompt. A failure inside the callback degrades to "no block", never a
+   * broken turn.
+   */
+  memoryPrompt?: (
+    userId: string,
+    userText: string,
+  ) => Promise<{ episode?: string; recalled?: readonly string[] } | undefined>;
+  /**
    * Whether to fold overflowed history into a rolling summary. Default true.
    * Disabled in tests that assert the raw window.
    */
@@ -229,6 +284,40 @@ export interface RunUsageInfo {
   model: string;
   inputTokens: number;
   outputTokens: number;
+}
+
+/**
+ * Context transparency: the last measured context for a conversation.
+ *
+ * Returned by `contextStats()`; consumed by UIs/diagnostics later. All
+ * numbers are estimates from the tokenizer-free estimator.
+ */
+export interface ContextStats {
+  /** Estimated tokens of the final assembled context (system + history + turn). */
+  estimatedTokens: number;
+  /** The budget the context was enforced against. */
+  budget: number;
+  /** User turns carried in the assembled history. */
+  historyTurns: number;
+  /** Rolling-summary turns present in the assembled history. */
+  summaries: number;
+  /** Tool results compacted this turn (head+tail plus budget one-liners). */
+  compactedResults: number;
+}
+
+/** env flag helper: "0" disables, anything else keeps the default. */
+function envFlag(name: string, fallback: boolean): boolean {
+  const v = process.env[name];
+  if (v === undefined) return fallback;
+  return v.trim() !== "0";
+}
+
+/** The configured context budget: option → env → default. */
+function resolveContextBudget(option: number | undefined): number {
+  if (option !== undefined && option > 0) return Math.floor(option);
+  const raw = Number(process.env["BOBI_CONTEXT_TOKEN_BUDGET"]);
+  if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
+  return DEFAULT_CONTEXT_TOKEN_BUDGET;
 }
 
 /** Errors the engine surfaces to the caller (already user-safe categories). */
@@ -300,11 +389,23 @@ export class ConversationEngine {
   private readonly onStep: ((conversationId: string, step: AgentStep) => void) | undefined;
   private readonly onRunUsage: ((info: RunUsageInfo) => void) | undefined;
   private readonly memoryCount: ((userId: string) => number) | undefined;
+  private readonly memoryPrompt:
+    | ((
+        userId: string,
+        userText: string,
+      ) => Promise<{ episode?: string; recalled?: readonly string[] } | undefined>)
+    | undefined;
   private readonly allowToolCall: ((userId: string) => boolean) | undefined;
   private readonly skills: SkillCache | undefined;
   private readonly contextFiles: ContextFileCache | undefined;
   private readonly hooks: HookRunnerLike | undefined;
   private readonly personalityFor: ((userId: string) => string | undefined) | undefined;
+  private readonly contextTokenBudget: number;
+  private readonly contextBudgetEnabled: boolean;
+  private readonly toolResultCompactEnabled: boolean;
+  private readonly clog: Pick<Logger, "info">;
+  // conversationId -> last measured context, for contextStats()
+  private readonly contextStatsMap = new Map<string, ContextStats>();
 
   // in-memory fallback (conversationId -> turns)
   private readonly histories = new Map<string, ChatMessage[]>();
@@ -329,12 +430,23 @@ export class ConversationEngine {
     this.onStep = opts.onStep;
     this.onRunUsage = opts.onRunUsage;
     this.memoryCount = opts.memoryCount;
+    this.memoryPrompt = opts.memoryPrompt;
     this.summarisationEnabled = opts.summariseHistory !== false;
     this.allowToolCall = opts.allowToolCall;
     this.skills = opts.skills;
     this.contextFiles = opts.contextFiles;
     this.hooks = opts.hooks;
     this.personalityFor = opts.personalityFor;
+    this.contextTokenBudget = resolveContextBudget(opts.contextTokenBudget);
+    this.contextBudgetEnabled =
+      opts.contextBudgetEnabled ?? envFlag("BOBI_CONTEXT_BUDGET", true);
+    // The master switch off means legacy behavior everywhere, compaction
+    // included; the dedicated switch narrows only the compaction.
+    this.toolResultCompactEnabled =
+      this.contextBudgetEnabled &&
+      (opts.toolResultCompactEnabled ?? envFlag("BOBI_TOOL_RESULT_COMPACT", true));
+    this.clog =
+      opts.log ?? new Logger({ level: "info", base: { app: "bobi", component: "context" } });
     // langFor is accepted for API compatibility but ignored: v1.0 is
     // English-only, so the turn language is a constant "en".
     void opts.langFor;
@@ -458,6 +570,78 @@ export class ConversationEngine {
   }
 
   /**
+   * Context transparency: the last measured context for a conversation
+   * (estimated tokens, budget, history size, summaries, compactions).
+   * Undefined until the conversation has completed one measured turn.
+   */
+  contextStats(conversationId: string): ContextStats | undefined {
+    return this.contextStatsMap.get(conversationId);
+  }
+
+  /** Record the measured context of the turn that just assembled. */
+  private recordContextStats(
+    conversationId: string,
+    finalMessages: readonly ChatMessage[],
+    systemTokens: number,
+    compactedResults: number,
+  ): void {
+    this.contextStatsMap.set(conversationId, {
+      estimatedTokens: systemTokens + estimateMessagesTokens(finalMessages),
+      budget: this.contextTokenBudget,
+      historyTurns: finalMessages.filter((m) => m.role === "user").length,
+      summaries: finalMessages.filter(
+        (m) => m.role === "system" && m.content.startsWith(SUMMARY_MESSAGE_HEADER),
+      ).length,
+      compactedResults,
+    });
+  }
+
+  /**
+   * Enforce the per-turn context budget on the HISTORY slice of an
+   * assembled message list (the last element — the live turn — is never
+   * touched and never dropped). Returns the final message list.
+   *
+   * With the budget disabled this is a pass-through that only records
+   * stats, so `contextStats` still reflects reality in legacy mode.
+   */
+  private applyContextBudget(
+    messages: ChatMessage[],
+    systemPrompt: string | undefined,
+    conversationId: string,
+    compactedResults: number,
+  ): ChatMessage[] {
+    const systemTokens = systemPrompt !== undefined ? estimateTokens(systemPrompt) : 0;
+    if (!this.contextBudgetEnabled || messages.length <= 1) {
+      this.recordContextStats(conversationId, messages, systemTokens, compactedResults);
+      return messages;
+    }
+    const turn = messages[messages.length - 1]!;
+    const history = messages.slice(0, -1);
+    const totalBefore =
+      systemTokens + estimateMessagesTokens(history) + estimateMessageTokens(turn);
+    const enforced = enforceContextBudget(history, {
+      systemTokens,
+      turnTokens: estimateMessageTokens(turn),
+      budget: this.contextTokenBudget,
+    });
+    const finalMessages = [...enforced.messages, turn];
+    const compactedTotal = compactedResults + enforced.toolResultsOneLined;
+    if (enforced.toolResultsOneLined > 0 || enforced.droppedMessages > 0) {
+      // Counts only — never message content.
+      this.clog.info("context budget enforced", {
+        conversationId,
+        beforeTokens: totalBefore,
+        afterTokens: systemTokens + estimateMessagesTokens(finalMessages),
+        budget: this.contextTokenBudget,
+        toolResultsOneLined: enforced.toolResultsOneLined,
+        droppedMessages: enforced.droppedMessages,
+      });
+    }
+    this.recordContextStats(conversationId, finalMessages, systemTokens, compactedTotal);
+    return finalMessages;
+  }
+
+  /**
    * Phase G1: resolve the sender's personality skin to its prompt addition.
    *
    * The lookup goes through getPersonality, the validation boundary: an
@@ -506,6 +690,27 @@ export class ConversationEngine {
         { isGroup },
       );
 
+      // Tool-result compaction (head+tail): oversized results replayed from
+      // history keep their shape, not their bulk. The live agent loop still
+      // sees full results for the current turn — compaction applies to
+      // history entering the model, never to the loop's live context.
+      let compactedResults = 0;
+      let historyForModel = history;
+      if (this.toolResultCompactEnabled) {
+        const compacted = compactHistoryToolResults(history);
+        if (compacted.compactedCount > 0) {
+          compactedResults = compacted.compactedCount;
+          historyForModel = compacted.messages;
+          // Counts only — never message content.
+          this.clog.info("context: tool results compacted", {
+            conversationId: input.conversationId,
+            compacted: compacted.compactedCount,
+            beforeTokens: compacted.beforeTokens,
+            afterTokens: compacted.afterTokens,
+          });
+        }
+      }
+
       // Attachments ride on the live turn only. They are deliberately excluded
       // from `commitTurn`, so history stays text and cannot grow without bound.
       const turn: ChatMessage = {
@@ -518,7 +723,7 @@ export class ConversationEngine {
           ? { parts: input.parts }
           : {}),
       };
-      const messages: ChatMessage[] = [...history, turn];
+      const messages: ChatMessage[] = [...historyForModel, turn];
 
       // Lifecycle hooks (Phase E2): `agent:start` fires before the loop and
       // `agent:end` after it settles. Hook actions run as this turn's actor —
@@ -565,7 +770,7 @@ export class ConversationEngine {
       let stopReason: string | undefined;
       let usage: { inputTokens: number; outputTokens: number } | undefined;
       try {
-        const result = await this.runAgent(input, messages, userText, signal);
+        const result = await this.runAgent(input, messages, userText, signal, compactedResults);
         toolCalls = result.toolCalls;
         stopReason = result.stopReason;
         usage = result.usage;
@@ -685,9 +890,10 @@ export class ConversationEngine {
     messages: ChatMessage[],
     userText: string,
     signal: AbortSignal,
+    compactedResults = 0,
   ): Promise<RunOutcome> {
     if (!this.tools) {
-      return this.plainCall(input, messages, signal);
+      return this.plainCall(input, messages, signal, compactedResults);
     }
 
     const actor = input.actor ?? { userId: "unknown", permissions: [] };
@@ -733,7 +939,17 @@ export class ConversationEngine {
     // The tool list and the memory count are both per-actor, so the prompt
     // describes exactly what THIS run may do — the same set the loop passes as
     // `tools`, so the prompt can never advertise something unavailable.
-    const specs = this.tools.toolSpecsFor(actor).map((s) => ({
+    //
+    // Intent routing (core upgrade): the deterministic router narrows a
+    // strong-intent turn (a bare video link) to the hinted tools + the
+    // always-on core set, or orders hinted tools first on weak hints.
+    // BOBI_INTENT_ROUTER=0 leaves the catalog untouched (see route_specs).
+    const routed = applyIntentRouting(
+      this.tools.toolSpecsFor(actor),
+      userText,
+      this.tools.pluginCatalog,
+    );
+    const specs = routed.specs.map((s) => ({
       name: s.name,
       description: s.description,
       enabled: true,
@@ -744,6 +960,25 @@ export class ConversationEngine {
       this.memoryCount !== undefined && actor.userId !== "unknown"
         ? this.memoryCount(actor.userId)
         : undefined;
+
+    // Core upgrade (memory core): the latest episode + proactively
+    // recalled memories for this message, pasted into the prompt by
+    // buildSystemPrompt. Enhancement only — any failure means the turn
+    // runs without the blocks, exactly as before this wiring existed.
+    let memoryPromptData:
+      | { episode?: string; recalled?: readonly string[] }
+      | undefined;
+    if (
+      this.memoryPrompt !== undefined &&
+      actor.userId !== "unknown" &&
+      userText.length > 0
+    ) {
+      try {
+        memoryPromptData = await this.memoryPrompt(actor.userId, userText);
+      } catch {
+        memoryPromptData = undefined;
+      }
+    }
 
     // Skills are matched against the user's latest text and pasted into the
     // prompt as owner-authored guidance — never as permissions or code.
@@ -765,24 +1000,35 @@ export class ConversationEngine {
 
     const runInput: AgentRunInput = {
       messages,
-      systemPrompt: buildSystemPrompt({
-        tools: specs,
-        now: this.now(),
-        timezone: this.timezone,
-        // Bilingual agent output: the TURN's user's language — never the
-        // owner's, never chat text — so a public user's `en` pref answers
-        // them in English while the owner keeps Persian.
-        lang: this.resolveTurnLang(input),
-        ...(memoryCount !== undefined ? { memoryCount } : {}),
-        ...(skillContext !== undefined ? { skillContext } : {}),
-        ...(contextFiles !== undefined ? { contextFiles } : {}),
-        ...(personality?.systemAddition ? { personality: personality.systemAddition } : {}),
-        ...(this.extraPrompt !== undefined ? { extra: this.extraPrompt } : {}),
-        // Owner recognition: the bot verified this user from the Telegram ID.
-        ...(input.isOwner === true ? { isOwner: true as const } : {}),
-        // Group role clarity.
-        ...(input.isGroup === true ? { isGroup: true as const } : {}),
-      }),
+      // Router pre-extraction rides as a one-line system note (args only,
+      // never an instruction to execute): the model still chooses the call.
+      toolSpecs: routed.specs,
+      systemPrompt:
+        buildSystemPrompt({
+          tools: specs,
+          now: this.now(),
+          timezone: this.timezone,
+          // Bilingual agent output: the TURN's user's language — never the
+          // owner's, never chat text — so a public user's `en` pref answers
+          // them in English while the owner keeps Persian.
+          lang: this.resolveTurnLang(input),
+          ...(memoryCount !== undefined ? { memoryCount } : {}),
+          ...(memoryPromptData?.episode !== undefined
+            ? { lastEpisode: memoryPromptData.episode }
+            : {}),
+          ...(memoryPromptData?.recalled !== undefined &&
+          memoryPromptData.recalled.length > 0
+            ? { recalledMemories: memoryPromptData.recalled }
+            : {}),
+          ...(skillContext !== undefined ? { skillContext } : {}),
+          ...(contextFiles !== undefined ? { contextFiles } : {}),
+          ...(personality?.systemAddition ? { personality: personality.systemAddition } : {}),
+          ...(this.extraPrompt !== undefined ? { extra: this.extraPrompt } : {}),
+          // Owner recognition: the bot verified this user from the Telegram ID.
+          ...(input.isOwner === true ? { isOwner: true as const } : {}),
+          // Group role clarity.
+          ...(input.isGroup === true ? { isGroup: true as const } : {}),
+        }) + (routed.note !== undefined ? `\n\n${routed.note}` : ""),
       actor,
       signal,
       // Tools that must act on the current chat get it from server context,
@@ -791,7 +1037,21 @@ export class ConversationEngine {
     };
 
     try {
-      const result: AgentRunResult = await loop.run(runInput);
+      // The per-turn context budget is measured here, against the real
+      // system prompt and the real message list: system + history + live
+      // turn must fit the target, or the history slice is compressed
+      // (tool one-liners → priority drops → top-K). The live turn is
+      // never touched or dropped.
+      const budgetedMessages = this.applyContextBudget(
+        messages,
+        runInput.systemPrompt,
+        input.conversationId,
+        compactedResults,
+      );
+      const result: AgentRunResult = await loop.run({
+        ...runInput,
+        messages: budgetedMessages,
+      });
       // Per-run usage accounting (diagnostic; never breaks the turn).
       this.emitRunUsage(actor.userId, input.conversationId, result.model, result.usage);
       return {
@@ -816,11 +1076,21 @@ export class ConversationEngine {
     input: ConversationInput,
     messages: ChatMessage[],
     signal: AbortSignal,
+    compactedResults = 0,
   ): Promise<RunOutcome> {
     // Already superseded: don't start a provider call just to abandon it.
     if (signal.aborted) {
       throw new EngineError("superseded", "Request superseded by a newer message.");
     }
+    // The plain path sends no separate system prompt (the summary rides
+    // inside the message list), so the budget is measured against the
+    // messages alone.
+    const budgetedMessages = this.applyContextBudget(
+      messages,
+      undefined,
+      input.conversationId,
+      compactedResults,
+    );
     const timeout = input.timeoutMs ?? this.defaultTimeoutMs;
     const deadline = withDeadline(signal, timeout);
     // Race the caller's abort explicitly: withDeadline's `expired` only
@@ -841,7 +1111,7 @@ export class ConversationEngine {
       res = await Promise.race([
         raceDeadline(
           this.provider.complete({
-            messages,
+            messages: budgetedMessages,
             model: this.model,
             timeoutMs: timeout,
             signal: deadline.signal,
@@ -901,12 +1171,26 @@ export class ConversationEngine {
   }
 
   private loadHistory(input: ConversationInput): ChatMessage[] {
+    return this.loadHistoryRows(input).map((r) => ({ role: r.role, content: r.content }));
+  }
+
+  /**
+   * History rows with their storage ids (when storage-backed).
+   *
+   * The ids let compactedHistory track the summary watermark precisely —
+   * which rows the rolling summary already covers — without changing what
+   * `loadHistory` exposes to the rest of the engine.
+   */
+  private loadHistoryRows(input: ConversationInput): HistoryRow[] {
     if (!this.storage) {
-      return this.histories.get(input.conversationId) ?? [];
+      return (this.histories.get(input.conversationId) ?? []).map((m) => ({
+        role: m.role,
+        content: m.content,
+      }));
     }
     const { userId, chatId } = this.ownerOf(input);
     const rows = this.storage.history(userId, chatId, this.historyLimit);
-    return rows.map((r) => ({ role: r.role, content: r.content }));
+    return rows.map((r) => ({ id: r.id, role: r.role, content: r.content }));
   }
 
   /**
@@ -930,14 +1214,37 @@ export class ConversationEngine {
     input: ConversationInput,
     signal: AbortSignal,
   ): Promise<ChatMessage[]> {
-    const recent = this.loadHistory(input);
+    const rows = this.loadHistoryRows(input);
+    const toMessages = (rs: readonly HistoryRow[]): ChatMessage[] =>
+      rs.map((r) => ({ role: r.role, content: r.content }));
 
     // No storage means no watermark to track; the in-memory window is all
     // there is, which matches the old behaviour for the no-storage engine.
-    if (!this.storage || !this.summarisationEnabled) return recent;
+    if (!this.storage || !this.summarisationEnabled) return toMessages(rows);
 
     const { userId, chatId } = this.ownerOf(input);
-    const stored = this.storage.getConversationSummary(userId, chatId);
+    let stored;
+    try {
+      stored = this.storage.getConversationSummary(userId, chatId);
+    } catch {
+      // A failed read is not a reason to fail the turn.
+      stored = undefined;
+    }
+    let summaryText = stored?.summary;
+
+    // Rows the stored summary already covers are not loaded verbatim. In
+    // the legacy overflow flow those rows sit outside the window anyway, so
+    // this filter is a no-op there; it matters once the token-trigger fold
+    // (below) starts folding part of the window itself into the summary.
+    let recentRows =
+      stored !== undefined
+        ? rows.filter((r) => r.id === undefined || r.id > stored.summarisedUntil)
+        : rows;
+
+    const finish = (): ChatMessage[] =>
+      summaryText !== undefined
+        ? [summaryMessage(summaryText), ...toMessages(recentRows)]
+        : toMessages(recentRows);
 
     // Only messages that have fallen out of the window are candidates, and only
     // those past the watermark.
@@ -951,42 +1258,91 @@ export class ConversationEngine {
       );
     } catch {
       // A failed read is not a reason to fail the turn.
-      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
+      return finish();
     }
 
-    if (overflow.length < MIN_COMPACT_MESSAGES) {
-      // Nothing new has overflowed; reuse the existing summary. This is the
-      // case that used to trigger an unnecessary model call every turn.
-      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
-    }
-
-    const messages: ChatMessage[] = overflow.map((r) => ({ role: r.role, content: r.content }));
-    const summary = await summariseHistory(messages, stored?.summary, {
-      provider: this.provider,
-      model: this.model,
-      signal,
-    });
-
-    if (summary === undefined) {
-      // Keep what we had; a failed refresh must not discard it.
-      return stored !== undefined ? [summaryMessage(stored.summary), ...recent] : recent;
-    }
-
-    // Advance the watermark only on success, so a failed pass is retried on the
-    // next turn instead of silently skipping those messages.
-    const lastId = overflow[overflow.length - 1]!.id;
-    try {
-      this.storage.setConversationSummary({
-        userId,
-        chatId,
-        summary,
-        summarisedUntil: lastId,
+    if (overflow.length >= MIN_COMPACT_MESSAGES) {
+      const messages: ChatMessage[] = overflow.map((r) => ({
+        role: r.role,
+        content: r.content,
+      }));
+      const summary = await summariseHistory(messages, summaryText, {
+        provider: this.provider,
+        model: this.model,
+        signal,
       });
-    } catch {
-      // The summary is still usable this turn even if it could not be stored.
+
+      if (summary !== undefined) {
+        summaryText = summary;
+        // Advance the watermark only on success, so a failed pass is retried
+        // on the next turn instead of silently skipping those messages.
+        const lastId = overflow[overflow.length - 1]!.id;
+        try {
+          this.storage.setConversationSummary({
+            userId,
+            chatId,
+            summary,
+            summarisedUntil: lastId,
+          });
+        } catch {
+          // The summary is still usable this turn even if it could not be stored.
+        }
+      }
+      // On failure what we had is kept; a failed refresh never discards it.
     }
 
-    return [summaryMessage(summary), ...recent];
+    // Token trigger: when the assembled history (rolling summary + window)
+    // is estimated over 60% of the context budget, fold the oldest half of
+    // the window's turns into the rolling summary. This runs between turns —
+    // this method is awaited before the turn's provider call, exactly like
+    // the overflow fold — and advances the same watermark, so folded turns
+    // leave the window for good instead of re-appearing next turn.
+    if (this.contextBudgetEnabled) {
+      const assembledEstimate = estimateMessagesTokens([
+        ...(summaryText !== undefined ? [summaryMessage(summaryText)] : []),
+        ...toMessages(recentRows),
+      ]);
+      if (assembledEstimate > SUMMARY_TRIGGER_RATIO * this.contextTokenBudget) {
+        const foldable = recentRows.filter(
+          (r) => (r.role === "user" || r.role === "assistant") && r.id !== undefined,
+        );
+        if (foldable.length >= MIN_COMPACT_MESSAGES) {
+          const folding = foldable.slice(0, Math.ceil(foldable.length / 2));
+          const folded = await summariseHistory(
+            folding.map((r) => ({ role: r.role, content: r.content })),
+            summaryText,
+            { provider: this.provider, model: this.model, signal },
+          );
+          if (folded !== undefined) {
+            summaryText = folded;
+            const lastId = folding[folding.length - 1]!.id!;
+            try {
+              this.storage.setConversationSummary({
+                userId,
+                chatId,
+                summary: folded,
+                summarisedUntil: lastId,
+              });
+            } catch {
+              // Still usable this turn even if it could not be stored.
+            }
+            const foldedIds = new Set(folding.map((r) => r.id));
+            recentRows = recentRows.filter(
+              (r) => r.id === undefined || !foldedIds.has(r.id),
+            );
+            // Counts only — never message content.
+            this.clog.info("context: summary fold (token trigger)", {
+              conversationId: input.conversationId,
+              foldedMessages: folding.length,
+              estimatedTokens: assembledEstimate,
+              budget: this.contextTokenBudget,
+            });
+          }
+        }
+      }
+    }
+
+    return finish();
   }
 
   /**

@@ -51,6 +51,9 @@ import type { AgentStep, AgentRunResult, StopReason } from "./transcript";
 import { serialiseToolResult, wrapToolResult } from "./transcript";
 import { currentStreamSink, streamingEnabled } from "./stream";
 import type { AgentStreamEvent, StreamEventSink } from "./stream";
+import { maxParallel, parallelEnabled, planningEnabled } from "./settings";
+import { isWriteLikeTool, mapBounded } from "./parallelism";
+import { parsePlan, planMessages, planNote, shouldPlan, PLAN_MAX_TOKENS } from "./planner";
 
 export interface AgentBudgets {
   /** Model turns per run, including the first. */
@@ -118,6 +121,17 @@ export interface AgentRunInput {
    * without the model naming a target.
    */
   conversationId?: string;
+  /**
+   * Pre-routed tool specs for this turn (intent-router wiring).
+   *
+   * When set, the loop offers EXACTLY these specs instead of asking the
+   * ToolService itself. The caller derives them from
+   * ToolService.toolSpecsFor(actor) and narrows/orders them by intent —
+   * permissions are therefore already applied upstream, and the Executor
+   * still enforces them per call. Absent = legacy behavior (the loop
+   * resolves specs from the actor, unchanged).
+   */
+  toolSpecs?: readonly ToolSpec[];
 }
 
 /** Raised when the caller cancelled the run. */
@@ -137,16 +151,30 @@ export class AgentLoop {
   private readonly now: () => number;
   private readonly onStep: ((step: AgentStep) => void) | undefined;
   private readonly allowToolCall: ((userId: string) => boolean) | undefined;
+  /** Parallel tool execution within a turn (BOBI_AGENT_PARALLEL=0 disables). */
+  private readonly parallel: boolean;
+  /** Concurrency bound for parallel execution (BOBI_AGENT_MAX_PARALLEL). */
+  private readonly maxPar: number;
+  /** Planning mode (BOBI_AGENT_PLANNING=0 disables). */
+  private readonly planning: boolean;
 
   constructor(opts: AgentLoopOptions) {
     this.provider = opts.provider;
     this.model = opts.model;
     this.tools = opts.tools;
     this.callTimeoutMs = opts.callTimeoutMs;
+    // Caller budgets win as-is. BOBI_AGENT_MAX_ITERATIONS /
+    // BOBI_AGENT_MAX_TOOL_CALLS are already honoured upstream: config.ts
+    // reads them via envVar() and index.ts passes them in as these budgets.
+    // Re-applying the environment HERE would clobber deliberate per-caller
+    // budgets (delegate 3/5, heartbeat) whenever the process env sets them.
     this.budgets = { ...DEFAULT_BUDGETS, ...opts.budgets };
     this.now = opts.now ?? (() => Date.now());
     this.onStep = opts.onStep;
     this.allowToolCall = opts.allowToolCall;
+    this.parallel = parallelEnabled();
+    this.maxPar = maxParallel();
+    this.planning = planningEnabled();
   }
 
   /**
@@ -163,9 +191,13 @@ export class AgentLoop {
       ...input.messages,
     ];
 
-    // Tool specs are resolved once, from the Registry, for this actor. A tool
-    // the model is never told about cannot be requested by accident.
-    const specs: ToolSpec[] = this.specsFor(input.actor);
+    // Tool specs are resolved once for this actor. A tool the model is
+    // never told about cannot be requested by accident. Caller-routed
+    // specs (intent router) win when supplied; otherwise the Registry
+    // path, exactly as before.
+    const specs: ToolSpec[] =
+      input.toolSpecs !== undefined ? [...input.toolSpecs] : this.specsFor(input.actor);
+    const specByName = new Map(specs.map((s) => [s.name, s]));
 
     let executed = 0;
     let usage = { inputTokens: 0, outputTokens: 0 };
@@ -174,6 +206,29 @@ export class AgentLoop {
     // User-facing media from tools, in call order. Kept out of `messages` and
     // the transcript: it is delivered, not reasoned over.
     const media: ContentPart[] = [];
+
+    // Planning mode: a multi-task request gets one cheap planner call before
+    // the first iteration, and the plan rides along as a system note. The
+    // planning call is advisory — its failure is never surfaced.
+    const plan = await this.maybePlan(input, startedAt);
+    const planSteps = plan?.steps;
+    if (planSteps !== undefined && plan !== undefined) {
+      usage = addUsage(usage, {
+        text: "",
+        model: this.model,
+        usage: { inputTokens: plan.usage.inputTokens, outputTokens: plan.usage.outputTokens },
+      });
+      steps.push({ kind: "plan", steps: planSteps, completed: false });
+      this.emit({ kind: "plan", steps: planSteps, completed: false });
+      messages[0] = {
+        role: "system",
+        content: `${typeof messages[0]?.content === "string" ? messages[0]?.content : ""}\n\n${planNote(planSteps)}`,
+      };
+    }
+
+    // Per-run loop awareness: identical tool calls (same name + arguments)
+    // are remembered so a stuck model is short-circuited, not billed.
+    const seen = new Map<string, CallRecord>();
 
     while (true) {
       this.throwIfCancelled(input.signal);
@@ -246,6 +301,10 @@ export class AgentLoop {
 
       // No tool request → this is the answer.
       if (calls.length === 0) {
+        if (planSteps !== undefined) {
+          steps.push({ kind: "plan", steps: planSteps, completed: true });
+          this.emit({ kind: "plan", steps: planSteps, completed: true });
+        }
         messages.push({ role: "assistant", content: response.text });
         return {
           text: nonEmpty(response.text),
@@ -266,64 +325,22 @@ export class AgentLoop {
         toolCalls: calls,
       });
 
-      for (const call of calls) {
-        this.throwIfCancelled(input.signal);
-
-        // Per-run budget is enforced here too: a single turn that asks for more
-        // tools than remain is truncated rather than allowed to overflow.
-        if (executed >= this.budgets.maxToolCalls) {
-          messages.push({
-            role: "tool",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: wrapToolResult(call.name, "status=error: tool call budget exhausted."),
-          });
-          continue;
-        }
-
-        // The per-user budget is checked immediately before the tool runs, so
-        // the model cannot spend it by requesting tools in bulk.
-        if (this.allowToolCall !== undefined && !this.allowToolCall(input.actor.userId)) {
-          messages.push({
-            role: "tool",
-            toolCallId: call.id,
-            toolName: call.name,
-            content: wrapToolResult(
-              call.name,
-              "status=not_allowed: daily tool usage budget exhausted.",
-            ),
-          });
-          continue;
-        }
-
-        const result = await this.runTool(call, input);
-        executed++;
-
-        // Media a tool produced for the user is collected for delivery. It
-        // never enters `messages`: the model already described what it made in
-        // `data`, and replaying base64 would bloat every later turn.
-        if (result.media !== undefined) media.push(...result.media);
-
-        steps.push({
-          kind: "tool",
-          name: call.name,
-          status: result.status,
-          durationMs: result.durationMs,
-        });
-        this.emit({
-          kind: "tool",
-          name: call.name,
-          status: result.status,
-          durationMs: result.durationMs,
-        });
-
-        messages.push({
-          role: "tool",
-          toolCallId: call.id,
-          toolName: call.name,
-          content: wrapToolResult(call.name, serialiseToolResult(result)),
-        });
-      }
+      // Execute the turn's tool calls: independent read-only calls run in
+      // parallel (bounded), write-like calls run alone in order, identical
+      // repeats are short-circuited from the per-run cache, and failures
+      // carry a retry hint. Results are fed back in the original call order.
+      const outcome = await this.processCalls(calls, input, {
+        messages,
+        steps,
+        media,
+        seen,
+        executed,
+        usage,
+        model: this.model,
+        specByName,
+      });
+      executed = outcome.executed;
+      if (outcome.breakResult !== undefined) return outcome.breakResult;
     }
   }
 
@@ -346,6 +363,331 @@ export class AgentLoop {
         ? { conversationId: input.conversationId }
         : {}),
     });
+  }
+
+  /**
+   * Plan a multi-task request, when planning applies.
+   *
+   * One low-budget, tool-free, NON-streamed call (singleCall never touches the
+   * stream sink, so plan tokens cannot leak into the user's rendered message).
+   * Every failure mode — provider error, unparseable reply, disabled switch,
+   * trivial request — returns undefined and the run proceeds unplanned.
+   */
+  private async maybePlan(
+    input: AgentRunInput,
+    startedAt: number,
+  ): Promise<{ steps: string[]; usage: { inputTokens: number; outputTokens: number } } | undefined> {
+    if (!this.planning) return undefined;
+    const lastUser = [...input.messages].reverse().find((m) => m.role === "user");
+    const text = lastUser !== undefined && typeof lastUser.content === "string" ? lastUser.content : "";
+    const historyLen = Math.max(0, input.messages.length - 1);
+    if (text.length === 0 || !shouldPlan(text, historyLen)) return undefined;
+    try {
+      const res = await this.singleCall(
+        input,
+        planMessages(text),
+        [],
+        startedAt,
+        0,
+        PLAN_MAX_TOKENS,
+      );
+      const steps = parsePlan(res.text);
+      if (steps === null) return undefined;
+      return {
+        steps,
+        usage: {
+          inputTokens: res.usage?.inputTokens ?? 0,
+          outputTokens: res.usage?.outputTokens ?? 0,
+        },
+      };
+    } catch (err) {
+      // Cancellation is not a planning failure; it ends the run.
+      if (input.signal.aborted) throw new AgentCancelled();
+      return undefined;
+    }
+  }
+
+  /**
+   * Execute one model turn's tool calls and feed every result back in the
+   * original call order.
+   *
+   * Per call, exactly one of these happens:
+   *  - EXECUTE — gated by the run budget and the per-user budget, then run:
+   *    read-only calls in parallel batches (bounded by BOBI_AGENT_MAX_PARALLEL),
+   *    write-like calls one at a time behind a barrier.
+   *  - CACHED — the identical call already succeeded earlier this run; its
+   *    earlier result is returned with a note instead of re-executing.
+   *  - EXHAUSTED — the identical call already failed MAX_ATTEMPTS_PER_CALL
+   *    times; it is not executed again.
+   *  - PIGGYBACK — an identical call in the SAME turn is already queued; this
+   *    one reuses that execution's feedback.
+   *
+   * A third identical request for an already-succeeded call breaks the whole
+   * run (stopReason "loop_detected") — the model is stuck, and further turns
+   * would only bill the owner.
+   */
+  private async processCalls(
+    calls: readonly ToolCall[],
+    input: AgentRunInput,
+    ctx: {
+      messages: ChatMessage[];
+      steps: AgentStep[];
+      media: ContentPart[];
+      seen: Map<string, CallRecord>;
+      executed: number;
+      usage: { inputTokens: number; outputTokens: number };
+      model: string;
+      specByName: Map<string, ToolSpec>;
+    },
+  ): Promise<{ executed: number; breakResult?: AgentRunResult }> {
+    interface ExecuteEntry {
+      kind: "execute";
+      call: ToolCall;
+      rec: CallRecord;
+      body?: string;
+      result?: ToolRunResult;
+    }
+    type Entry =
+      | ExecuteEntry
+      | { kind: "cached" | "exhausted"; call: ToolCall; rec: CallRecord }
+      | { kind: "piggyback"; call: ToolCall; rec: CallRecord; source: ExecuteEntry };
+
+    // --- Decision pass (synchronous, original order) ------------------------
+    const entries: Entry[] = [];
+    const turnExec = new Map<string, ExecuteEntry>();
+    let breakCall: { call: ToolCall; rec: CallRecord } | undefined;
+
+    for (const call of calls) {
+      const fp = callFingerprint(call);
+      let rec = ctx.seen.get(fp);
+      if (rec === undefined) {
+        rec = { reqCount: 0, execCount: 0, lastResult: undefined };
+        ctx.seen.set(fp, rec);
+      }
+      rec.reqCount++;
+
+      if (rec.lastResult !== undefined) {
+        if (isRetryableFailure(rec.lastResult)) {
+          if (rec.execCount < MAX_ATTEMPTS_PER_CALL) {
+            const e: ExecuteEntry = { kind: "execute", call, rec };
+            entries.push(e);
+            turnExec.set(fp, e);
+          } else {
+            entries.push({ kind: "exhausted", call, rec });
+          }
+        } else if (rec.reqCount >= 3) {
+          breakCall = { call, rec };
+          break;
+        } else {
+          entries.push({ kind: "cached", call, rec });
+        }
+        continue;
+      }
+
+      const source = turnExec.get(fp);
+      if (source !== undefined) {
+        entries.push({ kind: "piggyback", call, rec, source });
+        continue;
+      }
+      const e: ExecuteEntry = { kind: "execute", call, rec };
+      entries.push(e);
+      turnExec.set(fp, e);
+    }
+
+    if (breakCall !== undefined) {
+      return {
+        executed: ctx.executed,
+        breakResult: this.loopBreakResult(breakCall.call, breakCall.rec, ctx, ctx.executed),
+      };
+    }
+
+    // --- Budget gating (original order, before anything runs) ----------------
+    let planned = ctx.executed;
+    for (const e of entries) {
+      if (e.kind !== "execute") continue;
+      // Per-run budget: a turn that asks for more tools than remain is
+      // truncated rather than allowed to overflow.
+      if (planned >= this.budgets.maxToolCalls) {
+        e.body = "status=error: tool call budget exhausted.";
+        continue;
+      }
+      // The per-user budget is checked before the tool runs, so the model
+      // cannot spend it by requesting tools in bulk.
+      if (this.allowToolCall !== undefined && !this.allowToolCall(input.actor.userId)) {
+        e.body = "status=not_allowed: daily tool usage budget exhausted.";
+        continue;
+      }
+      planned++;
+    }
+
+    // --- Execution: parallel batches for read-only, barriers for writes -----
+    let executedNow = ctx.executed;
+    const settle = (e: ExecuteEntry, settled: PromiseSettledResult<ToolRunResult>): void => {
+      const result: ToolRunResult =
+        settled.status === "fulfilled"
+          ? settled.value
+          : {
+              tool: e.call.name,
+              status: "error",
+              message: "tool execution failed unexpectedly",
+              durationMs: 0,
+            };
+      e.result = result;
+      e.rec.execCount++;
+      e.rec.lastResult = result;
+      executedNow++;
+      let body = serialiseToolResult(result);
+      if (isRetryableFailure(result)) {
+        body += `\n${e.rec.execCount < MAX_ATTEMPTS_PER_CALL ? RETRY_HINT : LAST_RETRY_HINT}`;
+      }
+      e.body = body;
+    };
+
+    const runnable = entries.filter(
+      (e): e is ExecuteEntry => e.kind === "execute" && e.body === undefined,
+    );
+    let i = 0;
+    while (i < runnable.length) {
+      this.throwIfCancelled(input.signal);
+      const first = runnable[i]!;
+      if (this.parallel && this.isParallelEligible(first.call, ctx.specByName)) {
+        const batch: ExecuteEntry[] = [];
+        while (
+          i < runnable.length &&
+          this.parallel &&
+          this.isParallelEligible(runnable[i]!.call, ctx.specByName)
+        ) {
+          batch.push(runnable[i]!);
+          i++;
+        }
+        const settled = await mapBounded(batch, this.maxPar, (e) =>
+          this.executeOne(e.call, input),
+        );
+        batch.forEach((e, idx) => settle(e, settled[idx]!));
+      } else {
+        settle(first, { status: "fulfilled", value: await this.executeOne(first.call, input) });
+        i++;
+      }
+    }
+
+    // --- Feedback assembly (original call order, always) ---------------------
+    for (const e of entries) {
+      let body: string;
+      if (e.kind === "execute") {
+        body = e.body ?? "status=error: tool call budget exhausted.";
+        if (e.result !== undefined) {
+          const result = e.result;
+          // Media a tool produced for the user is collected for delivery. It
+          // never enters `messages`: the model already described what it made
+          // in `data`, and replaying base64 would bloat every later turn.
+          if (result.media !== undefined) ctx.media.push(...result.media);
+          ctx.steps.push({
+            kind: "tool",
+            name: e.call.name,
+            status: result.status,
+            durationMs: result.durationMs,
+          });
+          this.emit({
+            kind: "tool",
+            name: e.call.name,
+            status: result.status,
+            durationMs: result.durationMs,
+          });
+        }
+      } else if (e.kind === "cached") {
+        body = `${serialiseToolResult(e.rec.lastResult!)}\n(note: repeated call — returning the earlier result instead of running it again.)`;
+      } else if (e.kind === "exhausted") {
+        body =
+          "status=error: this exact call has already been attempted 3 times this run " +
+          "and its retry budget is exhausted. Do not call it again unchanged — " +
+          "change the parameters or answer from what you have.";
+      } else if (e.kind === "piggyback") {
+        // Piggyback: reuse the source execution's feedback verbatim; when it
+        // succeeded, say so, so the model does not think it ran twice.
+        const srcBody = e.source.body ?? "status=error: duplicate call in the same turn.";
+        body =
+          e.source.result !== undefined && !isRetryableFailure(e.source.result)
+            ? `${srcBody}\n(note: repeated call — returning the earlier result instead of running it again.)`
+            : srcBody;
+      } else {
+        body = "status=error: tool call was not processed.";
+      }
+      ctx.messages.push({
+        role: "tool",
+        toolCallId: e.call.id,
+        toolName: e.call.name,
+        content: wrapToolResult(e.call.name, body),
+      });
+    }
+
+    // A duplicate answered from this turn's own execution can still be the
+    // third identical request overall — the loop break applies then too.
+    for (const e of entries) {
+      if (
+        e.kind === "piggyback" &&
+        e.rec.reqCount >= 3 &&
+        e.rec.lastResult !== undefined &&
+        !isRetryableFailure(e.rec.lastResult)
+      ) {
+        return {
+          executed: executedNow,
+          breakResult: this.loopBreakResult(e.call, e.rec, ctx, executedNow),
+        };
+      }
+    }
+
+    return { executed: executedNow };
+  }
+
+  /** runTool, hardened: an Executor rejection becomes an error result. */
+  private async executeOne(call: ToolCall, input: AgentRunInput): Promise<ToolRunResult> {
+    try {
+      return await this.runTool(call, input);
+    } catch {
+      // A crashed tool must not kill a run that already gathered answers.
+      // Cancellation still surfaces: the next checkpoint throws AgentCancelled.
+      return {
+        tool: call.name,
+        status: "error",
+        message: "tool execution failed unexpectedly",
+        durationMs: 0,
+      };
+    }
+  }
+
+  /** True when this call may overlap with neighbouring read-only calls. */
+  private isParallelEligible(call: ToolCall, specByName: Map<string, ToolSpec>): boolean {
+    const spec = specByName.get(call.name);
+    return spec !== undefined && !isWriteLikeTool(spec);
+  }
+
+  /** The graceful result returned when loop detection breaks a run. */
+  private loopBreakResult(
+    call: ToolCall,
+    rec: CallRecord,
+    ctx: {
+      steps: AgentStep[];
+      media: ContentPart[];
+      usage: { inputTokens: number; outputTokens: number };
+      model: string;
+    },
+    executed: number,
+  ): AgentRunResult {
+    let text = `I ran into a loop on ${call.name}; here's what I have so far.`;
+    const last = rec.lastResult;
+    if (last !== undefined && last.status === "ok") {
+      const data = serialiseToolResult(last);
+      text += `\n\nLast result from ${call.name}: ${data.length > 500 ? `${data.slice(0, 500)}…` : data}`;
+    }
+    return {
+      text,
+      model: ctx.model,
+      stopReason: "loop_detected",
+      steps: ctx.steps,
+      toolCallsExecuted: executed,
+      media: ctx.media,
+      usage: ctx.usage,
+    };
   }
 
   /**
@@ -545,6 +887,7 @@ export class AgentLoop {
     tools: readonly ToolSpec[],
     startedAt: number,
     graceMs: number,
+    maxTokens?: number,
   ): Promise<CompletionResponse> {
     const remaining = this.budgets.totalTimeoutMs - (this.now() - startedAt);
     const allowance = remaining > 0 ? remaining : graceMs;
@@ -558,6 +901,7 @@ export class AgentLoop {
           timeoutMs,
           signal: deadline.signal,
           ...(tools.length > 0 ? { tools } : {}),
+          ...(maxTokens !== undefined ? { maxTokens } : {}),
         }),
         deadline,
       );
@@ -602,6 +946,70 @@ function normaliseArguments(raw: unknown): unknown {
     }
   }
   return raw;
+}
+
+/**
+ * Executions allowed for one distinct tool call (same name + arguments):
+ * the initial attempt plus two retries. A failed call past this budget is
+ * reported as exhausted instead of being executed again.
+ */
+const MAX_ATTEMPTS_PER_CALL = 3;
+
+/** Per-run record for one distinct tool call, for loop awareness. */
+interface CallRecord {
+  /** Times the model requested this exact call. */
+  reqCount: number;
+  /** Times it was actually executed. */
+  execCount: number;
+  /** Most recent execution outcome, for cached feedback. */
+  lastResult: ToolRunResult | undefined;
+}
+
+/** Appended to a failed/empty tool result while retries remain. */
+const RETRY_HINT =
+  "hint: this call failed or returned nothing — double-check the parameters, then retry once if you still need it.";
+
+/** Appended when a failed/empty result has used up its retries. */
+const LAST_RETRY_HINT =
+  "hint: this call failed or returned nothing — it has used its retries; answer from what you have instead of calling it again unchanged.";
+
+/** Identity of a tool call for loop awareness: name + canonical arguments. */
+function callFingerprint(call: ToolCall): string {
+  return `${call.name}:${stableStringify(normaliseArguments(call.arguments))}`;
+}
+
+/** JSON with sorted object keys, so argument key order cannot forge a new call. */
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value) ?? "null";
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record).sort();
+  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(record[k])}`).join(",")}}`;
+}
+
+/**
+ * True when a result invites a corrected retry: a hard error, a fixable
+ * input problem, a miss, or an ok that carried nothing. A denial or a
+ * disabled tool is NOT retryable — repeating those cannot change the answer.
+ */
+function isRetryableFailure(result: ToolRunResult): boolean {
+  if (result.status === "error" || result.status === "invalid_input" || result.status === "not_found") {
+    return true;
+  }
+  if (result.status === "ok") return isEmptyData(result.data);
+  return false;
+}
+
+/** True when an ok result carried no usable payload. */
+function isEmptyData(data: unknown): boolean {
+  if (data === undefined || data === null || data === "") return true;
+  if (Array.isArray(data)) return data.length === 0;
+  if (typeof data === "object") return Object.keys(data).length === 0;
+  return false;
 }
 
 function addUsage(

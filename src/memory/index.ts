@@ -62,3 +62,52 @@ export type {
   PrunePlan,
   PruneOptions,
 } from "./hybrid";
+// Memory-core upgrade: consolidation sweep, episodic session summaries,
+// proactive recall, contradiction supersession.
+export {
+  consolidateMemories,
+  isConsolidationEnabled,
+  promotionTarget,
+  PINNED_IMPORTANCE,
+  DECAY_FLOOR,
+} from "./consolidate";
+export type {
+  ConsolidationMemory,
+  ConsolidationOptions,
+  ConsolidationReport,
+} from "./consolidate";
+export {
+  buildEpisodeSummary,
+  episodeKey,
+  isEpisodesEnabled,
+  latestEpisode,
+  maybeStoreEpisode,
+  scanEndedConversations,
+  EPISODE_IMPORTANCE,
+  EPISODE_IDLE_MS,
+  EPISODE_MIN_USER_TURNS,
+} from "./episodes";
+export type { EpisodeCheckResult, EpisodeDeps } from "./episodes";
+export {
+  extractQueryTopics,
+  isProactiveRecallEnabled,
+  recallFor,
+  recallScoreFloor,
+  DEFAULT_RECALL_FLOOR,
+} from "./proactive_recall";
+export type {
+  ProactiveRecallDeps,
+  ProactivelyRecalled,
+} from "./proactive_recall";
+export {
+  applyFactCandidate,
+  factKindOfKey,
+  findContradictions,
+  CONTRADICTION_JACCARD_MIN,
+  SUPERSEDED_PREFIX,
+} from "./contradictions";
+export type {
+  ApplyFactResult,
+  SupersessionLogEntry,
+  SupersessionLogger,
+} from "./contradictions";

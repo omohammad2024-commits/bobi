@@ -15,6 +15,8 @@ import type { Storage } from "../storage/storage";
 import type { ReminderRepeat } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
 import { TEHRAN_TZ, parsePersianDateTime } from "./persian_datetime";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const REMIND_AT_PERMISSION = "tools:remind_at";
 export const REMIND_NL_PERMISSION = "tools:remind_nl";
@@ -50,9 +52,21 @@ export interface RemindAtOutput {
   inMinutes: number;
 }
 
+export const remindAtManifest: ToolManifest = defineManifest({
+  id: "remind_at",
+  version: "1.0.0",
+  title: "Remind At",
+  description:
+    "Set a reminder at a specific time. The time must be ISO-8601 with a timezone and in the future.",
+  outputSummary: "The reminder's id, due time, repeat setting and minutes until it fires.",
+  category: "schedule",
+  costTier: "free",
+});
+
 export function createRemindAtTool(deps: ReminderToolDeps): Tool<RemindAtInput, RemindAtOutput> {
   return {
     name: "remind_at",
+    manifest: remindAtManifest,
     description:
       "Set a reminder at a specific time. The time must be ISO-8601 with a timezone and in the future.",
     enabled: true,
@@ -178,9 +192,30 @@ export interface RemindNlInput {
 /** Same confirmation shape as remind_at; a natural-language reminder never repeats. */
 export type RemindNlOutput = RemindAtOutput;
 
+export const remindNlManifest: ToolManifest = defineManifest({
+  id: "remind_nl",
+  version: "1.0.0",
+  title: "Remind (Natural Language)",
+  description:
+    "Set a reminder from a Persian natural-language time expression, like tomorrow at 9 in the morning or in 10 minutes. Times are read in Asia/Tehran.",
+  outputSummary: "The reminder's id, due time, repeat setting and minutes until it fires.",
+  category: "schedule",
+  triggers: {
+    keywordPatterns: [
+      "یادم بنداز",
+      "یادآوری کن",
+      "یاداوری کن",
+      "remind me",
+      "set a reminder",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createRemindNlTool(deps: ReminderToolDeps): Tool<RemindNlInput, RemindNlOutput> {
   return {
     name: "remind_nl",
+    manifest: remindNlManifest,
     description:
       "Set a reminder from a Persian natural-language time expression, like tomorrow at 9 in the morning or in 10 minutes. Times are read in Asia/Tehran.",
     enabled: true,
@@ -262,11 +297,30 @@ export interface ListRemindersOutput {
   count: number;
 }
 
+export const listRemindersManifest: ToolManifest = defineManifest({
+  id: "list_reminders",
+  version: "1.0.0",
+  title: "List Reminders",
+  description: "List the user's active (pending) reminders.",
+  outputSummary: "The user's pending reminders with ids, text and due times.",
+  category: "schedule",
+  triggers: {
+    keywordPatterns: [
+      "یادآورهام رو نشون بده",
+      "چه یادآور",
+      "list (my )?reminders",
+      "show (my )?reminders",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createListRemindersTool(
   deps: ReminderToolDeps,
 ): Tool<ListRemindersInput, ListRemindersOutput> {
   return {
     name: "list_reminders",
+    manifest: listRemindersManifest,
     description: "List the user's active (pending) reminders.",
     enabled: true,
     permission: { requires: [LIST_REMINDERS_PERMISSION] },
@@ -311,11 +365,28 @@ export interface CancelReminderOutput {
   remaining: number;
 }
 
+export const cancelReminderManifest: ToolManifest = defineManifest({
+  id: "cancel_reminder",
+  version: "1.0.0",
+  title: "Cancel Reminder",
+  description: "Cancel a reminder by its id.",
+  outputSummary: "Whether the reminder was cancelled and how many remain.",
+  category: "schedule",
+  triggers: {
+    keywordPatterns: [
+      "یادآور.*(لغو|کنسل|حذف)",
+      "cancel (the|my) reminder",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createCancelReminderTool(
   deps: ReminderToolDeps,
 ): Tool<CancelReminderInput, CancelReminderOutput> {
   return {
     name: "cancel_reminder",
+    manifest: cancelReminderManifest,
     description: "Cancel a reminder by its id.",
     enabled: true,
     permission: { requires: [CANCEL_REMINDER_PERMISSION] },

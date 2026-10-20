@@ -16,6 +16,8 @@
 import { ToolError } from "./errors";
 import type { Storage } from "../storage/storage";
 import type { Tool, ToolActor, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const SEARCH_HISTORY_PERMISSION = "tools:search_history";
 
@@ -46,11 +48,33 @@ export interface SearchHistoryOutput {
   total: number;
 }
 
+export const searchHistoryManifest: ToolManifest = defineManifest({
+  id: "search_history",
+  version: "1.0.0",
+  title: "Search History",
+  description:
+    "Full-text search across conversation history; find earlier messages in any conversation. Only your own conversations are searched.",
+  outputSummary: "Matching message snippets with conversation ids, best match first.",
+  category: "memory",
+  triggers: {
+    keywordPatterns: [
+      "قبلاً گفتم",
+      "قبلا گفتم",
+      "تو چت قبلی",
+      "تاریخچه مکالمه",
+      "search (my )?(chat )?history",
+      "what did (we|i) (talk|discuss) about",
+    ],
+  },
+  costTier: "cheap",
+});
+
 export function createSearchHistoryTool(
   deps: HistoryDeps,
 ): Tool<SearchHistoryInput, SearchHistoryOutput> {
   return {
     name: "search_history",
+    manifest: searchHistoryManifest,
     description:
       "Full-text search across conversation history; find earlier messages in any conversation. Only your own conversations are searched.",
     enabled: true,

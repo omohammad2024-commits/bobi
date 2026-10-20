@@ -26,6 +26,8 @@ import { pinnedFetch } from "../ai/pinned_transport";
 import { ToolError } from "./errors";
 import { htmlToText } from "./html";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const FETCH_URL_PERMISSION = "tools:fetch_url";
 
@@ -79,8 +81,30 @@ export interface FetchUrlOutput {
   truncated: boolean;
 }
 
+export const fetchUrlManifest: ToolManifest = defineManifest({
+  id: "fetch_url",
+  version: "1.0.0",
+  title: "Fetch URL",
+  description:
+    "Read a web page and convert it to text. Use it to read the details behind a link.",
+  outputSummary: "The page's extracted text, URL, status and a truncation flag.",
+  category: "web",
+  triggers: {
+    keywordPatterns: [
+      "باز کن",
+      "بخونش",
+      "این لینک رو بخون",
+      "fetch (this|the) (page|url|link)",
+      "open (this|the) (page|url|link)",
+      "read (this|the) (page|article)",
+    ],
+  },
+  costTier: "cheap",
+});
+
 export const fetchUrlTool: Tool<FetchUrlInput, FetchUrlOutput> = {
   name: "fetch_url",
+  manifest: fetchUrlManifest,
   description:
     "Read a web page and convert it to text. Use it to read the details behind a link.",
   enabled: true,

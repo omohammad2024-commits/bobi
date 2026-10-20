@@ -9,6 +9,8 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const TEXT_UTILITIES_PERMISSION = "tools:text_utilities";
 
@@ -28,8 +30,28 @@ export interface TextOutput {
   longestWord: string | null;
 }
 
+export const textUtilitiesManifest: ToolManifest = defineManifest({
+  id: "text_utilities",
+  version: "1.0.0",
+  title: "Text Utilities",
+  description: "Character/word counts and simple text statistics.",
+  outputSummary: "Character, word, line, sentence and longest-word counts.",
+  category: "utils",
+  triggers: {
+    keywordPatterns: [
+      "بشمار",
+      "تعداد (کلمات|حروف|کاراکتر)",
+      "count (the )?(words|characters|letters)",
+      "uppercase",
+      "lowercase",
+    ],
+  },
+  costTier: "free",
+});
+
 export const textUtilitiesTool: Tool<TextInput, TextOutput> = {
   name: "text_utilities",
+  manifest: textUtilitiesManifest,
   description: "Character/word counts and simple text statistics.",
   enabled: true,
   permission: { requires: [TEXT_UTILITIES_PERMISSION] },

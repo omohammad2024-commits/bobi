@@ -13,6 +13,8 @@
 import { ToolError } from "./errors";
 import type { Storage, GoalStatus } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const ADD_GOAL_PERMISSION = "tools:add_goal";
 export const LIST_GOALS_PERMISSION = "tools:list_goals";
@@ -44,9 +46,22 @@ export interface AddGoalOutput {
   status: GoalStatus;
 }
 
+/** Plugin discovery manifest for `add_goal`. */
+export const addGoalManifest: ToolManifest = defineManifest({
+  id: "add_goal",
+  version: "1.0.0",
+  title: "Add Goal",
+  description: "Add a new goal for the owner. Goals are tracked by the automatic heartbeat. Owner only.",
+  outputSummary: "Returns the goal id, title and status.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["هدف (جدید )?(بذار|بساز|اضافه کن)", "add (a )?goal", "set (a )?goal"] },
+  costTier: "free",
+});
+
 export function createAddGoalTool(deps: GoalToolDeps): Tool<AddGoalInput, AddGoalOutput> {
   return {
     name: "add_goal",
+    manifest: addGoalManifest,
     description:
       "Add a new goal for the owner. Goals are tracked by the automatic heartbeat. Owner only.",
     enabled: true,
@@ -116,9 +131,22 @@ export interface ListGoalsOutput {
   count: number;
 }
 
+/** Plugin discovery manifest for `list_goals`. */
+export const listGoalsManifest: ToolManifest = defineManifest({
+  id: "list_goals",
+  version: "1.0.0",
+  title: "List Goals",
+  description: "List the owner's goals; optionally only active or only done. Owner only.",
+  outputSummary: "Returns the goal list with id, title, description, status and done-at time.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["هدفهام", "لیست اهداف", "list (my )?goals", "show (my )?goals"] },
+  costTier: "free",
+});
+
 export function createListGoalsTool(deps: GoalToolDeps): Tool<ListGoalsInput, ListGoalsOutput> {
   return {
     name: "list_goals",
+    manifest: listGoalsManifest,
     description: "List the owner's goals; optionally only active or only done. Owner only.",
     enabled: true,
     ownerOnly: true,
@@ -170,11 +198,24 @@ export interface CompleteGoalOutput {
   remaining: number;
 }
 
+/** Plugin discovery manifest for `complete_goal`. */
+export const completeGoalManifest: ToolManifest = defineManifest({
+  id: "complete_goal",
+  version: "1.0.0",
+  title: "Complete Goal",
+  description: "Mark a goal done by its id. Owner only.",
+  outputSummary: "Returns the completed flag, goal id, and remaining active goal count.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["هدف.*(تموم|کامل|انجام شد)", "complete (the|my) goal", "mark (the )?goal (as )?(done|complete)"] },
+  costTier: "free",
+});
+
 export function createCompleteGoalTool(
   deps: GoalToolDeps,
 ): Tool<CompleteGoalInput, CompleteGoalOutput> {
   return {
     name: "complete_goal",
+    manifest: completeGoalManifest,
     description: "Mark a goal done by its id. Owner only.",
     enabled: true,
     ownerOnly: true,

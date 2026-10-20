@@ -44,6 +44,11 @@ export class SqliteMemoryProvider implements MemoryProvider {
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
       importance: m.importance,
+      // Schema-22 recall telemetry is present only once it exists: a
+      // never-recalled memory keeps the exact pre-v22 record shape (the
+      // parity test pins it), and consumers read recallCount ?? 0.
+      ...(m.recallCount > 0 ? { recallCount: m.recallCount } : {}),
+      ...(m.lastRecalledAt !== undefined ? { lastRecalledAt: m.lastRecalledAt } : {}),
     };
   }
 
@@ -54,6 +59,8 @@ export class SqliteMemoryProvider implements MemoryProvider {
       createdAt: m.createdAt,
       updatedAt: m.updatedAt,
       importance: m.importance,
+      ...(m.recallCount > 0 ? { recallCount: m.recallCount } : {}),
+      ...(m.lastRecalledAt !== undefined ? { lastRecalledAt: m.lastRecalledAt } : {}),
     }));
   }
 
@@ -71,5 +78,10 @@ export class SqliteMemoryProvider implements MemoryProvider {
     drops: ReadonlyArray<MemoryPruneDrop>,
   ): number {
     return this.storage.pruneMemories(userId, drops);
+  }
+
+  /** Schema 22: recall telemetry, delegated to Storage. */
+  bumpRecall(userId: string, keys: readonly string[]): number {
+    return this.storage.bumpMemoryRecall(userId, keys);
   }
 }

@@ -43,6 +43,8 @@ import {
   reciprocalRankFusionWithScores,
 } from "../memory/hybrid";
 import type { Tool, ToolActor, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const REMEMBER_PERMISSION = "tools:remember";
 export const RECALL_PERMISSION = "tools:recall";
@@ -64,6 +66,28 @@ export interface MemoryDeps {
    * ranking.
    */
   semantic?: SemanticMemoryIndex;
+}
+
+/**
+ * Schema 22: record a recall's hits as recall telemetry (recall_count /
+ * last_recalled_at), so consolidation can promote what is actually used.
+ * Best-effort by design: telemetry must never fail the recall itself, and
+ * providers without bumpRecall (non-SQLite backends) skip silently.
+ */
+async function bumpRecalled(
+  deps: MemoryDeps,
+  userId: string,
+  surfaced: readonly { key: string }[],
+): Promise<void> {
+  if (deps.provider.bumpRecall === undefined || surfaced.length === 0) return;
+  try {
+    await deps.provider.bumpRecall(
+      userId,
+      surfaced.map((m) => m.key),
+    );
+  } catch {
+    // Swallowed on purpose: a telemetry write failure is not a recall failure.
+  }
 }
 
 // ---------- remember ----------
@@ -89,9 +113,30 @@ export interface RememberOutput {
   importance: number;
 }
 
+export const rememberManifest: ToolManifest = defineManifest({
+  id: "remember",
+  version: "1.0.0",
+  title: "Remember",
+  description:
+    "Store a lasting note about the user (name, preference, project). Do not use for fleeting information.",
+  outputSummary: "The stored memory's key, whether it replaced an old one, and the total count.",
+  category: "memory",
+  triggers: {
+    keywordPatterns: [
+      "یادت باشه",
+      "به خاطر بسپار",
+      "به حافظه بسپار",
+      "remember (that|this)",
+      "don't forget",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createRememberTool(deps: MemoryDeps): Tool<RememberInput, RememberOutput> {
   return {
     name: "remember",
+    manifest: rememberManifest,
     description:
       "Store a lasting note about the user (name, preference, project). Do not use for fleeting information.",
     enabled: true,
@@ -217,9 +262,30 @@ export interface RecallOutput {
  */
 const HYBRID_SEMANTIC_CANDIDATES = 50;
 
+export const recallManifest: ToolManifest = defineManifest({
+  id: "recall",
+  version: "1.0.0",
+  title: "Recall",
+  description:
+    "Search memories. Without a query, returns recent items.",
+  outputSummary: "Matching memories (key, content, importance), best match first.",
+  category: "memory",
+  triggers: {
+    keywordPatterns: [
+      "یادت هست",
+      "یادته",
+      "به یاد بیار",
+      "do you remember",
+      "what did i (say|tell you) about",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutput> {
   return {
     name: "recall",
+    manifest: recallManifest,
     description:
       "Search memories. Without a query, returns recent items.",
     enabled: true,
@@ -256,10 +322,10 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
 
       const query = input.query?.trim() ?? "";
       if (query.length === 0) {
+        const recent = candidates.slice(0, limit);
+        await bumpRecalled(deps, userId, recent);
         return {
-          memories: candidates
-            .slice(0, limit)
-            .map((m) => toRecalled(m)),
+          memories: recent.map((m) => toRecalled(m)),
           total: all.length,
           searchMode: "text",
         };
@@ -298,13 +364,14 @@ export function createRecallTool(deps: MemoryDeps): Tool<RecallInput, RecallOutp
             : semanticHits.length > 0
               ? "semantic"
               : "text";
+        await bumpRecalled(deps, userId, memories);
         return { memories, total: all.length, searchMode };
       }
 
+      const textHits = rank(candidates, query).slice(0, limit);
+      await bumpRecalled(deps, userId, textHits);
       return {
-        memories: rank(candidates, query)
-          .slice(0, limit)
-          .map((m) => toRecalled(m)),
+        memories: textHits.map((m) => toRecalled(m)),
         total: all.length,
         searchMode: "text",
       };
@@ -398,9 +465,27 @@ export interface ForgetOutput {
   total: number;
 }
 
+export const forgetManifest: ToolManifest = defineManifest({
+  id: "forget",
+  version: "1.0.0",
+  title: "Forget",
+  description: "Delete a memory by its key.",
+  outputSummary: "Whether a memory was removed and the remaining total.",
+  category: "memory",
+  triggers: {
+    keywordPatterns: [
+      "فراموش کن",
+      "از حافظه پاک کن",
+      "forget (that|this|about)",
+    ],
+  },
+  costTier: "free",
+});
+
 export function createForgetTool(deps: MemoryDeps): Tool<ForgetInput, ForgetOutput> {
   return {
     name: "forget",
+    manifest: forgetManifest,
     description: "Delete a memory by its key.",
     enabled: true,
     permission: { requires: [FORGET_PERMISSION] },

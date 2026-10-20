@@ -22,6 +22,8 @@
  */
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 import { MAX_NUDGE_TEXT_LENGTH, MAX_OPEN_NUDGES_PER_USER, type NudgeTracker } from "../nudges/tracker";
 import { DEFAULT_NUDGE_TIMEZONE, parseDueInstant } from "../nudges/time_fa";
 
@@ -54,10 +56,23 @@ export interface NoteFollowupOutput {
   inMinutes: number;
 }
 
+/** Plugin discovery manifest for `note_followup`. */
+export const noteFollowupManifest: ToolManifest = defineManifest({
+  id: "note_followup",
+  version: "1.0.0",
+  title: "Note Follow-up",
+  description: "Record a follow-up for the bot to remind about later; reminders repeat until the user explicitly closes it. The time can be given in natural language or ISO with a timezone.",
+  outputSummary: "Returns the follow-up id, due time and minutes until due.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["دنبال کن", "پیگیری کن", "follow up", "note (a )?follow.?up"] },
+  costTier: "free",
+});
+
 export function createNoteFollowupTool(deps: NudgeToolDeps): Tool<NoteFollowupInput, NoteFollowupOutput> {
   const timeZone = deps.defaultTimezone ?? DEFAULT_NUDGE_TIMEZONE;
   return {
     name: "note_followup",
+    manifest: noteFollowupManifest,
     description:
       "Record a follow-up for the bot to remind about later; reminders repeat until the user explicitly closes it. The time can be given in natural language or ISO with a timezone.",
     enabled: true,
@@ -135,9 +150,22 @@ export interface ListNudgesOutput {
   count: number;
 }
 
+/** Plugin discovery manifest for `list_nudges`. */
+export const listNudgesManifest: ToolManifest = defineManifest({
+  id: "list_nudges",
+  version: "1.0.0",
+  title: "List Nudges",
+  description: "List the user's open (not closed) follow-ups.",
+  outputSummary: "Returns the user's open follow-ups with id, text, due and snooze times.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["پیگیریهام", "list (my )?(nudges|follow.?ups)"] },
+  costTier: "free",
+});
+
 export function createListNudgesTool(deps: NudgeToolDeps): Tool<Record<string, never>, ListNudgesOutput> {
   return {
     name: "list_nudges",
+    manifest: listNudgesManifest,
     description: "List the user's open (not closed) follow-ups.",
     enabled: true,
     permission: { requires: [LIST_NUDGES_PERMISSION] },
@@ -177,9 +205,21 @@ export interface AckNudgeOutput {
   remaining: number;
 }
 
+/** Plugin discovery manifest for `ack_nudge`. */
+export const ackNudgeManifest: ToolManifest = defineManifest({
+  id: "ack_nudge",
+  version: "1.0.0",
+  title: "Acknowledge Nudge",
+  description: "Close a follow-up by its id (done).",
+  outputSummary: "Returns the acked flag, nudge id, and count of remaining open nudges.",
+  category: "schedule",
+  costTier: "free",
+});
+
 export function createAckNudgeTool(deps: NudgeToolDeps): Tool<AckNudgeInput, AckNudgeOutput> {
   return {
     name: "ack_nudge",
+    manifest: ackNudgeManifest,
     description: "Close a follow-up by its id (done).",
     enabled: true,
     permission: { requires: [ACK_NUDGE_PERMISSION] },
@@ -222,10 +262,22 @@ export interface SnoozeNudgeOutput {
   snoozedUntil: string | null;
 }
 
+/** Plugin discovery manifest for `snooze_nudge`. */
+export const snoozeNudgeManifest: ToolManifest = defineManifest({
+  id: "snooze_nudge",
+  version: "1.0.0",
+  title: "Snooze Nudge",
+  description: "Postpone a follow-up to another time.",
+  outputSummary: "Returns the snoozed flag, nudge id, and the new snoozed-until time.",
+  category: "schedule",
+  costTier: "free",
+});
+
 export function createSnoozeNudgeTool(deps: NudgeToolDeps): Tool<SnoozeNudgeInput, SnoozeNudgeOutput> {
   const timeZone = deps.defaultTimezone ?? DEFAULT_NUDGE_TIMEZONE;
   return {
     name: "snooze_nudge",
+    manifest: snoozeNudgeManifest,
     description: "Postpone a follow-up to another time.",
     enabled: true,
     permission: { requires: [SNOOZE_NUDGE_PERMISSION] },

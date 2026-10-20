@@ -21,6 +21,14 @@ export interface StoredMemory {
    * `./hybrid`.
    */
   importance?: number;
+  /**
+   * Schema 22: how often retrieval has surfaced this memory. Optional:
+   * providers that do not track recall omit it, and consolidation's
+   * promotion rule simply never engages for their rows.
+   */
+  recallCount?: number;
+  /** Schema 22: unix ms of the most recent recall, when tracked. */
+  lastRecalledAt?: number;
 }
 
 /** Options for `MemoryProvider.upsert`. All optional, all additive. */
@@ -90,4 +98,12 @@ export interface MemoryProvider {
     userId: string,
     drops: ReadonlyArray<MemoryPruneDrop>,
   ): number | Promise<number>;
+  /**
+   * Schema 22: record that retrieval surfaced these memories (by key), so
+   * consolidation can promote what is actually used. A recall is a read —
+   * implementations must not bump the rows' updatedAt. Optional: providers
+   * without recall telemetry omit it and recall paths skip the call.
+   * Returns how many rows matched.
+   */
+  bumpRecall?(userId: string, keys: readonly string[]): number | Promise<number>;
 }

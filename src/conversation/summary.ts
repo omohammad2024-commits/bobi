@@ -113,11 +113,14 @@ function buildSummarisePrompt(
   return parts.join("\n");
 }
 
+/** The header marking a rolling-summary turn, used for identification. */
+export const SUMMARY_MESSAGE_HEADER = "خلاصهٔ گفت‌وگوی قبلی:";
+
 /** Encode the summary as a system turn the engine can carry forward. */
 export function summaryMessage(summary: string): ChatMessage {
   return {
     role: "system",
-    content: `خلاصهٔ گفت‌وگوی قبلی:\n${summary}`,
+    content: `${SUMMARY_MESSAGE_HEADER}\n${summary}`,
   };
 }
 

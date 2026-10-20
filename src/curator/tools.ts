@@ -37,6 +37,8 @@ import {
   parsePersianDate,
   type EventKind,
 } from "../memory/events";
+import { applyFactCandidate, factKindOfKey } from "../memory/contradictions";
+import type { FactCandidate } from "../memory/auto_extract";
 import type { Tool, ToolContext } from "../tools/types";
 
 export const CURATE_MEMORIES_PERMISSION = "tools:curate_memories";
@@ -168,7 +170,21 @@ export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDeci
       if (input.decision === "approve") {
         // Apply FIRST: if the write fails the proposal stays pending and the
         // owner can retry, rather than being marked approved with nothing done.
-        await applyProposalAction(deps.provider, userId, proposal.suggestedAction);
+        //
+        // Memory core: an approved NEW fact is applied through the
+        // contradiction pass — a stored fact it supersedes is tombstoned
+        // instead of living on next to its replacement. Corrections arrive
+        // as "update" actions (in-place replace) and deliberately keep the
+        // plain path: applyFactCandidate refuses them by design. If the
+        // pass cannot run for this proposal, the plain apply still happens.
+        const action = proposal.suggestedAction;
+        const viaSupersession =
+          proposal.kind === "fact" && action.type === "add"
+            ? await applyFactWithSupersession(deps.provider, userId, action)
+            : false;
+        if (!viaSupersession) {
+          await applyProposalAction(deps.provider, userId, action);
+        }
       }
       deps.store.resolveProposal(userId, proposal.id, input.decision);
 
@@ -431,6 +447,58 @@ function ownerOf(ctx: ToolContext, deps: CuratorToolDeps): string {
     throw new ToolError("not_allowed", "Memory review is owner-only.");
   }
   return id;
+}
+
+/**
+ * Fact kinds the contradiction pass is safe to supersede on.
+ *
+ * "correction" is deliberately absent: corrections are written as "update"
+ * actions (in-place replace) and applyFactCandidate refuses them loudly —
+ * a correction that found no target is an ambiguous edit, not a new fact
+ * that may evict a whole predicate family.
+ */
+const SUPERSEDABLE_FACT_KINDS: ReadonlySet<string> = new Set([
+  "name",
+  "preference",
+  "commitment",
+  "decision",
+]);
+
+/**
+ * Apply an approved fact "add" through the contradiction pass
+ * (applyFactCandidate), so a stored fact the new one supersedes is
+ * tombstoned instead of left live alongside its replacement.
+ *
+ * Returns true when the pass applied the fact; false when it did not run
+ * (non-fact key shape, non-supersedable kind, or an internal failure) —
+ * the caller then falls back to the plain apply, so an approval is never
+ * lost. The supersession log entry carries keys only, never values.
+ */
+async function applyFactWithSupersession(
+  provider: MemoryProvider,
+  userId: string,
+  action: Extract<ProposalAction, { type: "add" }>,
+): Promise<boolean> {
+  const kind = factKindOfKey(action.key);
+  if (kind === undefined || !SUPERSEDABLE_FACT_KINDS.has(kind)) return false;
+  const candidate: FactCandidate = {
+    kind: kind as FactCandidate["kind"],
+    key: action.key,
+    content: action.content,
+    importance: action.importance ?? 3,
+    isCorrection: false,
+    source: "curator",
+  };
+  try {
+    await applyFactCandidate(provider, userId, candidate, (entry) => {
+      console.info(
+        `[memory] fact superseded: kind=${entry.kind} old=${entry.supersededKey} new=${entry.newKey}`,
+      );
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**

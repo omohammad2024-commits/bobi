@@ -46,6 +46,19 @@ export interface PromptContext {
   /** How many memories this user has stored, if memory is available. */
   memoryCount?: number;
   /**
+   * Core upgrade (memory core): the user's most recent episode summary
+   * (2–3 lines: what the last conversation covered, decisions, open
+   * threads). Pre-fetched by the caller; pasted as a `⟨last session⟩`
+   * block and capped to ~80 estimated tokens here.
+   */
+  lastEpisode?: string;
+  /**
+   * Core upgrade (memory core): memories proactively recalled for THIS
+   * message (already relevance-floored by the caller), one raw entry per
+   * line at most 5. Pasted as a `⟨relevant memories⟩` block.
+   */
+  recalledMemories?: readonly string[];
+  /**
    * Whether the current user is the verified owner (system-verified from
    * the Telegram ID, never from chat text). When true, the prompt states
    * the model is talking to its verified creator Mohammad, so it
@@ -274,6 +287,15 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 
   if (ctx.memoryCount !== undefined) blocks.push(memoryBlock(ctx.memoryCount));
 
+  // Memory core: last session's episode, then the memories this message is
+  // about. Both blocks are small and capped (see helpers) — they orient
+  // the model, they are not a memory dump.
+  const episode = episodeBlock(ctx.lastEpisode);
+  if (episode !== undefined) blocks.push(episode);
+
+  const recalled = recalledBlock(ctx.recalledMemories);
+  if (recalled !== undefined) blocks.push(recalled);
+
   blocks.push(ANSWER_RULE);
 
   if (ctx.skillContext !== undefined && ctx.skillContext.trim().length > 0) {
@@ -346,6 +368,46 @@ function memoryBlock(count: number): string {
     return "Memory: nothing stored yet. Persist anything durable the user says with the remember tool.";
   }
   return `Memory: ${count} item(s), contents hidden; use the recall tool to search them.`;
+}
+
+/** Token ceiling for the pasted episode summary (est. tokens, see estimator). */
+export const EPISODE_PROMPT_TOKEN_BUDGET = 80;
+/** At most this many proactively recalled memories are pasted per turn. */
+export const MAX_PROMPT_RECALLED = 5;
+
+/**
+ * The `⟨last session⟩` block: the previous conversation's episode summary,
+ * trimmed word-wise to the token budget so a verbose summary can never
+ * crowd the prompt. Deterministic for tests.
+ */
+function episodeBlock(text: string | undefined): string | undefined {
+  if (text === undefined || text.trim().length === 0) return undefined;
+  const trimmed = text.trim();
+  if (estimatePromptTokens(trimmed) <= EPISODE_PROMPT_TOKEN_BUDGET) {
+    return `⟨last session⟩\n${trimmed}`;
+  }
+  let out = "";
+  for (const word of trimmed.split(/\s+/)) {
+    const next = out.length === 0 ? word : `${out} ${word}`;
+    if (estimatePromptTokens(next) > EPISODE_PROMPT_TOKEN_BUDGET) break;
+    out = next;
+  }
+  const body = out.length > 0 ? `${out} …` : trimmed.slice(0, EPISODE_PROMPT_TOKEN_BUDGET * 4);
+  return `⟨last session⟩\n${body}`;
+}
+
+/**
+ * The `⟨relevant memories⟩` block: proactively recalled memories for this
+ * message, one line each (newlines flattened), capped at MAX_PROMPT_RECALLED.
+ */
+function recalledBlock(lines: readonly string[] | undefined): string | undefined {
+  if (lines === undefined) return undefined;
+  const clean = lines
+    .map((l) => l.replace(/\s*\n\s*/g, " ").trim().slice(0, 200))
+    .filter((l) => l.length > 0)
+    .slice(0, MAX_PROMPT_RECALLED);
+  if (clean.length === 0) return undefined;
+  return `⟨relevant memories⟩\n${clean.map((l) => `- ${l}`).join("\n")}`;
 }
 
 /**

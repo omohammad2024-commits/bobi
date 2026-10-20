@@ -95,6 +95,24 @@ export interface ToolPermission {
   readonly requires: readonly string[];
 }
 
+/**
+ * Deterministic intent triggers for the intent router (src/routing).
+ *
+ * Regexes are stored as STRINGS so manifests stay pure serializable
+ * data; the router compiles them once. A tool with no triggers is
+ * simply never router-suggested — the model still sees it in the
+ * catalog. Patterns are matched case-insensitively by the router, so
+ * write them without flags.
+ */
+export interface ToolTriggerPatterns {
+  /** Matched against URLs found in the user's message text. */
+  readonly urlPatterns?: readonly string[];
+  /** Matched against the whole message text (Persian variants welcome). */
+  readonly keywordPatterns?: readonly string[];
+  /** MIME types the tool handles (for media messages without text). */
+  readonly mimeTypes?: readonly string[];
+}
+
 /** A BOBI tool. Implementations are pure and side-effect free by contract. */
 export interface Tool<TIn, TOut> {
   /** Unique, stable, lowercase snake_case identifier. */
@@ -125,6 +143,16 @@ export interface Tool<TIn, TOut> {
   readonly toolset?: string;
   /** Input contract used for validation before execution. */
   readonly input: ToolInputSpec;
+  /**
+   * Plugin discovery metadata (see manifest.ts).
+   *
+   * Optional during the architecture migration: every built-in tool
+   * ships one, and the plugin catalog (plugins.ts) asserts that the
+   * statically-registered tools all carry one whose id equals the
+   * tool's name. External/dynamically-built tools (MCP adapters) may
+   * omit it — they are never intent-router candidates.
+   */
+  readonly manifest?: import("./manifest").ToolManifest;
   /**
    * Executor timeout override for this tool, ms.
    *

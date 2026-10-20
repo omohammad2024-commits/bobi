@@ -19,6 +19,9 @@
  */
 import type { Tool, ToolActor, ToolContext } from "./types";
 import { visibleCommandHelp } from "../bot/command_help";
+import type { CommandHelpEntry } from "../bot/command_help";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 /** Permission key that gates this tool. Granted like any other tool key. */
 export const COMMANDS_PERMISSION = "tools:commands";
@@ -32,7 +35,41 @@ export interface CommandsToolDeps {
    * never model text. Drives the owner-only filtering of the listing.
    */
   isOwner: (userId: string) => boolean;
+  /**
+   * Catalog source: the command entries visible to an actor with the
+   * given ownership (owner-only entries withheld for non-owners).
+   *
+   * Plugin-architecture note: the catalog is the bot layer's data, so a
+   * fully-decoupled wiring injects it here instead of the tool reaching
+   * across layers. Optional for backward compatibility — when omitted
+   * the tool falls back to the bot layer's visibleCommandHelp() (the
+   * only remaining runtime cross-layer import in this module; see the
+   * dependency audit). New wiring should always pass it explicitly.
+   */
+  listCommands?: (isOwner: boolean) => readonly CommandHelpEntry[];
 }
+
+/** Plugin manifest for the commands tool (see manifest.ts). */
+export const commandsManifest: ToolManifest = defineManifest({
+  id: "commands",
+  version: "1.0.0",
+  title: "Command List",
+  description:
+    "Show the bot's chat commands from the static catalog, filtered per actor. Instant and I/O-free — the way to answer 'what can you do' and 'list the commands' requests.",
+  outputSummary: "The visible command names with one-line descriptions and groups.",
+  category: "system",
+  triggers: {
+    keywordPatterns: [
+      "لیست دستورات",
+      "دستوراتت? (رو|را)? (بگو|نشون بده|بفرست)",
+      "چه دستوراتی داری",
+      "list (of )?(your )?commands",
+      "what commands (do you have|can i use)",
+      "show (me )?(the )?commands",
+    ],
+  },
+  costTier: "free",
+});
 
 /** No input: the listing is static and per-actor, never per-request. */
 export type CommandsInput = Record<string, never>;
@@ -56,6 +93,7 @@ export interface CommandsOutput {
 export function createCommandsTool(deps: CommandsToolDeps): Tool<CommandsInput, CommandsOutput> {
   return {
     name: COMMANDS_TOOL_NAME,
+    manifest: commandsManifest,
     description: "Show the bot's commands.",
     enabled: true,
     permission: { requires: [COMMANDS_PERMISSION] },
@@ -68,7 +106,9 @@ export function createCommandsTool(deps: CommandsToolDeps): Tool<CommandsInput, 
       // owner-only command, even if a future caller wires the deps wrongly —
       // so the filter reads the actor, not a cached flag.
       const owner = isOwnerSafe(deps, ctx.actor);
-      const entries = visibleCommandHelp(owner);
+      // Decoupled catalog source when wired; bot-layer fallback otherwise.
+      const listCommands = deps.listCommands ?? visibleCommandHelp;
+      const entries = listCommands(owner);
       return {
         commands: entries.map((e) => ({
           name: e.name,

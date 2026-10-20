@@ -13,7 +13,8 @@ import type { ContentPart } from "../ai/provider";
 export type AgentStep =
   | { kind: "model"; iteration: number; model: string; requestedTools: readonly string[] }
   | { kind: "tool"; name: string; status: ToolRunStatus; durationMs: number }
-  | { kind: "limit"; limit: "iterations" | "tool_calls" | "timeout" };
+  | { kind: "limit"; limit: "iterations" | "tool_calls" | "timeout" }
+  | { kind: "plan"; steps: readonly string[]; completed: boolean };
 
 /** Why a run stopped asking for tools. */
 export type StopReason =
@@ -22,7 +23,9 @@ export type StopReason =
   /** A budget ran out; a tool-free call produced the best answer available. */
   | "budget_exhausted"
   /** The caller cancelled (a newer message superseded this one, or shutdown). */
-  | "cancelled";
+  | "cancelled"
+  /** The model requested an identical tool call a third time; the loop broke out. */
+  | "loop_detected";
 
 export interface AgentRunResult {
   /** Final assistant text, never empty — the loop always produces something. */

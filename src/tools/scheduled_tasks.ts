@@ -17,6 +17,8 @@ import type { CronSchedule } from "../scheduler/cron";
 import { ToolError } from "./errors";
 import type { ScheduledTaskStatus, Storage } from "../storage/storage";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const SCHEDULE_TASK_PERMISSION = "tools:schedule_task";
 export const LIST_TASKS_PERMISSION = "tools:list_tasks";
@@ -155,9 +157,22 @@ export interface ScheduleTaskOutput {
   enabled: boolean;
 }
 
+/** Plugin discovery manifest for `schedule_task`. */
+export const scheduleTaskManifest: ToolManifest = defineManifest({
+  id: "schedule_task",
+  version: "1.0.0",
+  title: "Schedule Task",
+  description: "Create a scheduled task with a cron expression (owner only). The action can run a tool, send a message, or run an agent.",
+  outputSummary: "Returns the scheduled-task id, normalized cron, timezone and next run time.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["برنامه‌ریزی کن", "برنامه ریزی کن", "زمان‌بندی کن", "schedule (a|this|the) task"] },
+  costTier: "cheap",
+});
+
 export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<ScheduleTaskInput, ScheduleTaskOutput> {
   return {
     name: "schedule_task",
+    manifest: scheduleTaskManifest,
     description:
       "Create a scheduled task with a cron expression (owner only). The action can run a tool, send a message, or run an agent.",
     enabled: true,
@@ -283,9 +298,22 @@ export interface ListTasksOutput {
   count: number;
 }
 
+/** Plugin discovery manifest for `list_tasks`. */
+export const listTasksManifest: ToolManifest = defineManifest({
+  id: "list_tasks",
+  version: "1.0.0",
+  title: "List Tasks",
+  description: "List scheduled tasks (owner only).",
+  outputSummary: "Returns the owner's scheduled tasks with id, cron, next run time and status.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["تسکهام", "وظایف برنامه‌ریزی شده", "list (my )?(scheduled )?tasks"] },
+  costTier: "free",
+});
+
 export function createListTasksTool(deps: ScheduledTaskToolDeps): Tool<Record<string, never>, ListTasksOutput> {
   return {
     name: "list_tasks",
+    manifest: listTasksManifest,
     description: "List scheduled tasks (owner only).",
     enabled: true,
     ownerOnly: true,
@@ -326,9 +354,22 @@ export interface CancelTaskOutput {
   remaining: number;
 }
 
+/** Plugin discovery manifest for `cancel_task`. */
+export const cancelTaskManifest: ToolManifest = defineManifest({
+  id: "cancel_task",
+  version: "1.0.0",
+  title: "Cancel Task",
+  description: "Delete a scheduled task by its id (owner only).",
+  outputSummary: "Returns the cancelled flag, task id, and count of remaining tasks.",
+  category: "schedule",
+  triggers: { keywordPatterns: ["تسک.*(لغو|کنسل)", "cancel (the|my|that) (scheduled )?task"] },
+  costTier: "free",
+});
+
 export function createCancelTaskTool(deps: ScheduledTaskToolDeps): Tool<CancelTaskInput, CancelTaskOutput> {
   return {
     name: "cancel_task",
+    manifest: cancelTaskManifest,
     description: "Delete a scheduled task by its id (owner only).",
     enabled: true,
     ownerOnly: true,

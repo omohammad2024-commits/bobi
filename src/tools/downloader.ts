@@ -28,6 +28,8 @@ import { mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { AiError } from "../ai/provider";
 import { resolveTarget } from "../ai/dns_guard";
 import { ToolError } from "./errors";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 import type { Tool, ToolContext } from "./types";
 
 export const DOWNLOAD_MEDIA_PERMISSION = "tools:download_media";
@@ -615,8 +617,50 @@ function mapErrorKind(kind: DownloadErrorKind): "not_found" | "not_allowed" | "i
   }
 }
 
+/**
+ * Plugin manifest — the reference implementation for the plugin
+ * contract (see manifest.ts). The intent router consumes `triggers`:
+ * every URL in this tool's patterns routes here deterministically,
+ * and the media MIME types let media messages without a caption
+ * still find the downloader.
+ *
+ * Dependency note (architecture audit, Oct 2026): this module imports
+ * `AiError` (the shared error vocabulary) and `resolveTarget` (the
+ * SSRF/DNS guard) from ../ai — shared infrastructure primitives, the
+ * same class as node:* imports. It imports NOTHING from ../agent or
+ * ../bot and never calls a provider, gateway or model: the download
+ * is pure subprocess + guarded HTTP, fully self-contained.
+ */
+export const downloadMediaManifest: ToolManifest = defineManifest({
+  id: "download_media",
+  version: "1.0.0",
+  title: "Media Downloader",
+  description:
+    "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct media file URL. Returns a local file path for the bot layer to send.",
+  outputSummary: "Local file path, platform, title and size of the downloaded media.",
+  category: "media",
+  triggers: {
+    urlPatterns: [
+      "(?:youtube\\.com/(?:watch|shorts|live)|youtu\\.be/)",
+      "instagram\\.com/(?:reel|p|tv)/",
+      "(?:tiktok\\.com|vm\\.tiktok\\.com|vt\\.tiktok\\.com)",
+      "(?:twitter\\.com|x\\.com)/\\S+/status/",
+      "\\.(?:mp4|mov|mkv|webm|mp3|m4a|ogg|wav)(?:\\?|$)",
+    ],
+    keywordPatterns: [
+      "دانلود کن",
+      "دانلودش کن",
+      "download (this|the|that) (video|clip|song|audio|file)",
+    ],
+    mimeTypes: ["video/*", "audio/*"],
+  },
+  timeoutMs: 600_000,
+  costTier: "heavy",
+});
+
 export const downloadTool: Tool<DownloadMediaInput, DownloadMediaOutput> = {
   name: "download_media",
+  manifest: downloadMediaManifest,
   description:
     "Download a video or audio file from a YouTube, Instagram, TikTok or X (Twitter) link, or a direct file URL. Returns a file path; the bot layer sends the file and deletes it afterwards.",
   enabled: true,

@@ -23,6 +23,8 @@
  *   `tools:tool_search` may discover the tools they are allowed to use.
  */
 import type { FieldType, Tool, ToolActor, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 import { tokenize } from "../skills/search";
 
 /** Permission key that gates this tool. Granted like any other tool key. */
@@ -148,11 +150,23 @@ function scoreTool(tool: VisibleToolInfo, tokens: string[]): number {
 }
 
 /** Build the tool_search tool. Not ownerOnly: approved users may discover. */
+/** Plugin discovery manifest for `tool_search`. */
+export const toolSearchManifest: ToolManifest = defineManifest({
+  id: "tool_search",
+  version: "1.0.0",
+  title: "Tool Search",
+  description: "Search tools by keyword; when the tool you need is not in the main list, find its name, description and inputs, then call it by name.",
+  outputSummary: "Returns matching tools: name, description, toolset and input schema.",
+  category: "system",
+  costTier: "cheap",
+});
+
 export function createToolSearchTool(
   deps: ToolSearchDeps,
 ): Tool<ToolSearchInput, ToolSearchOutput> {
   return {
     name: TOOL_SEARCH_TOOL_NAME,
+    manifest: toolSearchManifest,
     description:
       "Search tools by keyword; when the tool you need is not in the main list, find its name, description and inputs, then call it by name.",
     enabled: true,

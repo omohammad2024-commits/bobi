@@ -49,6 +49,8 @@ import type { MixtureAnswer } from "../ai/mixture";
 import { DeadlineExceeded, raceDeadline, withDeadline } from "../core/deadline";
 import { ToolError, toToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const CONSULT_MODELS_TOOL_NAME = "consult_models";
 export const CONSULT_MODELS_PERMISSION = "tools:consult_models";
@@ -95,11 +97,24 @@ export interface ConsultModelsDeps {
 }
 
 /** Build the consult_models tool. Two-tier access: owner-only — multi-model consultation is an owner capability. */
+/** Plugin discovery manifest for `consult_models`. */
+export const consultModelsManifest: ToolManifest = defineManifest({
+  id: "consult_models",
+  version: "1.0.0",
+  title: "Consult Models",
+  description: "Consult up to 3 configured models at once and combine their answers into one precise answer. Querying is expensive (one full call per model + one synthesis); use it for important questions worth multiple perspectives.",
+  outputSummary: "Returns the consultation result: models used and the synthesized English answer.",
+  category: "agents",
+  timeoutMs: 120000,
+  costTier: "heavy",
+});
+
 export function createConsultModelsTool(
   deps: ConsultModelsDeps,
 ): Tool<ConsultModelsInput, ConsultModelsOutput> {
   return {
     name: CONSULT_MODELS_TOOL_NAME,
+    manifest: consultModelsManifest,
     description:
       "Consult up to 3 configured models at once and combine their answers into one precise answer. " +
       "Querying is expensive (one full call per model + one synthesis); use it for important questions worth multiple perspectives.",

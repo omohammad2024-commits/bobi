@@ -13,6 +13,8 @@ import { ToolError } from "./errors";
 import { SearchError } from "../search/provider";
 import type { SearchProvider, SearchResult } from "../search/provider";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const WEB_SEARCH_PERMISSION = "tools:web_search";
 
@@ -52,9 +54,22 @@ export interface WebSearchToolDeps {
  * configured registers this disabled, so the model is never told about a tool
  * that cannot work.
  */
+/** Plugin discovery manifest for `web_search`. */
+export const webSearchManifest: ToolManifest = defineManifest({
+  id: "web_search",
+  version: "1.0.0",
+  title: "Web Search",
+  description: "Web search. Use it to find fresh information or sources beyond the model's knowledge.",
+  outputSummary: "Returns the query, the answering provider, and the list of search results.",
+  category: "web",
+  triggers: { keywordPatterns: ["سرچ کن", "جستجو کن", "تو اینترنت بگرد", "search (the )?(web|internet)", "look (it|this|that) up online"] },
+  costTier: "cheap",
+});
+
 export function createWebSearchTool(deps: WebSearchToolDeps): Tool<WebSearchInput, WebSearchOutput> {
   return {
     name: "web_search",
+    manifest: webSearchManifest,
     description:
       "Web search. Use it to find fresh information or sources beyond the model's knowledge.",
     enabled: true,

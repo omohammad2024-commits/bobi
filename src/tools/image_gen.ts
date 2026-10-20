@@ -27,6 +27,8 @@ import { pinnedFetch } from "../ai/pinned_transport";
 import { AiError } from "../ai/provider";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
 
 export const GENERATE_IMAGE_PERMISSION = "tools:generate_image";
 
@@ -104,6 +106,18 @@ export function imageGenConfigured(baseUrl: string): boolean {
  */
 const mediaBytes = new WeakMap<object, string>();
 
+/** Plugin discovery manifest for `generate_image`. */
+export const generateImageManifest: ToolManifest = defineManifest({
+  id: "generate_image",
+  version: "1.0.0",
+  title: "Generate Image",
+  description: "Generate an image from a text description. Use it when the user wants an image that does not exist; the user sees the result.",
+  outputSummary: "Returns the generated image as an attachment, with prompt, size and revised prompt.",
+  category: "media",
+  triggers: { keywordPatterns: ["عکس بساز", "تصویر بساز", "نقاشی کن", "generate (an? )?image", "create (an? )?image", "draw (a|an|me)"] },
+  costTier: "heavy",
+});
+
 export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, ImageGenOutput> {
   if (!imageGenConfigured(deps.baseUrl)) {
     throw new ToolError("disabled", "Image generation is not configured.");
@@ -111,6 +125,7 @@ export function createImageGenTool(deps: ImageGenDeps): Tool<ImageGenInput, Imag
 
   return {
     name: "generate_image",
+    manifest: generateImageManifest,
     description:
       "Generate an image from a text description. Use it when the user wants an image that does not exist; the user sees the result.",
     enabled: true,
