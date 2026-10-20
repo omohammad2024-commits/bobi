@@ -1405,7 +1405,15 @@ export class AiAdminController {
             discovered.models.map((m) => m.id),
           );
         }
-        return { ok: true as const, text: this.importReport(imported, lang) };
+        // Staleness (audit M7): saved models the provider no longer
+        // returns are flagged in the report — never auto-deleted; the
+        // owner removes them from the model list (same behaviour as the
+        // mini app's discovery, which renders them with one-tap removal).
+        const remoteIds = new Set(discovered.models.map((m) => m.id));
+        const staleCount = this.models
+          .list(providerId)
+          .filter((m) => !remoteIds.has(m.modelId)).length;
+        return { ok: true as const, text: this.importReport(imported, lang, staleCount) };
       },
     );
     if (!r.ok) return { ok: false, text: tr(lang, "panel.provider.discover_fail") };
@@ -1453,6 +1461,7 @@ export class AiAdminController {
   private importReport(
     imported: { added: number; existing: number; capped: boolean; total: number },
     lang: PanelLang,
+    staleCount = 0,
   ): string {
     // When the cap truncated the import, the report must say so as
     // "first 50 of N" (audit M7) — including when nothing in the first
@@ -1464,7 +1473,17 @@ export class AiAdminController {
           total: formatNum(imported.total, lang),
         })
       : "";
-    if (imported.added === 0) return atr(lang, "audit.discover.none_new") + cappedSuffix;
+    // Saved-but-retired models are named in BOTH branches: "no new
+    // models" must not read as "everything is fine" while ghost rows
+    // the provider dropped are still sitting in the list.
+    const staleSuffix =
+      staleCount > 0
+        ? atr(lang, "audit.discover.stale_suffix", {
+            n: formatNum(staleCount, lang),
+          })
+        : "";
+    if (imported.added === 0)
+      return atr(lang, "audit.discover.none_new") + cappedSuffix + staleSuffix;
     const text = atr(lang, "audit.discover.imported", {
       added: formatNum(imported.added, lang),
       existing:
@@ -1474,7 +1493,7 @@ export class AiAdminController {
             })
           : "",
     });
-    return text + cappedSuffix;
+    return text + cappedSuffix + staleSuffix;
   }
 
   /** The active provider + its models, for the quick-switch screen. */

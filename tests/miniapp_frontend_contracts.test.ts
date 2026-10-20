@@ -29,7 +29,7 @@
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { createHmac } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
@@ -321,5 +321,39 @@ describe("providers.js urlOk (mirrored regex — keep in sync)", () => {
     expect(urlOk("not a url")).toBe(false);
     expect(urlOk("ftp://x.com")).toBe(false);
     expect(urlOk("https://")).toBe(false);
+  });
+});
+
+describe("providers.js stale-model UI (wave-4 M7)", () => {
+  // The frontend has no DOM harness; pin the wiring the Models tab
+  // relies on: the discover handler must consume the backend's `stale`
+  // flag (pinned behaviorally in provider_gauntlet_services) and offer
+  // removal through the existing models.delete contract, and every
+  // stale-family string it renders must be registered in its RS block
+  // (an unregistered key renders as the raw key in the UI).
+  const SRC = readFileSync(
+    join(import.meta.dir, "../src/miniapp/web/sections/providers.js"),
+    "utf8",
+  );
+
+  test("the discover handler consumes `stale` and `defaultReset`", () => {
+    expect(SRC).toContain("resp.stale");
+    expect(SRC).toContain("resp.defaultReset");
+  });
+
+  test("stale removal goes through models.delete with confirm", () => {
+    expect(SRC).toContain('"models.delete", { id: entry.id, confirm: true }');
+  });
+
+  test("every stale-family string rendered is registered in the RS block", () => {
+    const used = new Set(
+      [...SRC.matchAll(/(?:ctx\.t|fmt)\("(prov\.(?:stale[A-Za-z]+|defaultResetNote|discoverError))"/g)].map(
+        (m) => m[1] as string,
+      ),
+    );
+    expect(used.size).toBeGreaterThan(5);
+    for (const k of used) {
+      expect(SRC, `registered: ${k}`).toContain(`"${k}":`);
+    }
   });
 });

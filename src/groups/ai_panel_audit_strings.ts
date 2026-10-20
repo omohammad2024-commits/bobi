@@ -50,6 +50,10 @@ const AUDIT_STRINGS: Record<string, AuditEntry> = {
     fa: " (فقط {n} تای اول از {total} مدل وارد شد)",
     en: " (only the first {n} of {total} models were imported)",
   },
+  "audit.discover.stale_suffix": {
+    fa: " {n} مدل ذخیره‌شده دیگر از طرف سرویس ارائه نمی‌شود؛ از فهرست مدل‌ها حذفشان کن.",
+    en: " {n} saved models are no longer offered by this provider — remove them from the model list.",
+  },
 
   // ---- provider/model quick-switch ----
 

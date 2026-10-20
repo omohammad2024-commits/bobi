@@ -537,6 +537,31 @@ describe("model discovery", () => {
     h.storage.close();
   });
 
+  test("discovery report flags saved models the provider no longer offers (M7 stale)", async () => {
+    const remote: RemoteModel[] = [{ id: "m-a" }];
+    const h = harness({ adapters: new StubAdapters(new Error("no complete"), remote) });
+    const pid = providerWithKey(h);
+    const gone = h.models.add({ providerId: pid, modelId: "m-gone", label: "Gone" });
+    if (!gone.ok) throw new Error("model failed");
+
+    const c = fakeCallbackCtx();
+    await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
+
+    const last = lastEdit(c);
+    expect(last.text).toContain("1 new models");
+    expect(last.text).toContain("no longer offered");
+    // Flagging only: the stale row is NOT deleted by discovery.
+    expect(h.models.list(pid).map((m) => m.modelId).sort()).toEqual(["m-a", "m-gone"]);
+
+    // The none-new branch names the stale rows too — "nothing new" must
+    // not read as "everything is fine" while ghost rows remain.
+    await h.ai.handleCallback(c.ctx, encode({ kind: "ai_discover", providerId: pid }));
+    const again = lastEdit(c);
+    expect(again.text).toContain("No new models found");
+    expect(again.text).toContain("no longer offered");
+    h.storage.close();
+  });
+
   test("a second discovery reports nothing new", async () => {
     const remote: RemoteModel[] = [{ id: "m-a" }];
     const h = harness({ adapters: new StubAdapters(new Error("no complete"), remote) });

@@ -112,6 +112,18 @@
       "prov.breakerOpen": "Circuit open",
       "prov.quarantined": "Quarantined",
       "prov.httpStatus": "HTTP {n}",
+      "prov.staleTitle": "No longer offered",
+      "prov.staleSub": "Saved models the provider did not return in the latest discovery — they usually cannot answer anymore.",
+      "prov.staleBadge": "Retired",
+      "prov.staleRemove": "Remove",
+      "prov.staleRemoveAll": "Remove all retired",
+      "prov.staleRemoved": "{n} retired models removed",
+      "prov.staleActiveNote": "This is the active model — activate another model before it can be removed.",
+      "prov.staleDefaultConfirm": "This is the provider's default model — connection tests probe it. Remove it anyway?",
+      "prov.staleRemoveConfirm": "Remove this saved model? The provider no longer offers it.",
+      "prov.staleRemoveAllConfirm": "Remove all retired models for this provider? The active model is never removed here.",
+      "prov.defaultResetNote": "The default model was retired upstream; it now points at a discovered model.",
+      "prov.discoverError": "Discovery failed",
     });
 
   // Fallback presets if providers.presets is unreachable.
@@ -702,6 +714,7 @@
         '<div class="spacer"></div><span class="badge">' + fmt("prov.modelCount", models.length) + "</span></div>" +
         '<button type="button" class="btn btn-primary btn-block" id="discBtn" style="margin-top:0"></button>' +
         '<div id="discList"></div>' +
+        '<div id="staleList"></div>' +
         '<div id="modelRows" style="margin-top:8px"></div>';
       host.appendChild(mcard);
 
@@ -712,20 +725,139 @@
       discLabel();
       paintModelRows(mcard.querySelector("#modelRows"), models, p.id);
 
+      // ---- stale models (audit M7 UI) ----
+      // models.discover flags stored rows the provider no longer returns
+      // in `stale`; until now the flag was computed server-side and never
+      // rendered, so retired ids sat in the list looking usable forever.
+      // Removal goes through the same models.delete the row trash button
+      // uses (with its confirm); the ACTIVE model cannot be deleted
+      // server-side, so its button is disabled with the reason inline,
+      // and the DEFAULT model gets a stronger confirm (probes use it).
+      let staleRows = [];
+      const staleHost = mcard.querySelector("#staleList");
+      function staleModelRow(entry) {
+        for (const m of models) if (String(m.id) === String(entry.id)) return m;
+        return null;
+      }
+      async function refreshModelRows() {
+        try {
+          const mr = await ctx.api("models.list", { providerId: p.id });
+          if (mr && mr.models) models = mr.models;
+        } catch (e) { /* keep the rows already on screen */ }
+        paintModelRows(mcard.querySelector("#modelRows"), models, p.id);
+      }
+      async function removeStale(entry) {
+        try {
+          await ctx.api("models.delete", { id: entry.id, confirm: true });
+          staleRows = staleRows.filter(function (s) { return String(s.id) !== String(entry.id); });
+          await refreshModelRows();
+          paintStale();
+          return true;
+        } catch (e) {
+          ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
+          return false;
+        }
+      }
+      function paintStale() {
+        staleHost.innerHTML = "";
+        if (!staleRows.length) return;
+        const wrap = document.createElement("div");
+        wrap.style.marginTop = "12px";
+        let h =
+          '<div class="group-label">' + ctx.icon("alert") + ctx.esc(ctx.t("prov.staleTitle")) +
+          ' <span class="badge badge-warn">' + num(staleRows.length) + "</span></div>" +
+          '<p class="mx-muted" style="margin:0 0 8px">' + ctx.esc(ctx.t("prov.staleSub")) + "</p>";
+        for (const s of staleRows) {
+          const row = staleModelRow(s);
+          const isActive = !!(row && row.isActive);
+          const isDefault = !!(row && row.isDefault);
+          h +=
+            '<div class="mx-row" style="padding:7px 0;border-bottom:1px solid var(--border)">' +
+            '<div class="list-main"><div class="list-title mono" dir="ltr">' + ctx.esc(s.modelId || s.label || s.id) + "</div>" +
+            '<div style="margin-top:4px"><span class="badge badge-warn">' + ctx.esc(ctx.t("prov.staleBadge")) + "</span>" +
+            (isActive ? ' <span class="badge badge-accent">' + ctx.esc(ctx.t("prov.modelActive")) + "</span>" : "") +
+            (isDefault ? ' <span class="badge">' + ctx.esc(ctx.t("prov.modelDefault")) + "</span>" : "") +
+            "</div>" +
+            (isActive ? '<div class="list-sub" style="white-space:normal">' + ctx.esc(ctx.t("prov.staleActiveNote")) + "</div>" : "") +
+            "</div>" +
+            '<button type="button" class="btn btn-sm btn-danger act-stale-del" data-sid="' + ctx.esc(String(s.id)) + '"' +
+            (isActive ? " disabled" : "") + ">" + ctx.icon("trash") + ctx.esc(ctx.t("prov.staleRemove")) + "</button>" +
+            "</div>";
+        }
+        const removable = staleRows.filter(function (s) {
+          const row = staleModelRow(s);
+          return !(row && row.isActive);
+        });
+        if (removable.length > 1) {
+          h += '<button type="button" class="btn btn-ghost btn-block" id="staleRemoveAll" style="margin-top:8px">' +
+            ctx.icon("trash") + ctx.esc(ctx.t("prov.staleRemoveAll")) + " (" + num(removable.length) + ")</button>";
+        }
+        wrap.innerHTML = h;
+        staleHost.appendChild(wrap);
+        Array.prototype.forEach.call(wrap.querySelectorAll(".act-stale-del"), function (btn) {
+          btn.addEventListener("click", async function () {
+            const entry = staleRows.find(function (s) { return String(s.id) === btn.getAttribute("data-sid"); });
+            if (!entry) return;
+            const row = staleModelRow(entry);
+            const ok = await ctx.confirmDialog(
+              ctx.t("dialog.confirmTitle"),
+              row && row.isDefault ? ctx.t("prov.staleDefaultConfirm") : ctx.t("prov.staleRemoveConfirm"),
+            );
+            if (!ok) return;
+            if (await removeStale(entry)) ctx.toast(ctx.t("toast.deleted"), "ok");
+          });
+        });
+        const allBtn = wrap.querySelector("#staleRemoveAll");
+        if (allBtn) {
+          allBtn.addEventListener("click", async function () {
+            const ok = await ctx.confirmDialog(ctx.t("dialog.confirmTitle"), ctx.t("prov.staleRemoveAllConfirm"));
+            if (!ok) return;
+            allBtn.disabled = true;
+            let removed = 0;
+            for (const entry of staleRows.slice()) {
+              const row = staleModelRow(entry);
+              if (row && row.isActive) continue; // never removable here
+              if (await removeStale(entry)) removed++;
+            }
+            if (removed) ctx.toast(fmt("prov.staleRemoved", removed), "ok");
+            paintStale();
+          });
+        }
+      }
+
       discBtn.addEventListener("click", async function () {
         const list = mcard.querySelector("#discList");
         discBtn.disabled = true;
         discBtn.textContent = ctx.t("prov.discovering");
         let found = [];
+        let resp = null;
         try {
-          const r = await ctx.api("models.discover", { providerId: p.id });
-          found = (r.models || []).filter(function (m) { return !m.imported; });
+          resp = await ctx.api("models.discover", { providerId: p.id });
+          found = (resp.models || []).filter(function (m) { return !m.imported; });
         } catch (e) {
+          // Persistent inline error, not toast-only: the message carries
+          // the adapter's real failure (status + the provider's own
+          // words via the discovery error path), and it must still be
+          // readable after the toast fades.
+          list.innerHTML = '<div class="error" style="margin-top:8px">' +
+            ctx.esc(ctx.t("prov.discoverError")) + ": " + ctx.esc((e && e.message) || ctx.t("toast.failed")) + "</div>";
           ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
           discBtn.disabled = false;
           discLabel();
           return;
         }
+        // M7: stored models the provider no longer offers get their own
+        // section with one-tap removal (rendered even when there is also
+        // nothing new to import).
+        staleRows = (resp && resp.stale) || [];
+        if (resp && resp.defaultReset) {
+          // Gemini repair: the default pointed at a retired model and
+          // was moved server-side — say so and refresh the rows so the
+          // Default badge lands on the model that actually answers.
+          ctx.toast(ctx.t("prov.defaultResetNote"), "ok");
+          await refreshModelRows();
+        }
+        paintStale();
         if (!found.length) {
           list.innerHTML = '<div class="mx-kv" style="margin-top:8px">' + ctx.esc(ctx.t("prov.allImported")) + "</div>";
           discBtn.disabled = false;
