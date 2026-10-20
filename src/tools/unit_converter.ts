@@ -82,6 +82,14 @@ export const unitConverterManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Unit Converter",
   description: "Convert length, mass, volume and temperature units.",
+  purpose: "unit conversion",
+  useWhen: "convert asked",
+  doNotUseWhen:
+    "general arithmetic — that is calculator; currency exchange rates are not supported here",
+  confusableWith: [
+    { tool: "calculator", difference: "calculator evaluates expressions; this converts units in one category" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The converted value with source/target units and category.",
   category: "utils",
   triggers: {

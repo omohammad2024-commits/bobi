@@ -60,6 +60,12 @@ export const usageReportManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Usage Report",
   description: "Token usage and approximate cost report for today and the last 7 days, by model (owner only).",
+  purpose: "usage/cost report",
+  useWhen: "spend asked",
+  doNotUseWhen:
+    "live provider status or config — this only reports recorded token totals for today and 7 days",
+  confusableWith: [],
+  latencyTier: "instant",
   outputSummary: "Returns the English token usage and cost report text.",
   category: "system",
   triggers: { keywordPatterns: ["گزارش مصرف", "میزان مصرف", "هزینه‌ها", "usage report", "token usage", "how much have i used"] },

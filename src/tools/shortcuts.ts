@@ -181,6 +181,15 @@ export const shortcutAddManifest: ToolManifest = defineManifest({
   title: "Add Shortcut",
   description:
     "Define or replace a custom command shortcut, e.g. /صبح → morning digest prompt. Owner only.",
+  purpose: "custom shortcut",
+  useWhen: "shortcut created",
+  doNotUseWhen:
+    "running the shortcut — just type its /name; built-in command names are reserved and cannot be shadowed",
+  confusableWith: [
+    { tool: "shortcut_list", difference: "shortcut_list only shows shortcuts; this creates or replaces one" },
+    { tool: "shortcut_delete", difference: "shortcut_delete removes one; this defines or updates one" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The shortcut name, kind and whether an existing one was updated.",
   category: "system",
   triggers: {
@@ -301,6 +310,15 @@ export const shortcutListManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "List Shortcuts",
   description: "List all custom command shortcuts. Owner only.",
+  purpose: "list shortcuts",
+  useWhen: "shortcuts asked",
+  doNotUseWhen:
+    "built-in command list — that is commands; creating a shortcut — that is shortcut_add",
+  confusableWith: [
+    { tool: "commands", difference: "commands lists built-in bot commands; this lists custom shortcuts" },
+    { tool: "shortcut_add", difference: "shortcut_add creates one; this only lists existing shortcuts" },
+  ],
+  latencyTier: "instant",
   outputSummary: "All custom shortcuts with name, kind, action preview and update time.",
   category: "system",
   triggers: {
@@ -358,6 +376,15 @@ export const shortcutDeleteManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Delete Shortcut",
   description: "Delete a custom command shortcut by name. Owner only.",
+  purpose: "delete a shortcut",
+  useWhen: "shortcut removed",
+  doNotUseWhen:
+    "name unknown — shortcut_list first; built-in commands cannot be deleted",
+  confusableWith: [
+    { tool: "shortcut_add", difference: "shortcut_add creates or replaces; this deletes by name" },
+    { tool: "shortcut_list", difference: "shortcut_list shows shortcuts; this removes one" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The shortcut name and whether it was deleted.",
   category: "system",
   triggers: {

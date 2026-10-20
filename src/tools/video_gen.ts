@@ -184,6 +184,15 @@ export const generateVideoManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Generate Video",
   description: "Generate a short video from a text description. Use it when the user wants a video that does not exist; the user sees the result. Generation may take a few minutes.",
+  purpose: "video from prompt",
+  useWhen: "new video wanted",
+  doNotUseWhen:
+    "a still image — that is generate_image; an existing clip from a link — that is download_media",
+  confusableWith: [
+    { tool: "generate_image", difference: "generate_image makes a still image; this makes a moving clip" },
+    { tool: "download_media", difference: "download_media fetches an existing file; this creates a new video" },
+  ],
+  latencyTier: "minutes",
   outputSummary: "Returns the generated video as an attachment, with prompt, size and duration.",
   category: "media",
   triggers: { keywordPatterns: ["ویدیو بساز", "ویدئو بساز", "کلیپ بساز", "generate (a )?video", "create (a )?video", "make (a )?video"] },

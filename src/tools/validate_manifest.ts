@@ -12,6 +12,14 @@
  * - id: snake_case, starts with a letter, [a-z0-9_]+.
  * - version: semver-shaped "MAJOR.MINOR.PATCH".
  * - title: 1-80 chars.
+ * - purpose: 5-40 chars (the desk catalog's one-line "what").
+ * - useWhen: 5-40 chars (the desk catalog's "when to pick it up").
+ * - doNotUseWhen: 5-140 chars (the anti-triggers).
+ * - confusableWith: an array (possibly empty) of {tool, difference};
+ *   tool is a snake_case id different from the card's own id, and
+ *   difference is 5-120 chars. validateCatalog additionally requires
+ *   every target to exist in the catalog.
+ * - latencyTier: one of instant|seconds|minutes.
  * - description: 10-300 chars (catalog text the model reads).
  * - outputSummary: 5-150 chars.
  * - category: non-empty.
@@ -28,6 +36,16 @@ const ID_PATTERN = /^[a-z][a-z0-9_]*$/;
 const VERSION_PATTERN = /^\d+\.\d+\.\d+$/;
 const MIME_PATTERN = /^[a-z0-9][a-z0-9.+-]*\/(\*|[a-z0-9][a-z0-9.+-]*)$/i;
 const COST_TIERS: ReadonlySet<string> = new Set(["free", "cheap", "heavy"]);
+const LATENCY_TIERS: ReadonlySet<string> = new Set(["instant", "seconds", "minutes"]);
+
+export const CARD_PURPOSE_MIN = 5;
+export const CARD_PURPOSE_MAX = 40;
+export const CARD_USE_WHEN_MIN = 5;
+export const CARD_USE_WHEN_MAX = 40;
+export const CARD_DO_NOT_USE_MIN = 5;
+export const CARD_DO_NOT_USE_MAX = 140;
+export const CARD_DIFFERENCE_MIN = 5;
+export const CARD_DIFFERENCE_MAX = 120;
 
 export const MANIFEST_TIMEOUT_MIN_MS = 1_000;
 export const MANIFEST_TIMEOUT_MAX_MS = 600_000;
@@ -46,6 +64,62 @@ export function validateManifest(manifest: ToolManifest): string[] {
   }
   if (typeof manifest.title !== "string" || manifest.title.length < 1 || manifest.title.length > 80) {
     problems.push(`${where}: title must be 1-80 characters.`);
+  }
+  if (
+    typeof manifest.purpose !== "string" ||
+    manifest.purpose.length < CARD_PURPOSE_MIN ||
+    manifest.purpose.length > CARD_PURPOSE_MAX
+  ) {
+    problems.push(
+      `${where}: purpose must be ${CARD_PURPOSE_MIN}-${CARD_PURPOSE_MAX} characters (the desk catalog's one-line "what").`,
+    );
+  }
+  if (
+    typeof manifest.useWhen !== "string" ||
+    manifest.useWhen.length < CARD_USE_WHEN_MIN ||
+    manifest.useWhen.length > CARD_USE_WHEN_MAX
+  ) {
+    problems.push(
+      `${where}: useWhen must be ${CARD_USE_WHEN_MIN}-${CARD_USE_WHEN_MAX} characters (when to pick the tool up).`,
+    );
+  }
+  if (
+    typeof manifest.doNotUseWhen !== "string" ||
+    manifest.doNotUseWhen.length < CARD_DO_NOT_USE_MIN ||
+    manifest.doNotUseWhen.length > CARD_DO_NOT_USE_MAX
+  ) {
+    problems.push(
+      `${where}: doNotUseWhen must be ${CARD_DO_NOT_USE_MIN}-${CARD_DO_NOT_USE_MAX} characters (the anti-triggers).`,
+    );
+  }
+  if (!Array.isArray(manifest.confusableWith)) {
+    problems.push(`${where}: confusableWith must be an array (empty when nothing is confusable).`);
+  } else {
+    for (const entry of manifest.confusableWith) {
+      if (entry === null || typeof entry !== "object") {
+        problems.push(`${where}: confusableWith entries must be {tool, difference} objects.`);
+        continue;
+      }
+      if (typeof entry.tool !== "string" || !ID_PATTERN.test(entry.tool)) {
+        problems.push(
+          `${where}: confusableWith tool must be a snake_case plugin id: ${JSON.stringify(entry.tool)}`,
+        );
+      } else if (entry.tool === id) {
+        problems.push(`${where}: confusableWith must not name the tool itself.`);
+      }
+      if (
+        typeof entry.difference !== "string" ||
+        entry.difference.length < CARD_DIFFERENCE_MIN ||
+        entry.difference.length > CARD_DIFFERENCE_MAX
+      ) {
+        problems.push(
+          `${where}: confusableWith "${String(entry.tool)}" difference must be ${CARD_DIFFERENCE_MIN}-${CARD_DIFFERENCE_MAX} characters.`,
+        );
+      }
+    }
+  }
+  if (typeof manifest.latencyTier !== "string" || !LATENCY_TIERS.has(manifest.latencyTier)) {
+    problems.push(`${where}: latencyTier must be one of instant|seconds|minutes.`);
   }
   if (
     typeof manifest.description !== "string" ||
@@ -135,6 +209,19 @@ export function validateCatalog(
       );
     }
     seen.add(manifest.id);
+  }
+
+  // Desk-card cross-references: a confusableWith target that is not on
+  // the desk would send the model (and the owner) chasing a ghost tool.
+  for (const manifest of manifests) {
+    if (!Array.isArray(manifest.confusableWith)) continue;
+    for (const entry of manifest.confusableWith) {
+      if (entry !== null && typeof entry === "object" && typeof entry.tool === "string" && !seen.has(entry.tool)) {
+        problems.push(
+          `manifest "${manifest.id}": confusableWith names unknown tool "${entry.tool}".`,
+        );
+      }
+    }
   }
 
   if (tools !== undefined) {

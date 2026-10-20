@@ -35,6 +35,14 @@ export const textUtilitiesManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Text Utilities",
   description: "Character/word counts and simple text statistics.",
+  purpose: "text counts/stats",
+  useWhen: "counts asked",
+  doNotUseWhen:
+    "user wants text transformed or rewritten — this only counts; arithmetic — that is calculator",
+  confusableWith: [
+    { tool: "calculator", difference: "calculator does arithmetic; this only counts words and characters" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Character, word, line, sentence and longest-word counts.",
   category: "utils",
   triggers: {

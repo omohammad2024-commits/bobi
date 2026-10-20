@@ -156,6 +156,15 @@ export const toolSearchManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Tool Search",
   description: "Search tools by keyword; when the tool you need is not in the main list, find its name, description and inputs, then call it by name.",
+  purpose: "tool search by word",
+  useWhen: "tool missing",
+  doNotUseWhen:
+    "the tool is already in the visible list — call it directly; searching the web — that is web_search",
+  confusableWith: [
+    { tool: "web_search", difference: "web_search searches the internet; this searches BOBI's own tools" },
+    { tool: "skills", difference: "skills finds skill playbooks; this finds callable tools" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns matching tools: name, description, toolset and input schema.",
   category: "system",
   costTier: "cheap",
