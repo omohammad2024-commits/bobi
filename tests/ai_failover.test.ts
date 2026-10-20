@@ -93,6 +93,21 @@ const REQUEST = {
 // ---------- failover is off by default ----------
 
 describe("failover defaults off", () => {
+  // Test-scoped kill switch: these two tests pin the FAILOVER behavior in
+  // isolation (exactly one send, never the backup). The gateway's separate
+  // in-call retry (reliability core) retries a lone provider in place,
+  // which would add sends without ever touching another provider — so it
+  // is switched off here via its documented env var, and covered by its
+  // own suite (ai_gateway_reliability.test.ts).
+  function withoutInCallRetry<T>(fn: () => Promise<T>): Promise<T> {
+    const prev = process.env["BOBI_GATEWAY_RETRY"];
+    process.env["BOBI_GATEWAY_RETRY"] = "0";
+    return fn().finally(() => {
+      if (prev === undefined) delete process.env["BOBI_GATEWAY_RETRY"];
+      else process.env["BOBI_GATEWAY_RETRY"] = prev;
+    });
+  }
+
   test("a fresh database never switches provider", () => {
     const h = build();
     expect(h.storage.getFailoverSettings().enabled).toBe(false);
@@ -100,6 +115,7 @@ describe("failover defaults off", () => {
   });
 
   test("with failover off, a failing primary is not retried elsewhere", async () => {
+    await withoutInCallRetry(async () => {
     const h = build({ behavior: { fail: new AiError("network", "down") } });
     const a = seedProvider(h.storage, h.providers, h.models, "primary");
     const b = seedProvider(h.storage, h.providers, h.models, "backup");
@@ -112,15 +128,18 @@ describe("failover defaults off", () => {
     // the caller's per-request budget (min of request and failover timeout).
     expect(h.log).toEqual(["model-primary@1000"]);
     h.storage.close();
+    });
   });
 
   test("with failover off, only the stored attempt budget of one applies", async () => {
+    await withoutInCallRetry(async () => {
     const h = build({ behavior: { fail: new AiError("timeout", "slow") } });
     const a = seedProvider(h.storage, h.providers, h.models, "only");
     activate(h.storage, a);
     await expect(h.gateway.complete(REQUEST)).rejects.toThrow(AiError);
     expect(h.log.length).toBe(1);
     h.storage.close();
+    });
   });
 });
 
