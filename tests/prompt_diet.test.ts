@@ -202,11 +202,12 @@ describe("prompt diet", () => {
     expect(tools.length).toBeGreaterThan(25); // production-scale catalog
     const prompt = buildSystemPrompt(baseCtx(tools));
     const tokens = estimatePromptTokens(prompt);
-    // Deliberate raise (was 1000): Phase-1 desk lists the FULL catalog —
-    // measured ~1091 with this helper's 33 carded tools (the full
-    // catalog is ≈570 tokens for 44 tools) + the owner's persona block;
-    // prompt caching amortizes it. Budget = measured + ~15% headroom.
-    expect(tokens).toBeLessThan(1255);
+    // Deliberate raise (was 1000, then 1255): Phase-1 desk lists the FULL
+    // catalog (~1091 measured then) and the owner's persona-sharpening
+    // order grew the PERSONALITY block by ~300 tokens (sparring, the wall,
+    // the escalation arc — his verbatim reference lines). Measured ~1393
+    // now; budget = measured + ~11% headroom. Prompt caching amortizes it.
+    expect(tokens).toBeLessThan(1550);
   });
 
   test("full production tool list: per provider call stays under 4K", async () => {
@@ -327,9 +328,10 @@ describe("prompt diet", () => {
   test("empty tool list still tells the model to answer from knowledge", () => {
     const prompt = buildSystemPrompt(baseCtx([]));
     expect(prompt).toContain("No tools available");
-    // Measured ~673 now: the persona block grew by the owner's persona
-    // order. Budget = measured + ~15% headroom (was 600).
-    expect(estimatePromptTokens(prompt)).toBeLessThan(775);
+    // Measured ~974 now: the persona block grew again by the owner's
+    // sharpening order (was ~673 after the first persona order).
+    // Budget = measured + ~13% headroom (was 775).
+    expect(estimatePromptTokens(prompt)).toBeLessThan(1100);
   });
 
   test("personality section present; identity and access survive byte-identical in effect", async () => {

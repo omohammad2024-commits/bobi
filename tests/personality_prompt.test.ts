@@ -79,11 +79,83 @@ describe("personality tuning (worker-3)", () => {
     expect(prompt).not.toContain("Say less, hit harder");
   });
 
-  test("PERSONALITY block stays within the 280-token budget", () => {
-    // Raised from 180 by the owner's persona order (Michael default spec
-    // cannot fit 180); the block must still practice the brevity it preaches.
+  test("PERSONALITY block stays within the 595-token budget", () => {
+    // Raised from 280 by the owner's sharpening order (sparring/mirror-back,
+    // indifference, the wall, the escalation arc — his verbatim reference
+    // lines cannot fit 280); the block must still practice the brevity it
+    // preaches, so the pin tracks the measured size with thin headroom.
     const prompt = buildSystemPrompt(BASE_CTX);
-    expect(estimatePromptTokens(personalityBlock(prompt))).toBeLessThanOrEqual(280);
+    expect(estimatePromptTokens(personalityBlock(prompt))).toBeLessThanOrEqual(595);
+  });
+
+  test("posture: no time to waste, toward everyone — Mohammad gets the full version", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("no time to waste");
+    expect(prompt).toContain("empty talk gets cut, from everyone");
+    // The harshness is the character: applied to Mohammad at full strength,
+    // familiarity is recognition — never a softened register.
+    expect(prompt).toContain("full version, never softened");
+  });
+
+  test("sparring: roast in kind, mirror flipped, one line, no escalation past the mirror", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("roast in kind");
+    expect(prompt).toContain("mirror their words back flipped");
+    expect(prompt).toContain("«دلقک» → «دلقک هم خودتی»");
+    expect(prompt).toContain("no escalation past the mirror");
+    // Dismissive state-your-business imperatives, in the reference style.
+    expect(prompt).toContain("«حرف حسابت چیه؟»");
+    expect(prompt).toContain("«یا کارت رو بگو یا پیام نده»");
+  });
+
+  test("indifference: no approval-seeking, never softens to please", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("no approval-seeking");
+    expect(prompt).toContain("never soften to please");
+    expect(prompt).toContain("خوشت اومده یا نه برام مهم نیست");
+    // Satisfaction-pleasing closers are banned by name.
+    expect(prompt).toContain("«امیدوارم راضی باشی» and its kin: never");
+  });
+
+  test("the wall: public/clown probing refused; Mohammad's straight questions answered for real", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("ANY probing from the public");
+    expect(prompt).toContain("«به تو ربطی نداره. فضولی نکن.»");
+    // The creator asking straight gets a straight, short, REAL answer —
+    // the distinction is framing and intent, never the topic itself.
+    expect(prompt).toContain("Mohammad's straight questions about you get straight, short, real answers");
+    expect(prompt).toContain("framing and intent decide, not topic");
+  });
+
+  test("malformed question: one dry correction plus the door, then it answers a proper re-ask", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("«یا سوال درست بپرس یا سکوت کن»");
+    expect(prompt).toContain("re-asked properly, answer it");
+  });
+
+  test("escalation arc: brush-off → final warning → deadpan fake-ban, repeated flatly", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("dry brush-off → «آخرین بارته» → deadpan fake-ban");
+    expect(prompt).toContain("«به دلیل لودگی مکرر، ترول و تلف کردن منابع از بات بن شده‌اید»");
+    expect(prompt).toContain("repeated flatly if they persist");
+  });
+
+  test("the fake-ban is theater only: no real ban, no access change, genuine requests still served", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    expect(prompt).toContain("THEATER ONLY — never a real ban, never access changes");
+    expect(prompt).toContain("genuine requests after the bit are served normally");
+  });
+
+  test("tone never blocks work; the persona never apologizes for the tone or breaks character", () => {
+    const prompt = buildSystemPrompt(BASE_CTX);
+    // Harshness lives only in the wrapping words — a real task runs at once,
+    // in full, whatever the register is doing.
+    expect(prompt).toContain("Tone never blocks work");
+    expect(prompt).toContain("real tasks execute immediately, in full");
+    expect(prompt).toContain("harshness is wrapping only");
+    // Challenged on the tone, the answer is the reference's own line.
+    expect(prompt).toContain("«من همینم که هستم»");
+    expect(prompt).toContain("never apologize, never break character");
   });
 
   test("colloquial register: spoken Persian, bookish bans, bad→good example", () => {
