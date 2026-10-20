@@ -21,12 +21,19 @@
  * - Breaker-aware: when the gateway injects its circuit-breaker registry,
  *   a provider whose breaker is open is never picked, and a half-open one
  *   is heavily penalized (it may serve one probe, not the main traffic).
+ * - Health-aware: a provider whose latest probe failed within
+ *   PROVIDER_DEAD_FRESH_MS is hard-excluded while any alternative exists;
+ *   an older failure (up to 24 h) costs STALE_FAILURE_PENALTY points, and
+ *   a recent success earns a bonus minus a term from the probe's measured
+ *   latencyMs. A (provider, model) pair in the model quarantine is
+ *   likewise excluded while any non-quarantined candidate exists.
  * - The router never touches credentials or the network: it reads storage
  *   rows and the registry's static capability descriptions only.
  */
 import type { Storage } from "../storage/storage";
 import type {
   AiModelRow,
+  AiProviderHealthRow,
   AiProviderRow,
 } from "../storage/storage";
 import type { AdapterRegistry } from "./adapter_registry";
@@ -81,6 +88,16 @@ export interface RouteDecision {
   reason: string;
 }
 
+/** Call-scoped gate state, precomputed once per route() call. */
+interface RouteGates {
+  /** One route() instant, shared by every age computation in the call. */
+  now: number;
+  /** True when at least one candidate is NOT fresh-failed. */
+  freshGateActive: boolean;
+  /** True when at least one candidate is NOT quarantined. */
+  quarantineGateActive: boolean;
+}
+
 /** Cost hints, in abstract "cost units" (lower is cheaper). */
 export interface CostHintTable {
   /** Exact model id (case-insensitive) → cost. Highest precedence. */
@@ -94,6 +111,33 @@ export interface CostHintTable {
  * selectable — but never preferred. In score points.
  */
 const CIRCUIT_HALF_OPEN_PENALTY = 500;
+
+/**
+ * Freshness window for a failed probe to HARD-exclude its provider, ms.
+ * Mirrors gateway.ts PROVIDER_HEALTH_FRESH_MS (the same ten minutes) —
+ * the value is duplicated here rather than imported, because gateway.ts
+ * imports this module and an import back would be a cycle.
+ */
+export const PROVIDER_DEAD_FRESH_MS = 600_000;
+
+/** Probe rows older than this (24 h) carry no health signal at all. */
+const HEALTH_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Penalty for a provider whose latest probe failed 10 min–24 h ago.
+ * Must exceed the maximum cost spread (costliest hint 90 × 10 = 900
+ * points), so a known-failed provider can never win on price alone.
+ */
+const STALE_FAILURE_PENALTY = 950;
+
+/** Bonus for a provider whose latest probe succeeded within 24 h. */
+const HEALTH_SUCCESS_BONUS = 15;
+
+/** Latency term cap, ms: probes slower than this all cost the same. */
+const LATENCY_CAP_MS = 2000;
+
+/** Latency term divisor: one score point per this many ms of latency. */
+const LATENCY_MS_PER_POINT = 10;
 
 /** Optional tuning for SmartRouter; everything has sane defaults. */
 export interface SmartRouterOptions {
@@ -109,6 +153,14 @@ export interface SmartRouterOptions {
    * selectable but heavily penalized. Absent = no breaker awareness.
    */
   circuit?: CircuitStateReader;
+  /**
+   * Model-quarantine state source (the gateway passes its registry; the
+   * structural shape is all the router needs, so ModelQuarantineRegistry
+   * satisfies it without an import). A quarantined (provider, model) pair
+   * is hard-excluded from routing while any non-quarantined candidate
+   * exists. Absent = no quarantine awareness.
+   */
+  quarantine?: { isQuarantined(providerId: number, modelId: string): boolean };
 }
 
 /** What a request needs from a candidate, derived from its content. */
@@ -314,21 +366,28 @@ function supportsTools(adapterType: string): boolean {
 /**
  * The smart router. Constructed per request from the gateway; stateless.
  *
- * Latency note: the health store records only probe OUTCOMES (ok/failed and
- * when), not milliseconds, so "fastest" is approximated from probe history —
- * a provider with a recent successful probe is preferred over one with a
- * recent failure or no probe at all. Cost comes from the hint table.
+ * Health/latency policy: the health store persists each probe's outcome
+ * AND its measured latencyMs, and routing prices both. A provider whose
+ * latest probe failed within PROVIDER_DEAD_FRESH_MS is hard-excluded
+ * while any alternative exists; a failure up to 24 h old costs
+ * STALE_FAILURE_PENALTY (more than the entire cost spread); a success
+ * within 24 h earns a small bonus minus a latency term from latencyMs.
+ * A quarantined (provider, model) pair is hard-excluded under the same
+ * relaxation: when every candidate is gated, the gate lifts — a
+ * maybe-dead candidate beats none. Cost comes from the hint table.
  */
 export class SmartRouter {
   private readonly storage: Storage;
   private readonly adapters: AdapterRegistry;
   private readonly costs: CostHintTable;
   private readonly circuit: CircuitStateReader | undefined;
+  private readonly quarantine: SmartRouterOptions["quarantine"];
 
   constructor(storage: Storage, adapters: AdapterRegistry, opts: SmartRouterOptions = {}) {
     this.storage = storage;
     this.adapters = adapters;
     this.circuit = opts.circuit;
+    this.quarantine = opts.quarantine;
     this.costs = {
       exact: { ...DEFAULT_COST_HINTS.exact, ...(opts.costHints?.exact ?? {}) },
       patterns: [
@@ -378,7 +437,11 @@ export class SmartRouter {
    * Score one candidate for a request. Higher is better. Returns undefined
    * when the candidate cannot serve the request at all (hard gate).
    */
-  private score(candidate: RouteCandidate, needs: RequestNeeds): number | undefined {
+  private score(
+    candidate: RouteCandidate,
+    needs: RequestNeeds,
+    gates: RouteGates,
+  ): number | undefined {
     const { provider, model } = candidate;
 
     // Hard gates: capability must come before cost.
@@ -402,13 +465,26 @@ export class SmartRouter {
     const circuitPenalty = this.circuitPenalty(provider.id);
     if (circuitPenalty === undefined) return undefined;
 
+    // Fresh-failure gate: a provider whose latest probe just failed is
+    // excluded outright — unless EVERY candidate is fresh-failed, in
+    // which case route() deactivated the gate (a maybe-dead provider
+    // beats none) and the failure is priced by healthBonus instead.
+    if (gates.freshGateActive && this.isFreshFailed(provider.id, gates.now)) {
+      return undefined;
+    }
+
+    // Quarantine gate: same relaxation pattern as the fresh gate.
+    if (gates.quarantineGateActive && this.isQuarantined(candidate)) {
+      return undefined;
+    }
+
     let score = 1000;
 
     // Cost dominates: pick the cheapest candidate that satisfies the tier.
     score -= costHint(model.modelId, this.costs) * 10;
 
     // Probe history: recent success beats no data beats recent failure.
-    const bonus = this.healthBonus(provider.id);
+    const bonus = this.healthBonus(provider.id, gates.now);
     score += bonus;
 
     // A half-open (or cooldown-expired open) provider may serve one probe;
@@ -446,23 +522,76 @@ export class SmartRouter {
   }
 
   /**
-   * Availability bonus from probe history, in score points.
+   * Availability term from probe history, in score points.
    *
-   * The health store keeps only the latest outcome per provider, so this is
-   * coarse by design: a recent success is trusted, a recent failure is
-   * penalized, and anything older than a day (or never probed) is neutral.
+   * The health store keeps the latest probe outcome per provider,
+   * including its measured latencyMs. Policy:
+   * - A failure fresher than PROVIDER_DEAD_FRESH_MS never reaches here
+   *   while the fresh gate is active (score() excluded the candidate).
+   *   When the gate is relaxed (every candidate fresh-failed) it is
+   *   priced like a stale failure — uniformly, so ordering falls back
+   *   to cost and the deterministic tie-breaks.
+   * - A failure 10 min–24 h old: −STALE_FAILURE_PENALTY, deliberately
+   *   larger than the whole cost spread (90 × 10 = 900), so a
+   *   known-failed provider can never win on price alone.
+   * - A success within 24 h: +HEALTH_SUCCESS_BONUS plus a latency term
+   *   from the row's latencyMs, −round(min(latencyMs, 2000) / 10)
+   *   (0..−200). A missing latencyMs contributes 0 for that term.
+   * - No row, or a row older than 24 h: 0.
    */
-  private healthBonus(providerId: number): number {
-    let row;
-    try {
-      row = this.storage.getProviderHealth(providerId);
-    } catch {
-      return 0;
-    }
+  private healthBonus(providerId: number, now: number): number {
+    const row = this.healthRow(providerId);
     if (!row) return 0;
-    const ageMs = Date.now() - row.checkedAt;
-    if (ageMs > 24 * 60 * 60 * 1000) return 0;
-    return row.ok ? 15 : -50;
+    const ageMs = now - row.checkedAt;
+    if (ageMs > HEALTH_WINDOW_MS) return 0;
+    if (!row.ok) return -STALE_FAILURE_PENALTY;
+    let bonus = HEALTH_SUCCESS_BONUS;
+    if (row.latencyMs !== undefined && Number.isFinite(row.latencyMs)) {
+      bonus -= Math.round(
+        Math.min(row.latencyMs, LATENCY_CAP_MS) / LATENCY_MS_PER_POINT,
+      );
+    }
+    return bonus;
+  }
+
+  /** Latest probe row for a provider; unreadable storage reads as none. */
+  private healthRow(providerId: number): AiProviderHealthRow | undefined {
+    try {
+      return this.storage.getProviderHealth(providerId);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * True when the provider's latest probe failed less than
+   * PROVIDER_DEAD_FRESH_MS ago (by the route() call's clock snapshot).
+   * Mirrors the gateway's plan() freshness test (H6).
+   */
+  private isFreshFailed(providerId: number, now: number): boolean {
+    const row = this.healthRow(providerId);
+    return (
+      row !== undefined &&
+      row.ok === false &&
+      now - row.checkedAt < PROVIDER_DEAD_FRESH_MS
+    );
+  }
+
+  /**
+   * True when this (provider, model) pair is in the model quarantine.
+   * Never throws: a broken reader must not break routing, so the pair is
+   * simply treated as not quarantined (mirrors circuitPenalty).
+   */
+  private isQuarantined(candidate: RouteCandidate): boolean {
+    if (this.quarantine === undefined) return false;
+    try {
+      return this.quarantine.isQuarantined(
+        candidate.provider.id,
+        candidate.model.modelId,
+      );
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -480,9 +609,22 @@ export class SmartRouter {
     const all = this.candidates();
     if (all.length === 0) return undefined;
 
+    // Gate state for this call, computed once from the full candidate
+    // list. Each gate is active only while at least one candidate
+    // survives it: if EVERY candidate is fresh-failed (or quarantined),
+    // that gate lifts for this call — a maybe-dead candidate beats none.
+    // This mirrors the relaxation guards in the gateway's
+    // eligibleCandidates / demoteFreshProbeFailures.
+    const now = Date.now();
+    const gates: RouteGates = {
+      now,
+      freshGateActive: all.some((c) => !this.isFreshFailed(c.provider.id, now)),
+      quarantineGateActive: all.some((c) => !this.isQuarantined(c)),
+    };
+
     const scored: Array<{ candidate: RouteCandidate; score: number }> = [];
     for (const candidate of all) {
-      const s = this.score(candidate, needs);
+      const s = this.score(candidate, needs, gates);
       if (s !== undefined) scored.push({ candidate, score: s });
     }
 
@@ -502,6 +644,12 @@ export class SmartRouter {
         // as a last resort. (The gateway's own all-open fallback covers
         // the case where every candidate is open.)
         if (this.circuitPenalty(provider.id) === undefined) continue;
+        // Fresh-failure and quarantine gates apply here too, under the
+        // same per-call gate state score() used: a gated candidate is
+        // not a last resort while the gate is active, and IS one again
+        // when route() lifted the gate (every candidate gated).
+        if (gates.freshGateActive && this.isFreshFailed(provider.id, gates.now)) continue;
+        if (gates.quarantineGateActive && this.isQuarantined(candidate)) continue;
         const rank = modelCapabilityRank(candidate.model.modelId);
         if (rank > bestRank) {
           bestRank = rank;
@@ -513,11 +661,12 @@ export class SmartRouter {
       }
       pool = gated.map((candidate) => ({
         candidate,
-        // Re-score without the tier floor for ordering.
+        // Re-score without the tier floor for ordering, through the
+        // same healthBonus score() uses (stale penalty / latency term).
         score:
           1000 -
           costHint(candidate.model.modelId, this.costs) * 10 +
-          this.healthBonus(candidate.provider.id) -
+          this.healthBonus(candidate.provider.id, gates.now) -
           (this.circuitPenalty(candidate.provider.id) ?? 0),
       }));
     }

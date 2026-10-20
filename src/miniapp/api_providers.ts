@@ -1152,10 +1152,13 @@ function setActiveModel(
     label: model.label,
   };
   // Probe on select: warn inline when the fresh selection doesn't answer.
+  // The probe targets THE ACTIVATED MODEL (probeModel), not the provider —
+  // a provider-level probe would test the default model and could vouch
+  // for a selection that is actually dead (or blame a healthy one).
   return (async () => {
     try {
       const started = Date.now();
-      const result = await deps.health.probe(model.providerId);
+      const result = await deps.health.probeModel(model.providerId, model.modelId);
       out["probe"] = {
         ok: result.ok,
         latencyMs: Date.now() - started,

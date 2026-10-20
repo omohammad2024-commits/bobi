@@ -252,7 +252,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
         out.push({ id: entry["id"] });
       }
     }
-    return out;
+    return filterChatModels(out);
   }
 
   /**
@@ -292,6 +292,99 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
       model: parsed.model ?? req.model,
     };
   }
+}
+
+/**
+ * Discovery filter: keep only ids that can plausibly serve chat/completions.
+ *
+ * OpenAI-shaped `/models` listings mix chat models with embeddings,
+ * transcription, TTS, image, moderation and rerank ids. Importing them all
+ * verbatim lets auto-select / default-repair land the active model on a
+ * non-chat id, after which every chat turn 400s — the exact failure the
+ * Gemini `aqa` incident produced on the native wire. This is the sibling
+ * of that fix (see the Gemini adapter's listModels, which keeps only
+ * models whose supportedGenerationMethods include generateContent):
+ * filter at the adapter seam so every discovery surface inherits it.
+ * nine_router rides this adapter, so it inherits the filter too.
+ *
+ * LIBERALITY RULE: OpenAI-shaped listings carry no capability metadata,
+ * so this can only pattern-match the id. Exclude ONLY the well-known
+ * non-chat families below; an unknown id always passes. A false keep
+ * costs one failed chat the owner can see and fix; a false drop hides a
+ * model the owner can never select. Matching is case-insensitive and
+ * token-based: the id is split on [-_/.:] so a family marker must be a
+ * whole segment (or the "realtime"+"audio" segment pair) — substrings
+ * inside a segment never match, so e.g. "gpt-4o" (no family token) and
+ * vision models (vision ids ARE chat models) are kept.
+ *
+ * Non-chat families excluded:
+ *   embedding    text-embedding-3-small, embed-english-v3.0, …
+ *   whisper      whisper-1, whisper-large-v3, distil-whisper-…
+ *   tts / speech tts-1, playai-tts, speech-2.0, gpt-4o-mini-tts
+ *   transcribe   gpt-4o-transcribe (audio-transcription endpoint only)
+ *   image        gpt-image-1, dall-e-2/3 (matched on the glued "dall-e")
+ *   moderation   omni-moderation-latest, text-moderation-*
+ *   rerank       rerank-*, *-rerank, jina-reranker-*
+ *   legacy base  babbage-*, davinci-* (completions-only base models;
+ *                they do not serve this adapter's chat/completions shape)
+ *   realtime-audio  ids carrying the realtime+audio segment pair
+ *                (bare "audio" is kept: gpt-4o-audio-preview is a chat model)
+ */
+const NON_CHAT_ID_TOKENS: ReadonlySet<string> = new Set([
+  "embedding",
+  "embeddings",
+  "embed",
+  "whisper",
+  "tts",
+  "speech",
+  "transcribe",
+  "transcription",
+  "image",
+  "images",
+  "moderation",
+  "rerank",
+  "reranker",
+  "babbage",
+  "davinci",
+]);
+
+/** True when `id` is not a known non-chat family member (see above). */
+export function isLikelyChatModelId(id: string): boolean {
+  const lower = id.trim().toLowerCase();
+  if (lower.length === 0) return false;
+  // "dall-e" tokenizes to [dall, e, …], so match the glued form directly.
+  if (lower.includes("dall-e")) return false;
+  const tokens = lower.split(/[-_/.:]+/).filter((t) => t.length > 0);
+  for (const token of tokens) {
+    if (NON_CHAT_ID_TOKENS.has(token)) return false;
+  }
+  for (let i = 0; i + 1 < tokens.length; i++) {
+    const a = tokens[i];
+    const b = tokens[i + 1];
+    if (
+      (a === "realtime" && b === "audio") ||
+      (a === "audio" && b === "realtime")
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Apply {@link isLikelyChatModelId} to a discovered list, order unchanged.
+ *
+ * Fallback: if filtering would empty a non-empty list, return the raw
+ * list instead. A weird endpoint whose ids all look non-chat (or whose
+ * naming this filter misjudges wholesale) still beats an empty discovery
+ * — discovery failing entirely is the worse outcome, and the owner can
+ * pick from the raw list manually.
+ */
+export function filterChatModels(
+  models: readonly RemoteModel[],
+): readonly RemoteModel[] {
+  const chat = models.filter((m) => isLikelyChatModelId(m.id));
+  return chat.length > 0 ? chat : models;
 }
 
 /**

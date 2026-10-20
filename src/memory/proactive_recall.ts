@@ -24,6 +24,16 @@
  * a memory surfaces only when the message actually matches it.
  *
  * Kill switch: BOBI_MEMORY_PROACTIVE_RECALL=0 ⇒ always [].
+ *
+ * Turn-path deadline (R4): the semantic leg is an embedding round-trip to
+ * a live provider (its own ceiling is 30 s in ProviderEmbedder). It must
+ * never stall the chat turn, so recallFor races it against a budget
+ * (default 2 s, see semanticBudgetMsFor). On timeout the turn proceeds
+ * with the text + recency lists exactly as if semantic had returned
+ * undefined. A timed-out embed may still settle in the background,
+ * bounded by the embedder's own ceiling — the turn no longer waits for
+ * it. When the text ranking already has a strong hit (a query topic in
+ * a memory KEY), the semantic leg is skipped entirely.
  */
 import type { MemoryProvider, StoredMemory } from "./provider";
 import {
@@ -51,6 +61,31 @@ export function recallScoreFloor(): number {
   return DEFAULT_RECALL_FLOOR;
 }
 
+/** Default deadline for the turn-path semantic leg, in milliseconds. */
+export const DEFAULT_SEMANTIC_BUDGET_MS = 2000;
+
+/**
+ * Resolve the semantic-leg budget: the deps override wins; otherwise
+ * BOBI_MEMORY_SEMANTIC_BUDGET_MS; otherwise the default. Invalid values
+ * (non-numeric, negative, empty) fall back to the default. 0 means the
+ * semantic leg is skipped entirely (text-only recall).
+ */
+export function semanticBudgetMsFor(
+  deps: Pick<ProactiveRecallDeps, "semanticBudgetMs">,
+): number {
+  if (deps.semanticBudgetMs !== undefined) {
+    return Number.isFinite(deps.semanticBudgetMs) && deps.semanticBudgetMs >= 0
+      ? deps.semanticBudgetMs
+      : DEFAULT_SEMANTIC_BUDGET_MS;
+  }
+  const raw = process.env.BOBI_MEMORY_SEMANTIC_BUDGET_MS;
+  if (raw !== undefined && raw.trim() !== "") {
+    const v = Number(raw);
+    if (Number.isFinite(v) && v >= 0) return v;
+  }
+  return DEFAULT_SEMANTIC_BUDGET_MS;
+}
+
 export interface ProactiveRecallDeps {
   provider: MemoryProvider;
   /**
@@ -68,6 +103,12 @@ export interface ProactiveRecallDeps {
   nowMs?: number;
   /** Max memories returned. Default 5. */
   limit?: number;
+  /**
+   * Deadline for the semantic leg, in ms (test seam, mirroring nowMs /
+   * limit). When absent, BOBI_MEMORY_SEMANTIC_BUDGET_MS applies, then
+   * DEFAULT_SEMANTIC_BUDGET_MS. 0 skips the semantic leg entirely.
+   */
+  semanticBudgetMs?: number;
 }
 
 export interface ProactivelyRecalled {
@@ -107,16 +148,24 @@ export function extractQueryTopics(message: string): string[] {
   return out.filter((t) => t.length > 0);
 }
 
+interface TopicRankEntry {
+  key: string;
+  /** How many query topics appear in the memory's KEY (strongest signal). */
+  keyHits: number;
+  /** How many query topics appear only in the memory's content. */
+  hits: number;
+}
+
 /**
- * Score and rank memories against the extracted topics. Key hits rank
- * above content hits (the key is the topic), then by hit count, then by
- * recency/importance.
+ * Scored variant of rankByTopics: same ranking, but each entry keeps its
+ * hit counts so callers (the strong-hit decision in recallFor) can see
+ * WHY a memory ranked where it did.
  */
-function rankByTopics(
+function rankByTopicsScored(
   memories: readonly StoredMemory[],
   topics: readonly string[],
   nowMs: number,
-): string[] {
+): TopicRankEntry[] {
   return [...memories]
     .map((m) => {
       const keyNorm = normalizeMemoryText(m.key);
@@ -137,7 +186,58 @@ function rankByTopics(
         recencyImportanceScore(b.m, nowMs) - recencyImportanceScore(a.m, nowMs) ||
         (a.m.key < b.m.key ? -1 : 1),
     )
-    .map((e) => e.m.key);
+    .map((e) => ({ key: e.m.key, keyHits: e.keyHits, hits: e.hits }));
+}
+
+/**
+ * Score and rank memories against the extracted topics. Key hits rank
+ * above content hits (the key is the topic), then by hit count, then by
+ * recency/importance.
+ */
+function rankByTopics(
+  memories: readonly StoredMemory[],
+  topics: readonly string[],
+  nowMs: number,
+): string[] {
+  return rankByTopicsScored(memories, topics, nowMs).map((e) => e.key);
+}
+
+type SemanticRanker = NonNullable<ProactiveRecallDeps["semantic"]>;
+
+/**
+ * Run the semantic leg under its deadline. The search promise is wrapped
+ * so it can NEVER reject (errors resolve to undefined, exactly the
+ * degradation the un-raced code had), and the race subscribes to it —
+ * so if the deadline wins, a later rejection is still handled and never
+ * surfaces as an unhandled rejection. The underlying embed may keep
+ * running in the background after a timeout, bounded by the embedder's
+ * own ceiling; the turn simply no longer waits for it.
+ */
+async function searchSemanticWithinBudget(
+  semantic: SemanticRanker,
+  userId: string,
+  message: string,
+  budgetMs: number,
+): Promise<Array<{ key: string }> | undefined> {
+  const guarded: Promise<Array<{ key: string }> | undefined> = (async () => {
+    try {
+      return await semantic.search(userId, message, 50);
+    } catch {
+      return undefined;
+    }
+  })();
+  // Belt-and-braces: an explicit catch on the raced promise, so it can
+  // never become an unhandled rejection even if the wrapper above changes.
+  void guarded.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<undefined>((resolve) => {
+    timer = setTimeout(() => resolve(undefined), budgetMs);
+  });
+  try {
+    return await Promise.race([guarded, timeout]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -163,17 +263,30 @@ export async function recallFor(
 
   const topics = extractQueryTopics(message);
   if (topics.length === 0) return [];
-  const textRanked = rankByTopics(memories, topics, nowMs);
+  const textScored = rankByTopicsScored(memories, topics, nowMs);
+  const textRanked = textScored.map((e) => e.key);
   if (textRanked.length === 0 && deps.semantic === undefined) return [];
 
   const lists: string[][] = [textRanked];
   if (deps.semantic !== undefined) {
-    try {
-      const hits = await deps.semantic.search(userId, message, 50);
+    // Strong-text skip: the ranking sorts key hits first, so a top entry
+    // with keyHits >= 1 means a query topic appears in a memory KEY —
+    // the strongest topical signal this ranker has. The semantic leg
+    // cannot improve on that enough to justify its round-trip.
+    const strongTextHit = textScored.length > 0 && textScored[0]!.keyHits >= 1;
+    const budgetMs = semanticBudgetMsFor(deps);
+    if (!strongTextHit && budgetMs > 0) {
+      // Deadline-bounded: on timeout this resolves undefined and recall
+      // proceeds with the text + recency lists, exactly as if semantic
+      // had returned undefined. Semantic failure likewise resolves
+      // undefined inside the helper and never breaks proactive recall.
+      const hits = await searchSemanticWithinBudget(
+        deps.semantic,
+        userId,
+        message,
+        budgetMs,
+      );
       if (hits !== undefined && hits.length > 0) lists.push(hits.map((h) => h.key));
-    } catch {
-      // Semantic failure must never break proactive recall; the text
-      // ranking carries it. (Same degradation philosophy as the recall tool.)
     }
   }
   lists.push(rankByRecencyImportance(memories, nowMs));
