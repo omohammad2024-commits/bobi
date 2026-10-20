@@ -47,6 +47,11 @@ export function planningEnabled(env: Env = process.env): boolean {
   return envFlag("AGENT_PLANNING", env);
 }
 
+/** Self-review pass after tool turns. Kill switch: BOBI_AGENT_SELF_REVIEW=0. */
+export function selfReviewEnabled(env: Env = process.env): boolean {
+  return envFlag("AGENT_SELF_REVIEW", env);
+}
+
 /**
  * NOTE — no budget overrides live here on purpose: BOBI_AGENT_MAX_ITERATIONS
  * and BOBI_AGENT_MAX_TOOL_CALLS are already read by src/config/config.ts via

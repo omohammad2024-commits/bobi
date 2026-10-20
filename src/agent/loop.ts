@@ -51,7 +51,7 @@ import type { AgentStep, AgentRunResult, StopReason } from "./transcript";
 import { serialiseToolResult, wrapToolResult } from "./transcript";
 import { currentStreamSink, streamingEnabled } from "./stream";
 import type { AgentStreamEvent, StreamEventSink } from "./stream";
-import { maxParallel, parallelEnabled, planningEnabled } from "./settings";
+import { maxParallel, parallelEnabled, planningEnabled, selfReviewEnabled } from "./settings";
 import { isWriteLikeTool, mapBounded } from "./parallelism";
 import { parsePlan, planMessages, planNote, shouldPlan, PLAN_MAX_TOKENS } from "./planner";
 
@@ -134,6 +134,19 @@ export interface AgentRunInput {
   toolSpecs?: readonly ToolSpec[];
 }
 
+/**
+ * Per-run frame: the fixed context a run is judged against.
+ *
+ * `goal` is the newest user turn verbatim and `planSteps` the accepted plan
+ * (when planning made one). Executed tool outcomes are NOT duplicated here —
+ * they are derivable from the run's `steps` at the moment they are needed.
+ * The frame lives for one run() call and feeds the self-review pass.
+ */
+interface RunFrame {
+  goal: string;
+  planSteps: readonly string[] | undefined;
+}
+
 /** Raised when the caller cancelled the run. */
 export class AgentCancelled extends Error {
   constructor() {
@@ -157,6 +170,8 @@ export class AgentLoop {
   private readonly maxPar: number;
   /** Planning mode (BOBI_AGENT_PLANNING=0 disables). */
   private readonly planning: boolean;
+  /** Self-review pass after tool turns (BOBI_AGENT_SELF_REVIEW=0 disables). */
+  private readonly selfReview: boolean;
 
   constructor(opts: AgentLoopOptions) {
     this.provider = opts.provider;
@@ -175,6 +190,7 @@ export class AgentLoop {
     this.parallel = parallelEnabled();
     this.maxPar = maxParallel();
     this.planning = planningEnabled();
+    this.selfReview = selfReviewEnabled();
   }
 
   /**
@@ -226,6 +242,13 @@ export class AgentLoop {
       };
     }
 
+    // Per-run frame: what this run is for. Carried through the run and used
+    // by the self-review pass; `plan` is also surfaced on the run result.
+    const frame: RunFrame = { goal: lastUserText(input.messages), planSteps };
+    // Self-review runs at most once per run — the answer after a review
+    // (or after tools a review requested) is final.
+    let reviewed = false;
+
     // Per-run loop awareness: identical tool calls (same name + arguments)
     // are remembered so a stuck model is short-circuited, not billed.
     const seen = new Map<string, CallRecord>();
@@ -267,6 +290,7 @@ export class AgentLoop {
             toolCallsExecuted: executed,
             media,
             usage,
+            ...(frame.planSteps !== undefined ? { plan: frame.planSteps } : {}),
           };
         } catch (err) {
           // The grace call failed too. Return what was gathered rather than
@@ -280,6 +304,7 @@ export class AgentLoop {
               toolCallsExecuted: executed,
               media,
               usage,
+              ...(frame.planSteps !== undefined ? { plan: frame.planSteps } : {}),
             };
           }
           throw err;
@@ -299,8 +324,106 @@ export class AgentLoop {
       });
       this.emit({ kind: "model", iteration, model: response.model, requestedTools: calls.map((c) => c.name) });
 
-      // No tool request → this is the answer.
+      // No tool request → this is the answer — unless self-review applies.
       if (calls.length === 0) {
+        const draft = response.text;
+
+        // SELF-REVIEW: one extra pass over a tool-backed draft before it is
+        // returned. Gated hard so simple turns pay nothing: review needs the
+        // kill switch on, at least one executed tool this run, no earlier
+        // review this run, and iteration budget left for a possible fix-up
+        // turn. Plain chat (zero tools), the budget-exhausted grace call and
+        // loop-detected breaks never reach this branch, so they are never
+        // reviewed.
+        if (
+          this.selfReview &&
+          !reviewed &&
+          executed > 0 &&
+          iteration < this.budgets.maxIterations
+        ) {
+          try {
+            const reviewMessages: ChatMessage[] = [
+              ...messages,
+              { role: "assistant", content: draft },
+              { role: "user", content: reviewPrompt(frame, steps, draft) },
+            ];
+            const reviewStartedAt = this.now();
+            // Via singleCall (never the streaming path) with the run's specs,
+            // so the review CAN emit tool calls to fix a missing step without
+            // review tokens leaking into the user's rendered message.
+            const reviewResponse = await this.singleCall(input, reviewMessages, specs, startedAt, 0);
+            const durationMs = Math.max(0, this.now() - reviewStartedAt);
+            usage = addUsage(usage, reviewResponse);
+            const reviewCalls = reviewResponse.toolCalls ?? [];
+
+            if (reviewCalls.length > 0) {
+              // A step is missing or wrong: run the requested tools through
+              // the exact main-flow machinery, then let the loop produce the
+              // final answer. That answer is NOT reviewed again.
+              const reviewStep: AgentStep = { kind: "review", durationMs, outcome: "tools" };
+              steps.push(reviewStep);
+              this.emit(reviewStep);
+              reviewed = true;
+              messages.push({
+                role: "assistant",
+                content: reviewResponse.text,
+                toolCalls: reviewCalls,
+              });
+              const outcome = await this.processCalls(reviewCalls, input, {
+                messages,
+                steps,
+                media,
+                seen,
+                executed,
+                usage,
+                model: this.model,
+                specByName,
+              });
+              executed = outcome.executed;
+              if (outcome.breakResult !== undefined) {
+                return frame.planSteps !== undefined
+                  ? { ...outcome.breakResult, plan: frame.planSteps }
+                  : outcome.breakResult;
+              }
+              continue;
+            }
+
+            // Text-only review: the text IS the final answer — the draft
+            // unchanged ("confirmed") or a corrected version ("revised").
+            const reviewStep: AgentStep = {
+              kind: "review",
+              durationMs,
+              outcome: reviewResponse.text === draft ? "confirmed" : "revised",
+            };
+            steps.push(reviewStep);
+            this.emit(reviewStep);
+            if (planSteps !== undefined) {
+              steps.push({ kind: "plan", steps: planSteps, completed: true });
+              this.emit({ kind: "plan", steps: planSteps, completed: true });
+            }
+            messages.push({ role: "assistant", content: reviewResponse.text });
+            return {
+              text: nonEmpty(reviewResponse.text),
+              model: reviewResponse.model,
+              stopReason: "answered",
+              steps,
+              toolCallsExecuted: executed,
+              media,
+              usage,
+              ...(frame.planSteps !== undefined ? { plan: frame.planSteps } : {}),
+            };
+          } catch (err) {
+            // Cancellation still cancels the run. ANY other review failure
+            // is silent: the original draft is returned below with no review
+            // step recorded, exactly as if review never ran. This fallback
+            // is load-bearing — a provider that cannot serve the extra call
+            // must not break a run that already produced an answer.
+            if (err instanceof AgentCancelled || input.signal.aborted) {
+              throw new AgentCancelled();
+            }
+          }
+        }
+
         if (planSteps !== undefined) {
           steps.push({ kind: "plan", steps: planSteps, completed: true });
           this.emit({ kind: "plan", steps: planSteps, completed: true });
@@ -314,6 +437,7 @@ export class AgentLoop {
           toolCallsExecuted: executed,
           media,
           usage,
+          ...(frame.planSteps !== undefined ? { plan: frame.planSteps } : {}),
         };
       }
 
@@ -340,7 +464,11 @@ export class AgentLoop {
         specByName,
       });
       executed = outcome.executed;
-      if (outcome.breakResult !== undefined) return outcome.breakResult;
+      if (outcome.breakResult !== undefined) {
+        return frame.planSteps !== undefined
+          ? { ...outcome.breakResult, plan: frame.planSteps }
+          : outcome.breakResult;
+      }
     }
   }
 
@@ -1030,6 +1158,47 @@ function isEmptyData(data: unknown): boolean {
   if (Array.isArray(data)) return data.length === 0;
   if (typeof data === "object") return Object.keys(data).length === 0;
   return false;
+}
+
+/** The newest user turn's text, or "" when there is none / it is not text. */
+function lastUserText(messages: readonly ChatMessage[]): string {
+  const last = [...messages].reverse().find((m) => m.role === "user");
+  return last !== undefined && typeof last.content === "string" ? last.content : "";
+}
+
+/**
+ * The self-review prompt: one user message carrying the run frame (goal,
+ * plan steps, executed tools with statuses — the last derived from `steps`),
+ * a short delivery checklist, the draft, and the review protocol.
+ */
+function reviewPrompt(frame: RunFrame, steps: readonly AgentStep[], draft: string): string {
+  const planLines =
+    frame.planSteps !== undefined && frame.planSteps.length > 0
+      ? frame.planSteps.map((s, i) => `${i + 1}. ${s}`).join("\n")
+      : "(no plan)";
+  const toolLines = steps
+    .filter((s): s is Extract<AgentStep, { kind: "tool" }> => s.kind === "tool")
+    .map((s) => `- ${s.name}: ${s.status}`)
+    .join("\n");
+  return [
+    "<self_review>",
+    `Goal: ${frame.goal}`,
+    "Plan steps:",
+    planLines,
+    "Executed tools:",
+    toolLines.length > 0 ? toolLines : "(none)",
+    "Checklist:",
+    "- Is the asked-for thing actually done?",
+    "- Was the output actually delivered — made ≠ sent?",
+    "- Are numbers, units and results sane?",
+    "- Any failed step → fix it now or the final answer must say plainly what did not happen.",
+    "If the draft is complete and correct, reply with the draft EXACTLY unchanged. " +
+      "If a step is missing or wrong, call the needed tool(s) now instead of replying with text. " +
+      "If the draft is wrong but no tool is needed, reply with the corrected final answer only.",
+    "Draft:",
+    draft,
+    "</self_review>",
+  ].join("\n");
 }
 
 function addUsage(

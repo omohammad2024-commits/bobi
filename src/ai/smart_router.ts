@@ -14,6 +14,12 @@
  * - Never picks a disabled provider/model or one without a credential.
  * - A hard capability gate (tools, vision, documents) filters candidates
  *   BEFORE cost is considered: cheap is irrelevant when it cannot answer.
+ * - Capability transparency: when NO candidate can serve a tool- or
+ *   vision-needing request's capability, route() returns a degraded
+ *   decision (RouteDecision.degraded naming the missing capability)
+ *   instead of undefined — undefined would make the gateway silently
+ *   fall back to the owner's active selection, possibly a model that
+ *   cannot use the capability at all.
  * - Deterministic: equal scores first prefer the owner's active selection
  *   (passed as a hint), then tie-break on (providerId, modelId).
  * - Kill switch: BOBI_SMART_ROUTING=0 ("false"/"no"/"off" too) disables
@@ -39,7 +45,7 @@ import type {
 import type { AdapterRegistry } from "./adapter_registry";
 import type { ChatMessage, CompletionRequest, ToolSpec } from "./provider";
 import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
-import { modelSupportsTools } from "./model_capabilities";
+import { modelCapabilities, modelSupportsTools } from "./model_capabilities";
 
 /** Env var that disables smart routing. Default: routing is ON. */
 export const SMART_ROUTING_ENV_VAR = "BOBI_SMART_ROUTING";
@@ -87,6 +93,15 @@ export interface RouteDecision {
   tier: TaskTier;
   /** Short human-readable rationale, safe for logs. */
   reason: string;
+  /**
+   * Set ONLY when the decision knowingly routes to a model that lacks a
+   * capability the request needs (tools and/or vision) because no capable
+   * candidate survived any pool. Short, log-safe explanation naming the
+   * missing capability, so the gateway can surface the downgrade instead
+   * of silently falling back to the owner's active selection. Absent on
+   * every non-degraded decision.
+   */
+  degraded?: string;
 }
 
 /** Call-scoped gate state, precomputed once per route() call. */
@@ -451,6 +466,7 @@ export class SmartRouter {
     // Hard gates: capability must come before cost.
     if (!KNOWN_ADAPTERS.has(provider.adapter)) return undefined;
     if (needs.needsTools && !modelSupportsTools(provider.adapter, model.modelId)) return undefined;
+    if (needs.needsVision && !modelCapabilities(provider.adapter, model.modelId).supportsVision) return undefined;
     if (needs.needsDocuments) {
       // The request explicitly carries documents, so prefer an adapter that
       // reads them natively over one the bot layer would have to extract
@@ -633,6 +649,10 @@ export class SmartRouter {
     }
 
     let pool = scored;
+    // True when the winner came from the tier-floor fallback pool (the
+    // request is served, but by a model below its tier's capability
+    // floor) — surfaced as a degraded= marker in the reason.
+    let degradedPool = false;
     if (pool.length === 0) {
       // Nothing met the tier floor: fall back to the strongest candidate(s)
       // that pass the hard capability gates, so the request still goes out
@@ -643,6 +663,7 @@ export class SmartRouter {
         const { provider } = candidate;
         if (!KNOWN_ADAPTERS.has(provider.adapter)) continue;
         if (needs.needsTools && !modelSupportsTools(provider.adapter, candidate.model.modelId)) continue;
+        if (needs.needsVision && !modelCapabilities(provider.adapter, candidate.model.modelId).supportsVision) continue;
         if (needs.needsDocuments && !this.adapters.describes(provider.adapter).documentInput) continue;
         // Breaker gate applies here too: an open breaker is unusable even
         // as a last resort. (The gateway's own all-open fallback covers
@@ -673,9 +694,71 @@ export class SmartRouter {
           this.healthBonus(candidate.provider.id, gates.now) -
           (this.circuitPenalty(candidate.provider.id) ?? 0),
       }));
+      if (pool.length > 0) degradedPool = true;
     }
 
-    if (pool.length === 0) return undefined;
+    // Which capabilities (if any) this request needs but NO candidate in
+    // the full list can serve. Set only when a degraded decision is
+    // actually returned below.
+    let degradedMissing: { tools: boolean; vision: boolean } | undefined;
+    if (pool.length === 0) {
+      // Degraded pool: no candidate — scored or fallback — can serve a
+      // capability this request needs (tools and/or vision). Returning
+      // undefined here would make the gateway silently fall back to the
+      // owner's active selection, possibly a model that lacks the
+      // capability entirely and with no trace of the downgrade. Instead,
+      // pick the best-ranked candidate that passes every OTHER gate
+      // (known adapter, documents gate, breaker, fresh-failure and
+      // quarantine under the same per-call gate state; tier floor
+      // relaxed exactly like the fallback pool) and flag the decision
+      // degraded, naming the missing capability. A degraded decision is
+      // never returned while a fully capable candidate exists: this pool
+      // is reached only when the capable pools above were both empty.
+      // When truly nothing survives even here (e.g. every breaker is
+      // open), keep returning undefined — the gateway's own fallbacks
+      // own that case.
+      const missingTools =
+        needs.needsTools &&
+        !all.some((c) => modelSupportsTools(c.provider.adapter, c.model.modelId));
+      const missingVision =
+        needs.needsVision &&
+        !all.some(
+          (c) => modelCapabilities(c.provider.adapter, c.model.modelId).supportsVision,
+        );
+      if (!missingTools && !missingVision) return undefined;
+      let bestRank = -1;
+      const degradedCandidates: RouteCandidate[] = [];
+      for (const candidate of all) {
+        const { provider } = candidate;
+        if (!KNOWN_ADAPTERS.has(provider.adapter)) continue;
+        // The tools/vision gates are deliberately NOT applied here —
+        // their absence is the degradation being surfaced. Every other
+        // gate from the fallback pool applies unchanged.
+        if (needs.needsDocuments && !this.adapters.describes(provider.adapter).documentInput) continue;
+        if (this.circuitPenalty(provider.id) === undefined) continue;
+        if (gates.freshGateActive && this.isFreshFailed(provider.id, gates.now)) continue;
+        if (gates.quarantineGateActive && this.isQuarantined(candidate)) continue;
+        const rank = modelCapabilityRank(candidate.model.modelId);
+        if (rank > bestRank) {
+          bestRank = rank;
+          degradedCandidates.length = 0;
+          degradedCandidates.push(candidate);
+        } else if (rank === bestRank) {
+          degradedCandidates.push(candidate);
+        }
+      }
+      if (degradedCandidates.length === 0) return undefined;
+      pool = degradedCandidates.map((candidate) => ({
+        candidate,
+        // Same fallback ordering formula as the tier-floor pool.
+        score:
+          1000 -
+          costHint(candidate.model.modelId, this.costs) * 10 +
+          this.healthBonus(candidate.provider.id, gates.now) -
+          (this.circuitPenalty(candidate.provider.id) ?? 0),
+      }));
+      degradedMissing = { tools: missingTools, vision: missingVision };
+    }
 
     // Sort by score descending; the owner's active selection wins ties;
     // deterministic tie-break on ids after that.
@@ -699,6 +782,30 @@ export class SmartRouter {
 
     const winner = pool[0]!.candidate;
     const cost = costHint(winner.model.modelId, this.costs);
+    // Degraded transparency: a capability-degraded decision carries the
+    // `degraded` explanation plus a reason marker; a tier-floor-relaxed
+    // (fallback pool) decision carries only the reason marker. Fully
+    // capable decisions are byte-identical to before.
+    let degraded: string | undefined;
+    let degradedMarker = "";
+    if (degradedMissing !== undefined) {
+      const names: string[] = [];
+      const markers: string[] = [];
+      if (degradedMissing.tools) {
+        names.push("tools");
+        markers.push("no-tools-capable");
+      }
+      if (degradedMissing.vision) {
+        names.push("vision");
+        markers.push("no-vision-capable");
+      }
+      degraded =
+        `no ${names.join("/")}-capable candidate; ` +
+        `best available model cannot use ${names.join(" or ")}`;
+      degradedMarker = ` degraded=${markers.join("+")}`;
+    } else if (degradedPool) {
+      degradedMarker = " degraded=tier-floor-relaxed";
+    }
     return {
       providerId: winner.provider.id,
       providerLabel: winner.provider.label,
@@ -709,7 +816,9 @@ export class SmartRouter {
         `tier=${needs.tier} cost=${cost}` +
         (needs.needsTools ? " tools=yes" : "") +
         (needs.needsVision ? " vision=yes" : "") +
-        (needs.needsDocuments ? " documents=yes" : ""),
+        (needs.needsDocuments ? " documents=yes" : "") +
+        degradedMarker,
+      ...(degraded !== undefined ? { degraded } : {}),
     };
   }
 

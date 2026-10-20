@@ -31,6 +31,12 @@ class ScriptedProvider implements AiProvider {
   async complete(req: CompletionRequest): Promise<CompletionResponse> {
     const lastUser = [...req.messages].reverse().find((m) => m.role === "user");
     const key = lastUser?.content ?? "";
+    // Phase-3 self-review: confirm the draft unchanged (review protocol).
+    if (typeof key === "string" && key.startsWith("<self_review>")) {
+      const draftMsg = [...req.messages].reverse().find((m) => m.role === "assistant");
+      const draft = typeof draftMsg?.content === "string" ? draftMsg.content : "پایان.";
+      return { text: draft, model: "m" };
+    }
     const q = this.script[key];
     if (!q || q.length === 0) return { text: "پایان.", model: "m" };
     return q.shift()!;

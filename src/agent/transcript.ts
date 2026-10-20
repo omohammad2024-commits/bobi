@@ -14,7 +14,8 @@ export type AgentStep =
   | { kind: "model"; iteration: number; model: string; requestedTools: readonly string[] }
   | { kind: "tool"; name: string; status: ToolRunStatus; durationMs: number }
   | { kind: "limit"; limit: "iterations" | "tool_calls" | "timeout" }
-  | { kind: "plan"; steps: readonly string[]; completed: boolean };
+  | { kind: "plan"; steps: readonly string[]; completed: boolean }
+  | { kind: "review"; durationMs: number; outcome: "confirmed" | "revised" | "tools" };
 
 /** Why a run stopped asking for tools. */
 export type StopReason =
@@ -46,6 +47,8 @@ export interface AgentRunResult {
   media: ContentPart[];
   /** Token totals across every provider call in this run. */
   usage: { inputTokens: number; outputTokens: number };
+  /** The run's accepted plan steps, when a plan was made — surfaced in run state. */
+  plan?: readonly string[];
 }
 
 /**
