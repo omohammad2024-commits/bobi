@@ -14,12 +14,17 @@
  *    the resolution POLICY (classification, re-classification on hit,
  *    fail-closed rules) and delegates storage to this map.
  *  - The keep-alive agent cache lives here, keyed per host exactly as the
- *    transport used to key it, with the same TTL/address-rotation rules.
+ *    transport used to key it, with address-rotation rules and a dedicated
+ *    agent max-age (see BOBI_CONN_AGENT_MAX_AGE_MS below) that is DECOUPLED
+ *    from the DNS cache TTL: address safety comes from dns_guard
+ *    revalidating the address set on EVERY request plus agentFor rebuilding
+ *    the agent whenever the freshly validated addressesKey differs — not
+ *    from expiring the agent on the DNS TTL.
  *  - Warm-up (preconnect): resolve + open a real connection ahead of the
  *    first request, so a failover switch or a cold start does not pay the
  *    full TCP+TLS handshake on the user's latency budget.
  *  - Idle reaping: pooled agents idle past BOBI_CONN_IDLE_MS (default
- *    120000) are destroyed and rebuilt cleanly on next use. The reaper
+ *    300000) are destroyed and rebuilt cleanly on next use. The reaper
  *    timer is unref'd — it never keeps the process alive.
  *  - Per-host stats (in-memory only): connect count, agent-reuse count,
  *    last request latency, last error kind. Surfaced through ProbeResult
@@ -38,9 +43,14 @@
  *    (it is the same code, now housed here). Default: ON.
  *  - BOBI_KEEPALIVE=0 — no connection pooling at all (agentFor returns
  *    undefined; the transport then passes `agent: false`). Unchanged.
- *  - BOBI_DNS_CACHE_MS — DNS TTL, read by dns_guard; the agent lifetime
- *    mirrors it here with the same env semantics. Unchanged.
- *  - BOBI_CONN_IDLE_MS — idle-reap threshold, default 120000.
+ *  - BOBI_DNS_CACHE_MS — DNS TTL, read by dns_guard. It no longer bounds
+ *    keep-alive agent lifetime (see BOBI_CONN_AGENT_MAX_AGE_MS).
+ *  - BOBI_CONN_AGENT_MAX_AGE_MS — keep-alive agent max-age, default
+ *    300000 (5 min), clamped to [30000, 3600000]. Decoupled from the DNS
+ *    TTL: dns_guard revalidates addresses on every request and agentFor
+ *    rebuilds on an addressesKey mismatch, so a longer-lived agent stays
+ *    pinned only to freshly validated addresses.
+ *  - BOBI_CONN_IDLE_MS — idle-reap threshold, default 300000.
  */
 import { Agent as HttpAgent, request as httpRequest } from "node:http";
 import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
@@ -48,11 +58,19 @@ import { AiError } from "./provider";
 
 /** Env var that disables the connection manager's active features. Default: ON. */
 export const CONN_MANAGER_ENV_VAR = "BOBI_CONN_MANAGER";
-/** Env var overriding the idle-reap threshold, ms. Default 120000. */
+/** Env var overriding the idle-reap threshold, ms. Default 300000. */
 export const CONN_IDLE_MS_ENV_VAR = "BOBI_CONN_IDLE_MS";
+/** Env var overriding the keep-alive agent max-age, ms. Default 300000. */
+export const CONN_AGENT_MAX_AGE_MS_ENV_VAR = "BOBI_CONN_AGENT_MAX_AGE_MS";
 
 /** Default idle threshold after which a pooled agent is reaped, ms. */
-export const DEFAULT_CONN_IDLE_MS = 120_000;
+export const DEFAULT_CONN_IDLE_MS = 300_000;
+/** Default max-age of a pooled keep-alive agent, ms (5 min). */
+export const DEFAULT_CONN_AGENT_MAX_AGE_MS = 300_000;
+/** Floor for the agent max-age, ms — avoids pathological churn. */
+export const MIN_CONN_AGENT_MAX_AGE_MS = 30_000;
+/** Ceiling for the agent max-age, ms (1 h). */
+export const MAX_CONN_AGENT_MAX_AGE_MS = 3_600_000;
 
 /** True unless BOBI_CONN_MANAGER is set to a falsy value. */
 export function connectionManagerEnabled(): boolean {
@@ -71,6 +89,28 @@ export function connIdleMs(): number {
   return DEFAULT_CONN_IDLE_MS;
 }
 
+/** Clamp an agent max-age candidate into [MIN, MAX]; invalid → default. */
+function clampAgentMaxAgeMs(n: number): number {
+  if (!Number.isFinite(n) || n <= 0) return DEFAULT_CONN_AGENT_MAX_AGE_MS;
+  return Math.min(
+    MAX_CONN_AGENT_MAX_AGE_MS,
+    Math.max(MIN_CONN_AGENT_MAX_AGE_MS, Math.floor(n)),
+  );
+}
+
+/**
+ * Keep-alive agent max-age, ms. Invalid or non-positive → the default
+ * (300000); valid values are clamped to [30000, 3600000] so a tiny env
+ * value cannot cause pathological agent churn and a huge one cannot pin
+ * an agent (and its sockets) effectively forever. This lifetime is
+ * decoupled from the DNS TTL — see the module header.
+ */
+export function connAgentMaxAgeMs(): number {
+  const raw = process.env[CONN_AGENT_MAX_AGE_MS_ENV_VAR];
+  if (raw !== undefined) return clampAgentMaxAgeMs(Number(raw));
+  return DEFAULT_CONN_AGENT_MAX_AGE_MS;
+}
+
 /** True unless BOBI_KEEPALIVE=0. Same rule the transport always applied. */
 function keepAliveEnabled(): boolean {
   return process.env.BOBI_KEEPALIVE !== "0";
@@ -78,10 +118,12 @@ function keepAliveEnabled(): boolean {
 
 /**
  * DNS TTL read with dns_guard's exact env semantics (BOBI_DNS_CACHE_MS:
- * unset → 60000; not a finite number > 0 → 0). Duplicated as an env READ
- * only — the resolution policy itself lives solely in dns_guard; this
- * value merely bounds how long a pooled agent may outlive the addresses
- * it was built for, exactly as the transport's cache did before.
+ * unset → 60000; not a finite number > 0 → 0). Retained for compatibility
+ * with the ConnectionManagerOptions injection seam only — it NO LONGER
+ * bounds keep-alive agent lifetime. Agent lifetime is governed by
+ * connAgentMaxAgeMs(); address safety is provided by dns_guard
+ * revalidating the address set on every request and by agentFor
+ * rebuilding the agent whenever the validated addressesKey changes.
  */
 function dnsTtlMs(): number {
   const raw = process.env.BOBI_DNS_CACHE_MS;
@@ -287,8 +329,14 @@ export interface ConnectionManagerOptions {
   /** Injectable kill switches, for deterministic tests. */
   enabled?: () => boolean;
   keepAliveEnabled?: () => boolean;
-  /** Injectable DNS TTL (agent lifetime), for deterministic tests. */
+  /**
+   * Injectable DNS TTL, retained for compatibility. It no longer bounds
+   * agent lifetime (see agentMaxAgeMs); existing callers/tests may keep
+   * passing it and it is simply ignored for lifetime decisions.
+   */
   dnsTtlMs?: () => number;
+  /** Injectable agent max-age, ms, for deterministic tests. */
+  agentMaxAgeMs?: () => number;
   /** Injectable warm-up connector, for deterministic tests. */
   connector?: WarmConnector;
   /** Test-only: never start the background reaper timer. */
@@ -362,7 +410,10 @@ export class ConnectionManager {
   private readonly idleMsOverride: number | undefined;
   private readonly enabledFn: () => boolean;
   private readonly keepAliveFn: () => boolean;
+  // Retained for compatibility with the dnsTtlMs injection seam; it no
+  // longer bounds agent lifetime (agentMaxAgeFn does).
   private readonly dnsTtlFn: () => number;
+  private readonly agentMaxAgeFn: () => number;
   private readonly connector: WarmConnector;
   private readonly entries = new Map<string, HostEntry>();
   private reaper: ReturnType<typeof setInterval> | undefined;
@@ -373,6 +424,7 @@ export class ConnectionManager {
     this.enabledFn = opts.enabled ?? connectionManagerEnabled;
     this.keepAliveFn = opts.keepAliveEnabled ?? keepAliveEnabled;
     this.dnsTtlFn = opts.dnsTtlMs ?? dnsTtlMs;
+    this.agentMaxAgeFn = opts.agentMaxAgeMs ?? connAgentMaxAgeMs;
     this.connector = opts.connector ?? defaultConnector;
     if (opts.disableReaper === true) {
       // Tests drive reapIdle() directly; no timer is ever started.
@@ -388,6 +440,16 @@ export class ConnectionManager {
     return this.idleMsOverride ?? connIdleMs();
   }
 
+  /**
+   * Agent max-age in effect (option override wins over the env), clamped
+   * to [MIN_CONN_AGENT_MAX_AGE_MS, MAX_CONN_AGENT_MAX_AGE_MS] with the
+   * default for invalid values — the same policy connAgentMaxAgeMs()
+   * applies to the env, so an injected seam cannot cause churn either.
+   */
+  private agentMaxAgeMs(): number {
+    return clampAgentMaxAgeMs(this.agentMaxAgeFn());
+  }
+
   /** The cache key for a host — identical to the transport's legacy key. */
   hostKey(url: URL, allowLocalTargets: boolean): string {
     const secure = url.protocol === "https:";
@@ -398,11 +460,17 @@ export class ConnectionManager {
   /**
    * The keep-alive agent for this target, or undefined when pooling is off.
    *
-   * Semantics preserved from the transport's original cache: an existing
-   * agent is returned only while it is inside the DNS-cache TTL, its
-   * address set still matches the addresses THIS request was validated
-   * for, and it has not been idle past the reap threshold; any expiry,
-   * rotation, or idle timeout destroys it and builds a fresh one.
+   * An existing agent is returned only while it is inside its max-age
+   * (BOBI_CONN_AGENT_MAX_AGE_MS, default 5 min — decoupled from the DNS
+   * TTL), its address set still matches the addresses THIS request was
+   * validated for, and it has not been idle past the reap threshold; any
+   * expiry, rotation, or idle timeout destroys it and builds a fresh
+   * one. Address safety does not depend on the max-age: dns_guard
+   * revalidates the address set on every request, and an addressesKey
+   * mismatch rebuilds immediately even inside the max-age. This holds
+   * also when the DNS TTL is 0 ("resolve every request" mode): each
+   * request's fresh resolution is compared via addressesKey, so pinning
+   * stays honest while the socket stays warm.
    */
   agentFor(
     url: URL,
@@ -412,12 +480,11 @@ export class ConnectionManager {
   ): (HttpAgent | HttpsAgent) | undefined {
     if (!this.keepAliveFn()) return undefined;
     const key = this.hostKey(url, allowLocalTargets);
-    const ttl = this.dnsTtlFn();
-    // When the DNS cache is disabled ("resolve every request"), revalidating
-    // addresses per request still happens in dns_guard; a pooled socket stays
-    // pinned to a validated address, so a short lifetime is kept rather than
-    // disabling reuse outright.
-    const agentTtl = ttl > 0 ? ttl : 30_000;
+    // Decoupled from the DNS TTL (R2): the agent lives for its max-age.
+    // When DNS caching is disabled (TTL 0, "resolve every request"), the
+    // max-age still applies — addressesKey below is compared against each
+    // request's fresh resolution, so a changed set rebuilds immediately.
+    const agentMaxAge = this.agentMaxAgeMs();
     const addressesKey = [...addresses].sort().join(",");
     const now = this.now();
 
@@ -425,7 +492,7 @@ export class ConnectionManager {
     if (
       hit !== undefined &&
       hit.addressesKey === addressesKey &&
-      now - hit.createdAt < agentTtl &&
+      now - hit.createdAt < agentMaxAge &&
       now - hit.lastActivityAt <= this.idleMs()
     ) {
       hit.reusedCount += 1;

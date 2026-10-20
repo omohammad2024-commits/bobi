@@ -1,9 +1,9 @@
 /**
  * Provider health service — a connection test the owner can run from the panel.
  *
- * The probe is deliberately cheap and self-contained: it asks the service for a
- * minimal completion (or, when the adapter supports it, its model list) and
- * records only the outcome. The result message is chosen by this module;
+ * The probe is self-contained and honest: it runs the shared two-stage test
+ * (a minimal ping completion, then a realistic turn simulation) against the
+ * provider's default model and records only the outcome. The result message is chosen by this module;
  * the only provider text it may carry is the status mapper's sanitized,
  * capped, credential-redacted extraction of the provider's own error
  * words, so a body that echoes the request cannot leak a key into the
@@ -77,13 +77,14 @@ export interface ProbeResult {
    */
   quarantined?: boolean;
   /**
-   * Stage detail of a two-stage model test (probeModel): stage (a), the
-   * cheap ping. Absent on provider-level probes and on pre-check failures
-   * (unknown model, missing credential) where no request was sent.
+   * Stage detail of a two-stage test (probe() on the provider's default
+   * model, probeModel on a specific one): stage (a), the cheap ping.
+   * Absent on pre-check failures (unknown model, missing credential)
+   * where no request was sent.
    */
   ping?: ModelProbeStage;
   /**
-   * Stage (b) of a two-stage model test: a REALISTIC turn simulation
+   * Stage (b) of a two-stage test: a REALISTIC turn simulation
    * (streaming, full tool-spec payload, real-size system prompt). This is
    * the stage that sees what a Telegram turn sees. Absent when the ping
    * stage already failed — a provider that cannot answer a postcard is
@@ -103,6 +104,8 @@ export interface ModelProbeStage {
   error?: string;
   /** Machine-safe note, e.g. "empty response", "stream". */
   detail?: string;
+  /** HTTP status of the stage's failure, when the adapter reported one. */
+  status?: number;
 }
 
 /**
@@ -258,6 +261,11 @@ export class ProviderHealthService {
   /**
    * Probe a provider and record the result.
    *
+   * Runs the shared two-stage test (ping + realistic turn, the same
+   * machinery as probeModel) against the provider's default model and
+   * records the COMBINED outcome as provider health — a ping-only green
+   * is exactly how a dead chat used to hide behind a working postcard.
+   *
    * A missing credential is a configuration failure, reported as such; it is
    * never worked around by sending an unauthenticated request.
    */
@@ -293,8 +301,6 @@ export class ProviderHealthService {
       );
     }
 
-    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
-
     // The adapter owns the request timeout: it aborts at its own deadline and
     // reports AiError("timeout"). A second, racing timer here would abort the
     // caller signal first, and the adapter would then report "aborted" instead
@@ -315,22 +321,12 @@ export class ProviderHealthService {
         ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
       });
 
-      // Always verify with a real completion on the provider's default model.
-      // listModels only checks API reachability — a provider can list models
-      // fine while the specific model is rate-limited, disabled, or broken.
-      // The completion test catches those cases.
-      await adapter.complete({
-        messages: [{ role: "user", content: "ping" }],
-        model: modelId,
-        // A probe only needs ANY answer back; capping generation keeps it
-        // fast (and cheap) instead of waiting for a full-length reply.
-        maxTokens: 16,
-        timeoutMs,
-        signal: neverAborted,
-      });
-
-      return this.record(providerId, true, "Connection succeeded.", {
+      const outcome = await this.probeTwoStage(adapter, modelId, opts, neverAborted);
+      return this.record(providerId, outcome.ok, outcome.message, {
         latencyMs: Date.now() - started,
+        ...(outcome.status !== undefined ? { status: outcome.status } : {}),
+        ping: outcome.ping,
+        ...(outcome.real !== undefined ? { real: outcome.real } : {}),
       });
     } catch (err) {
       return this.record(providerId, false, probeMessage(err), {
@@ -351,7 +347,7 @@ export class ProviderHealthService {
    * overwrite the provider-level outcome. A flaky model gets reported
    * inline; the provider row keeps its own status.
    *
-   * TWO STAGES (the honest probe):
+   * TWO STAGES (the honest probe, shared with probe() via probeTwoStage):
    *   (a) ping — the historical cheap check: one 16-token non-streaming
    *       completion. Free gateways answer this even when they cannot
    *       serve a real turn, which is exactly how a green ⚡Test used to
@@ -392,7 +388,6 @@ export class ProviderHealthService {
       return this.result(providerId, false, "Credential is not set.", modelId);
     }
 
-    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
     // Same reasoning as probe(): the health service supplies a signal it
     // never fires, so the adapter reports its own timeout diagnosis.
     const neverAborted = new AbortController().signal;
@@ -404,6 +399,36 @@ export class ProviderHealthService {
       ...(provider.allowLocal ? { allowLocalTargets: true } : {}),
     });
 
+    const outcome = await this.probeTwoStage(adapter, modelId, opts, neverAborted);
+    return this.result(providerId, outcome.ok, outcome.message, modelId, {
+      ping: outcome.ping,
+      ...(outcome.real !== undefined ? { real: outcome.real } : {}),
+    });
+  }
+
+  /**
+   * The shared two-stage core behind probe() and probeModel(): stage (a)
+   * the ping, then — only when the ping passed — stage (b) the realistic
+   * turn. Returns the combined outcome WITHOUT recording or reporting it;
+   * the callers decide what it means (probe() records it as provider
+   * health via record(); probeModel only reports it via result()).
+   * `status` threads the failing stage's HTTP status out, when its error
+   * carried one, so probe() keeps recording it at the top level.
+   */
+  private async probeTwoStage(
+    adapter: AIProviderAdapter,
+    modelId: string,
+    opts: ProbeOptions,
+    signal: AbortSignal,
+  ): Promise<{
+    ok: boolean;
+    message: string;
+    ping: ModelProbeStage;
+    real?: ModelProbeStage;
+    status?: number;
+  }> {
+    const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
+
     // ---- stage (a): the ping -------------------------------------------
     const pingStarted = Date.now();
     let ping: ModelProbeStage;
@@ -411,10 +436,11 @@ export class ProviderHealthService {
       await adapter.complete({
         messages: [{ role: "user", content: "ping" }],
         model: modelId,
-        // Same cap as probe(): the test needs any answer, fast.
+        // The test needs any answer, fast — capping generation keeps the
+        // ping cheap instead of waiting for a full-length reply.
         maxTokens: 16,
         timeoutMs,
-        signal: neverAborted,
+        signal,
       });
       ping = { ok: true, latencyMs: Date.now() - pingStarted };
     } catch (err) {
@@ -423,25 +449,33 @@ export class ProviderHealthService {
         latencyMs: Date.now() - pingStarted,
         error: probeMessage(err),
         ...(isEmptyResponseError(err) ? { detail: "empty response" } : {}),
+        ...(err instanceof AiError && err.status !== undefined
+          ? { status: err.status }
+          : {}),
       };
-      return this.result(providerId, false, probeMessage(err), modelId, { ping });
+      return {
+        ok: false,
+        message: probeMessage(err),
+        ping,
+        ...(ping.status !== undefined ? { status: ping.status } : {}),
+      };
     }
 
     // ---- stage (b): the realistic turn ----------------------------------
-    const real = await this.probeRealistic(adapter, modelId, opts, neverAborted);
+    const real = await this.probeRealistic(adapter, modelId, opts, signal);
     if (!real.ok) {
       // The stage error already names the cause safely (mapped, or the
       // fixed empty-response template) — surface it as the test's message
       // so the panel shows WHY the real turn would fail, not just that.
-      return this.result(
-        providerId,
-        false,
-        real.error ?? "Realistic check failed.",
-        modelId,
-        { ping, real },
-      );
+      return {
+        ok: false,
+        message: real.error ?? "Realistic check failed.",
+        ping,
+        real,
+        ...(real.status !== undefined ? { status: real.status } : {}),
+      };
     }
-    return this.result(providerId, true, "Connection succeeded.", modelId, { ping, real });
+    return { ok: true, message: "Connection succeeded.", ping, real };
   }
 
   /**
@@ -483,6 +517,9 @@ export class ProviderHealthService {
       // verbatim; everything else goes through the mapped messages.
       error: isEmptyResponseError(err) ? err.message : probeMessage(err),
       detail: isEmptyResponseError(err) ? "empty response" : detail,
+      ...(err instanceof AiError && err.status !== undefined
+        ? { status: err.status }
+        : {}),
     });
 
     if (typeof adapter.completeStream === "function") {
@@ -546,7 +583,7 @@ export class ProviderHealthService {
    *
    * Every BOBI_HEALTH_PROBE_MS (default 60000; 0 = off) one pass probes the
    * configured providers that need attention — breaker OPEN (or half-open)
-   * or last recorded probe failed — using the same cheap probe() the panel
+   * or last recorded probe failed — using the same two-stage probe() the panel
    * runs. A pass never overlaps itself: a slow provider cannot stack
    * passes up. Recovery is driven through the SHARED breaker registry
    * passed as `driver`: a successful probe of an open/half-open provider
@@ -659,11 +696,24 @@ export class ProviderHealthService {
     providerId: number,
     ok: boolean,
     message: string,
-    extra: { status?: number; latencyMs?: number } = {},
+    extra: {
+      status?: number;
+      latencyMs?: number;
+      ping?: ModelProbeStage;
+      real?: ModelProbeStage;
+    } = {},
   ): ProbeResult {
     const checkedAt = Date.now();
     const explained = this.explainFailure(providerId, ok, message);
-    this.storage.setProviderHealth({ providerId, ok, message: explained, ...extra });
+    // Only status/latency persist — the health row has no stage columns;
+    // the stage detail rides the returned result for the calling surface.
+    this.storage.setProviderHealth({
+      providerId,
+      ok,
+      message: explained,
+      ...(extra.status !== undefined ? { status: extra.status } : {}),
+      ...(extra.latencyMs !== undefined ? { latencyMs: extra.latencyMs } : {}),
+    });
     return {
       ok,
       message: explained,
@@ -673,6 +723,8 @@ export class ProviderHealthService {
       ...this.circuitField(providerId),
       ...this.connectionField(providerId),
       ...this.quarantineField(providerId, this.defaultModelId(providerId)),
+      ...(extra.ping !== undefined ? { ping: extra.ping } : {}),
+      ...(extra.real !== undefined ? { real: extra.real } : {}),
     };
   }
 

@@ -16,6 +16,7 @@ import type {
   ChatMessage,
   CompletionRequest,
   CompletionResponse,
+  StreamEvent,
   TokenUsage,
   ToolCall,
 } from "./provider";
@@ -28,7 +29,8 @@ import type {
 } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { statusToAiError } from "./http_status";
-import { pinnedFetch } from "./pinned_transport";
+import { pinnedFetch, pinnedStream } from "./pinned_transport";
+import { SseParser } from "./openai_compatible";
 import { selectParts, textWithPartNotes } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
 
@@ -45,6 +47,7 @@ export class GeminiAdapter implements AIProviderAdapter {
     listModels: true,
     audioInput: true,
     documentInput: true,
+    streaming: true,
     notes: "POST {baseUrl}/models/{model}:generateContent",
   };
   readonly label = "Google Gemini";
@@ -77,6 +80,75 @@ export class GeminiAdapter implements AIProviderAdapter {
     );
 
     return parseResponse(res, req.model);
+  }
+
+  /**
+   * Stream a completion via :streamGenerateContent with alt=sse.
+   *
+   * Same StreamEvent contract as the OpenAI-compatible adapter: text
+   * deltas as they arrive, a usage event when the service reports
+   * usageMetadata, and exactly one terminal `end`. An empty stream is
+   * the empty-response failure, so the gateway fails over.
+   */
+  async *completeStream(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined> {
+    const resolved = await resolveTarget(this.target, {
+      ...(this.target.allowLocalTargets !== undefined
+        ? { allowLocalTargets: this.target.allowLocalTargets }
+        : {}),
+    });
+
+    if (this.target.apiKey === undefined || this.target.apiKey.length === 0) {
+      throw new AiError("auth", "Service key is not set.");
+    }
+
+    const body = buildBody(this.target, req);
+    const url = new URL(
+      `${resolved.baseUrl}/models/${encodeURIComponent(req.model)}:streamGenerateContent`,
+    );
+    url.searchParams.set("alt", "sse");
+    url.searchParams.set("key", this.target.apiKey);
+
+    const stream = await pinnedStream({
+      url: url.toString(),
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify(body),
+      timeoutMs: req.timeoutMs,
+      signal: req.signal,
+      addresses: resolved.addresses,
+      allowLocalTargets: resolved.allowLocalTargets,
+    });
+
+    if (stream.status >= 300 && stream.status < 400) {
+      await stream.chunks.return(undefined);
+      throw new AiError("invalid_response", "The service redirected to another address.");
+    }
+    if (stream.status < 200 || stream.status >= 300) {
+      const errorBody = await readStreamErrorBody(stream.chunks);
+      await stream.chunks.return(undefined);
+      throw statusToAiError(stream.status, stream.headers, {
+        body: errorBody,
+        secret: this.target.apiKey,
+      });
+    }
+
+    const parser = new SseParser();
+    const assembler = new GeminiStreamAssembler(req.model);
+
+    try {
+      for await (const chunk of stream.chunks) {
+        for (const event of parser.push(chunk.toString("utf8"))) {
+          yield* assembler.push(event);
+        }
+      }
+      for (const event of parser.flush()) {
+        yield* assembler.push(event);
+      }
+    } finally {
+      await stream.chunks.return(undefined);
+    }
+
+    yield assembler.finish();
   }
 
   async listModels(req: ListModelsRequest): Promise<readonly RemoteModel[]> {
@@ -251,8 +323,17 @@ export function buildBody(target: GeminiTarget, req: CompletionRequest): Record<
   if (s?.temperature !== undefined && Number.isFinite(s.temperature)) {
     generation["temperature"] = clamp(s.temperature, 0, 2);
   }
-  if (s?.maxTokens !== undefined && Number.isFinite(s.maxTokens) && s.maxTokens > 0) {
-    generation["maxOutputTokens"] = Math.min(Math.trunc(s.maxTokens), 100_000);
+  // Per-request cap wins over the settings cap (provider.ts contract,
+  // mirroring the OpenAI adapter): an invalid per-request value falls
+  // through to the settings value rather than dropping the cap entirely.
+  const maxTokens =
+    typeof req.maxTokens === "number" && Number.isFinite(req.maxTokens) && req.maxTokens > 0
+      ? Math.min(Math.trunc(req.maxTokens), 100_000)
+      : s?.maxTokens !== undefined && Number.isFinite(s.maxTokens) && s.maxTokens > 0
+        ? Math.min(Math.trunc(s.maxTokens), 100_000)
+        : undefined;
+  if (maxTokens !== undefined) {
+    generation["maxOutputTokens"] = maxTokens;
   }
   if (Object.keys(generation).length > 0) {
     body["generationConfig"] = generation;
@@ -296,6 +377,154 @@ export function parseResponse(
     model: extractModel(res, requestedModel),
     ...extras,
   };
+}
+
+/**
+ * Assembles Gemini SSE events into the neutral StreamEvent contract.
+ *
+ * Exported for tests, like SseParser/buildBody: completeStream drives
+ * one instance per request, feeding each parsed SSE JSON event to
+ * push() and yielding whatever it returns, then yields finish() once.
+ *
+ * Parts with `thought === true` are reasoning, never answer text: they
+ * are excluded from the deltas and only feed the empty-stream detail,
+ * so a reasoning-only stream is still an empty response. (The buffered
+ * parseResponse path does not split thought parts out — it joins every
+ * text part — so streamed and buffered text can differ on a payload
+ * that carries thought parts.)
+ */
+export class GeminiStreamAssembler {
+  private textAcc = "";
+  private readonly calls: ToolCall[] = [];
+  private usageValue: TokenUsage | undefined;
+  private modelValue: string;
+  private hadReasoningFlag = false;
+  private finishReasonValue: string | undefined;
+  private blockReasonValue: string | undefined;
+
+  constructor(requestedModel: string) {
+    this.modelValue = requestedModel;
+  }
+
+  get text(): string {
+    return this.textAcc;
+  }
+  get toolCalls(): readonly ToolCall[] {
+    return this.calls;
+  }
+  get usage(): TokenUsage | undefined {
+    return this.usageValue;
+  }
+  get model(): string {
+    return this.modelValue;
+  }
+  get hadReasoning(): boolean {
+    return this.hadReasoningFlag;
+  }
+  get finishReason(): string | undefined {
+    return this.finishReasonValue;
+  }
+
+  push(event: Record<string, unknown>): StreamEvent[] {
+    const out: StreamEvent[] = [];
+
+    if (typeof event["modelVersion"] === "string" && event["modelVersion"].length > 0) {
+      this.modelValue = event["modelVersion"];
+    }
+
+    const feedback = event["promptFeedback"];
+    if (isRecord(feedback) && typeof feedback["blockReason"] === "string") {
+      this.blockReasonValue = feedback["blockReason"];
+    }
+
+    const candidates = event["candidates"];
+    if (Array.isArray(candidates) && candidates.length > 0 && isRecord(candidates[0])) {
+      const first = candidates[0];
+      if (typeof first["finishReason"] === "string" && first["finishReason"].length > 0) {
+        this.finishReasonValue = first["finishReason"];
+      }
+      const content = first["content"];
+      const parts = isRecord(content) ? content["parts"] : undefined;
+      if (Array.isArray(parts)) {
+        for (const part of parts) {
+          if (!isRecord(part)) continue;
+          if (part["thought"] === true) {
+            this.hadReasoningFlag = true;
+            continue;
+          }
+          if (typeof part["text"] === "string" && part["text"].length > 0) {
+            this.textAcc += part["text"];
+            out.push({ type: "text", delta: part["text"] });
+          }
+          const fn = part["functionCall"];
+          if (isRecord(fn)) {
+            const name = fn["name"];
+            if (typeof name === "string" && name.length > 0) {
+              // No call id on this wire: positional, exactly like parseResponse.
+              this.calls.push({
+                id: `call_${this.calls.length}_${name}`,
+                name,
+                arguments: fn["args"] ?? {},
+              });
+            }
+          }
+        }
+      }
+    }
+
+    const usage = event["usageMetadata"];
+    if (isRecord(usage)) {
+      const input = numberOrUndefined(usage["promptTokenCount"]);
+      const output = numberOrUndefined(usage["candidatesTokenCount"]);
+      if (input !== undefined || output !== undefined) {
+        this.usageValue = {
+          ...(input !== undefined ? { inputTokens: input } : {}),
+          ...(output !== undefined ? { outputTokens: output } : {}),
+        };
+        out.push({ type: "usage", usage: this.usageValue });
+      }
+    }
+
+    return out;
+  }
+
+  /** Terminal `end` event, or the empty-response failure when nothing arrived. */
+  finish(): StreamEvent {
+    if (this.textAcc.trim().length === 0 && this.calls.length === 0) {
+      const parts: string[] = ["stream"];
+      if (this.finishReasonValue !== undefined) parts.push(`finishReason=${this.finishReasonValue}`);
+      if (this.blockReasonValue !== undefined) parts.push(`blockReason=${this.blockReasonValue}`);
+      if (this.hadReasoningFlag) parts.push("the response carried reasoning only");
+      throw emptyResponseError(parts.join(", "));
+    }
+    return {
+      type: "end",
+      text: this.textAcc,
+      model: this.modelValue,
+      toolCalls: [...this.calls],
+      ...(this.usageValue !== undefined ? { usage: this.usageValue } : {}),
+    };
+  }
+}
+
+/**
+ * Read just enough of a streamed error body for the status mapper to
+ * quote the provider's own words — bounded, never throwing. Local copy
+ * of the OpenAI adapter's helper (not exported there).
+ */
+async function readStreamErrorBody(
+  chunks: AsyncGenerator<Buffer, void, undefined>,
+): Promise<string> {
+  let text = "";
+  try {
+    for await (const chunk of chunks) {
+      text += chunk.toString("utf8");
+      if (text.length >= 600) break;
+    }
+  } catch {
+    // Keep whatever arrived; the mapper treats an unreadable body as none.
+  }
+  return text;
 }
 
 function extractText(res: Record<string, unknown>): string {

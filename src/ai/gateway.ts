@@ -83,6 +83,15 @@ import {
 /** Env var that disables in-call retry. Default: retry is ON. */
 export const GATEWAY_RETRY_ENV_VAR = "BOBI_GATEWAY_RETRY";
 
+/**
+ * Freshness window for stored probe health in plan() (audit H6): a
+ * provider whose latest probe failed less than this long ago is demoted
+ * behind healthy candidates. Ten minutes — long enough to spare turns
+ * the stall of leading with a just-proven-dead provider, short enough
+ * that a recovered provider is not punished for stale news.
+ */
+export const PROVIDER_HEALTH_FRESH_MS = 600_000;
+
 /** Added wait per retry: 400ms, then 800ms, ±25% jitter. */
 const GATEWAY_RETRY_BASE_MS = 400;
 /** Extra attempts per send() when no failover candidate is available. */
@@ -133,8 +142,11 @@ function retryDelayMs(
  * provider itself (not the config) is responsible for. 429 quota, network
  * and timeout failures mean the service is down or saturated; auth,
  * validation, abort and unknown failures mean something else — the breaker
- * must not punish the provider for those. This is also the retry-eligibility
- * set for in-call retry.
+ * must not punish the provider for those.
+ *
+ * This is the BREAKER set only. In-call retry eligibility is a separate,
+ * narrower predicate (isInCallRetryEligible below): the two were aliased
+ * until audit C2, which is exactly how quota ended up retried in place.
  */
 function isTransientFailure(err: AiError): boolean {
   switch (err.kind) {
@@ -150,11 +162,30 @@ function isTransientFailure(err: AiError): boolean {
   }
 }
 
-/** Alias that reads better at the retry call sites. */
-const isRetryEligible = isTransientFailure;
-
 /** Alias that reads better at the breaker call sites. */
 const tripsBreaker = isTransientFailure;
+
+/**
+ * In-call retry eligibility — deliberately NARROWER than the breaker set.
+ *
+ * Retrying the SAME provider in place can only help when the failure may
+ * clear on its own: a transient pipe problem (network / timeout), or a
+ * rate limit (quota with HTTP 429) whose Retry-After names the wait —
+ * retryDelayMs applies that as the backoff floor, which is the correct
+ * protocol behavior (audit R5). A 402 quota failure is balance exhaustion
+ * instead: the same account cannot un-exhaust itself in-call, so it is NOT
+ * retried in place (no sleeps; its Retry-After stalls nothing) — it
+ * advances the failover chain (see isRetryable), where a DIFFERENT
+ * provider with a different account can fix it. The distinction rides on
+ * AiError.status because http_status maps both 402 and 429 to "quota".
+ * In-call retry only ever runs on single-candidate plans anyway; with a
+ * failover chain present, every quota failure advances immediately.
+ */
+function isInCallRetryEligible(err: AiError): boolean {
+  if (err.kind === "network" || err.kind === "timeout") return true;
+  if (err.kind === "quota") return err.status === 429;
+  return false;
+}
 
 /**
  * What the usage listener receives for one attempt that returned usage.
@@ -607,8 +638,12 @@ export class AiGateway implements AiProvider {
       if (result.kind === "skipped") continue;
       attemptsMade += 1;
       if (result.kind === "success") {
-        // Report the model that actually answered, as the engine expects.
-        return { text: result.res.text, model: result.res.model };
+        // Return the FULL response — text, model, toolCalls and usage.
+        // attempt() already reports usage to the listener separately, so
+        // passing res through does not double-count; stripping fields here
+        // silently dropped the model's tool requests on every
+        // non-streaming (and stream-fallback) turn (audit C1).
+        return result.res;
       }
       lastError = result.error;
       // Only a retryable class advances to the next candidate. An auth,
@@ -631,7 +666,7 @@ export class AiGateway implements AiProvider {
         force: true,
       });
       if (result.kind === "success") {
-        return { text: result.res.text, model: result.res.model };
+        return result.res;
       }
       if (result.kind === "error") throw result.error;
     }
@@ -692,7 +727,7 @@ export class AiGateway implements AiProvider {
           opts.allowRetry &&
           this.retryOn &&
           retriesUsed < GATEWAY_MAX_RETRIES &&
-          isRetryEligible(mapped);
+          isInCallRetryEligible(mapped);
         if (!canRetry) {
           // One quarantine record per candidate outcome, not per retry:
           // the retries inside this loop are the same model struggling,
@@ -879,7 +914,7 @@ export class AiGateway implements AiProvider {
           opts.allowRetry &&
           this.retryOn &&
           retriesUsed < GATEWAY_MAX_RETRIES &&
-          isRetryEligible(mapped);
+          isInCallRetryEligible(mapped);
         if (!canRetry) {
           this.noteModelOutcome(candidate, mapped);
           return { kind: "error", error: mapped };
@@ -1004,24 +1039,78 @@ export class AiGateway implements AiProvider {
       }
     }
 
+    // Probe-health demotion (audit H6): a candidate whose provider's
+    // latest stored probe just failed is moved behind the others, so a
+    // turn does not lead with a provider the prober already knows is
+    // dead. This applies to the final ordered list, before pre-warm.
+    const ordered = this.demoteFreshProbeFailures(candidates);
+
     // Connection pre-warm: with a real choice of candidates, the NEXT one
     // gets its connection established in the background so a failover does
     // not pay full connect latency mid-turn. Fire-and-forget — never
     // awaited on the request path, and a warming failure is silent (the
     // failover attempt itself will surface any real problem).
-    if (this.preWarm !== undefined && candidates.length > 1) {
+    if (this.preWarm !== undefined && ordered.length > 1) {
       try {
-        this.preWarm(candidates[1]!);
+        this.preWarm(ordered[1]!);
       } catch {
         // Warming must never break planning.
       }
     }
 
     return {
-      candidates,
+      candidates: ordered,
       failover: settings,
       timeoutMs: settings.timeoutMs,
     };
+  }
+
+  /**
+   * Stable-partition a plan's candidates by FRESH probe failure (H6).
+   *
+   * A candidate is "probe-dead" when its provider's stored health row
+   * (storage.getProviderHealth — written by the health service's probes)
+   * says ok === false and the probe ran less than
+   * PROVIDER_HEALTH_FRESH_MS ago by the gateway's injected clock.
+   * Probe-dead candidates move AFTER all others; relative order is
+   * preserved within each group (stable partition).
+   *
+   * Probe-dead is a DEMOTION, not a skip: the candidate stays in the
+   * list and is still tried if the chain reaches it — a probe is one
+   * cheap request, not proof the provider cannot answer a real turn.
+   * The circuit breaker and the per-model quarantine keep their own
+   * roles (real-traffic evidence and model-level skips respectively);
+   * this only stops the plan from LEADING with known-dead providers.
+   *
+   * Guards: with fewer than 2 candidates, or when EVERY candidate is
+   * fresh-failed (demotion could only shuffle equals — and the original
+   * order is the owner's), the list is returned untouched.
+   */
+  private demoteFreshProbeFailures(
+    candidates: GatewaySelection[],
+  ): GatewaySelection[] {
+    if (candidates.length < 2) return candidates;
+    const now = this.now();
+    const isProbeDead = (c: GatewaySelection): boolean => {
+      let row: ReturnType<Storage["getProviderHealth"]>;
+      try {
+        row = this.storage.getProviderHealth(c.providerId);
+      } catch {
+        // Health is advisory: an unreadable row must never break a plan.
+        return false;
+      }
+      return (
+        row !== undefined &&
+        row.ok === false &&
+        now - row.checkedAt < PROVIDER_HEALTH_FRESH_MS
+      );
+    };
+    const deadFlags = candidates.map(isProbeDead);
+    if (!deadFlags.some(Boolean)) return candidates;
+    if (deadFlags.every(Boolean)) return candidates;
+    const live = candidates.filter((_, i) => !deadFlags[i]);
+    const dead = candidates.filter((_, i) => deadFlags[i]);
+    return [...live, ...dead];
   }
 
   /**
@@ -1047,7 +1136,14 @@ export class AiGateway implements AiProvider {
         // --- reliability core: the router hard-excludes open breakers and
         // penalizes half-open ones when scoring. With the feature off the
         // router sees no circuit state and scores exactly as before.
-        this.breakersOn ? { circuit: this.breakers } : {},
+        // --- H4: the router likewise hard-excludes quarantined
+        // (provider, model) pairs while an alternative exists; the
+        // quarantine registry is passed under the same feature-off
+        // discipline (quarantineOn mirrors breakersOn).
+        {
+          ...(this.breakersOn ? { circuit: this.breakers } : {}),
+          ...(this.quarantineOn ? { quarantine: this.quarantine } : {}),
+        },
       );
       if (!router.shouldRoute()) return undefined;
       // The owner's active selection is the tie-break preference: the router
@@ -1406,7 +1502,7 @@ export class AiGateway implements AiProvider {
 }
 
 /**
- * Failures worth trying another provider for.
+ * Failures worth trying another provider for (chain-advancing).
  *
  * A non-retryable class is one that another provider cannot fix:
  *   - auth / credential problems (the key or endpoint is wrong)
@@ -1417,7 +1513,18 @@ export class AiGateway implements AiProvider {
  * Retrying an auth failure against a different service would spend that
  * service's quota to paper over a local misconfiguration, and would also risk
  * duplicating a request the first provider may already have acted on.
- * The ONE exception is the empty-response failure: it carries the
+ *
+ * Quota IS chain-advancing (audit C2): it is account-level exhaustion
+ * (402 balance out, 429 rate cap), so a DIFFERENT provider with a different
+ * account can fix it — that is precisely what the failover chain is for.
+ * What quota must never do is retry the SAME provider in place: the
+ * exhausted account cannot recover inside one turn, so in-call retry
+ * eligibility (isInCallRetryEligible) excludes it, and a quota error's
+ * Retry-After — only ever consumed by that in-call retry delay — never
+ * stalls the chain advance either. Key rotation also stays auth-only
+ * (send()'s policy): rotating keys cannot fix an account-level limit.
+ *
+ * The other exception is the empty-response failure: it carries the
  * invalid_response kind (the payload was unusable as an answer) but is
  * marked via isEmptyResponseError, and another candidate CAN fix it —
  * emptiness is a property of the model that answered, not of the request.
@@ -1430,9 +1537,9 @@ function isRetryable(err: AiError): boolean {
   switch (err.kind) {
     case "network":
     case "timeout":
+    case "quota":
       return true;
     case "auth":
-    case "quota":
     case "invalid_response":
     case "aborted":
     case "unknown":

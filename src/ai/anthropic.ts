@@ -20,6 +20,7 @@ import type {
   ChatMessage,
   CompletionRequest,
   CompletionResponse,
+  StreamEvent,
   TokenUsage,
   ToolCall,
 } from "./provider";
@@ -32,7 +33,8 @@ import type {
 } from "./adapter";
 import { resolveTarget, type ResolvedTarget } from "./dns_guard";
 import { statusToAiError } from "./http_status";
-import { pinnedFetch } from "./pinned_transport";
+import { pinnedFetch, pinnedStream } from "./pinned_transport";
+import { SseParser } from "./openai_compatible";
 import { selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
@@ -53,7 +55,11 @@ export class AnthropicAdapter implements AIProviderAdapter {
   /** Equals the adapter type; the engine reads this for its fake check. */
   readonly name = "anthropic";
   readonly type = "anthropic" as const;
-  readonly capabilities = { notes: "POST {baseUrl}/messages", documentInput: true };
+  readonly capabilities = {
+    notes: "POST {baseUrl}/messages",
+    documentInput: true,
+    streaming: true,
+  };
   readonly label = "Anthropic";
 
   private readonly target: AnthropicTarget;
@@ -87,6 +93,73 @@ export class AnthropicAdapter implements AIProviderAdapter {
     });
 
     return parseResponse(res, req.model);
+  }
+
+  /**
+   * Stream a completion via POST /messages with `stream: true`.
+   *
+   * Same StreamEvent contract as the OpenAI-compatible adapter: text
+   * deltas as they arrive, a usage event when the service reports the
+   * assembled counts, and exactly one terminal `end`. An empty stream
+   * (including a thinking-only one) is the empty-response failure, so
+   * the gateway fails over.
+   */
+  async *completeStream(req: CompletionRequest): AsyncGenerator<StreamEvent, void, undefined> {
+    const resolved = await resolveTarget(this.target, {
+      ...(this.target.allowLocalTargets !== undefined
+        ? { allowLocalTargets: this.target.allowLocalTargets }
+        : {}),
+    });
+
+    const body = { ...buildBody(this.target, req), stream: true };
+    const stream = await pinnedStream({
+      url: `${resolved.baseUrl}/messages`,
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "text/event-stream",
+        "anthropic-version": ANTHROPIC_VERSION,
+        ...(this.target.apiKey !== undefined && this.target.apiKey.length > 0
+          ? { "x-api-key": this.target.apiKey }
+          : {}),
+      },
+      body: JSON.stringify(body),
+      timeoutMs: req.timeoutMs,
+      signal: req.signal,
+      addresses: resolved.addresses,
+      allowLocalTargets: resolved.allowLocalTargets,
+    });
+
+    if (stream.status >= 300 && stream.status < 400) {
+      await stream.chunks.return(undefined);
+      throw new AiError("invalid_response", "The service redirected to another address.");
+    }
+    if (stream.status < 200 || stream.status >= 300) {
+      const errorBody = await readStreamErrorBody(stream.chunks);
+      await stream.chunks.return(undefined);
+      throw statusToAiError(stream.status, stream.headers, {
+        body: errorBody,
+        secret: this.target.apiKey,
+      });
+    }
+
+    const parser = new SseParser();
+    const assembler = new AnthropicStreamAssembler(req.model);
+
+    try {
+      for await (const chunk of stream.chunks) {
+        for (const event of parser.push(chunk.toString("utf8"))) {
+          yield* assembler.push(event);
+        }
+      }
+      for (const event of parser.flush()) {
+        yield* assembler.push(event);
+      }
+    } finally {
+      await stream.chunks.return(undefined);
+    }
+
+    yield assembler.finish();
   }
 
   // The service's model list is not a simple GET for this adapter's needs, so
@@ -127,12 +200,17 @@ export function buildBody(target: AnthropicTarget, req: CompletionRequest): Reco
   // params are resolved once per request so the test can toggle them via env.
   const reasoning = reasoningParamsFor("anthropic", resolveReasoningEffort());
 
+  // Per-request cap wins over the settings cap (provider.ts contract,
+  // mirroring the OpenAI adapter); the service-required default applies
+  // only when neither level sets a valid cap.
   const configuredMaxTokens =
-    target.settings?.maxTokens !== undefined &&
-    Number.isFinite(target.settings.maxTokens) &&
-    target.settings.maxTokens > 0
-      ? Math.min(Math.trunc(target.settings.maxTokens), 100_000)
-      : DEFAULT_MAX_TOKENS;
+    typeof req.maxTokens === "number" && Number.isFinite(req.maxTokens) && req.maxTokens > 0
+      ? Math.min(Math.trunc(req.maxTokens), 100_000)
+      : target.settings?.maxTokens !== undefined &&
+          Number.isFinite(target.settings.maxTokens) &&
+          target.settings.maxTokens > 0
+        ? Math.min(Math.trunc(target.settings.maxTokens), 100_000)
+        : DEFAULT_MAX_TOKENS;
   // Extended thinking is rejected when max_tokens <= budget_tokens, so the
   // enabled path leaves headroom for actual output above the budget.
   const maxTokens =
@@ -270,6 +348,280 @@ export function parseResponse(
     model: extractModel(res, requestedModel),
     ...extras,
   };
+}
+
+/**
+ * Assembles Anthropic SSE events into the neutral StreamEvent contract.
+ *
+ * Exported for tests, like SseParser/buildBody: completeStream drives
+ * one instance per request, feeding each parsed SSE JSON payload to
+ * push() and yielding whatever it returns, then yields finish() once.
+ *
+ * Tool input arrives fragmented as input_json_delta partial-JSON
+ * strings for the open tool_use block; the block is finalised at
+ * content_block_stop, with a malformed accumulation yielding {} —
+ * the same leniency the OpenAI adapter applies to streamed arguments.
+ * thinking deltas/blocks only set the reasoning flag: a thinking-only
+ * stream is still an empty response, never a surfaced answer.
+ */
+export class AnthropicStreamAssembler {
+  private textAcc = "";
+  private modelValue: string;
+  private inputTokensValue: number | undefined;
+  private outputTokensValue: number | undefined;
+  private stopReasonValue: string | undefined;
+  private hadReasoningFlag = false;
+  /** Open (not yet stopped) blocks by their SSE index. */
+  private readonly openBlocks = new Map<
+    number,
+    { kind: "text" | "tool_use" | "thinking" | "other"; id: string; name: string; argsText: string; initialInput: unknown }
+  >();
+  /** Finalised tool calls by block index, so end order follows the wire. */
+  private readonly finishedCalls = new Map<number, ToolCall>();
+
+  constructor(requestedModel: string) {
+    this.modelValue = requestedModel;
+  }
+
+  get text(): string {
+    return this.textAcc;
+  }
+  get toolCalls(): readonly ToolCall[] {
+    return [...this.finishedCalls.entries()]
+      .sort((a, b) => a[0] - b[0])
+      .map(([, call]) => call);
+  }
+  get usage(): TokenUsage | undefined {
+    if (this.inputTokensValue === undefined && this.outputTokensValue === undefined) {
+      return undefined;
+    }
+    return {
+      ...(this.inputTokensValue !== undefined ? { inputTokens: this.inputTokensValue } : {}),
+      ...(this.outputTokensValue !== undefined ? { outputTokens: this.outputTokensValue } : {}),
+    };
+  }
+  get model(): string {
+    return this.modelValue;
+  }
+  get stopReason(): string | undefined {
+    return this.stopReasonValue;
+  }
+  get hadReasoning(): boolean {
+    return this.hadReasoningFlag;
+  }
+
+  push(event: Record<string, unknown>): StreamEvent[] {
+    const out: StreamEvent[] = [];
+    const type = event["type"];
+
+    if (type === "error") {
+      throw anthropicStreamError(event);
+    }
+
+    if (type === "message_start") {
+      const message = event["message"];
+      if (isRecord(message)) {
+        if (typeof message["model"] === "string" && message["model"].length > 0) {
+          this.modelValue = message["model"];
+        }
+        const usage = message["usage"];
+        if (isRecord(usage)) {
+          const input = numberOrUndefined(usage["input_tokens"]);
+          const output = numberOrUndefined(usage["output_tokens"]);
+          if (input !== undefined) this.inputTokensValue = input;
+          if (output !== undefined) this.outputTokensValue = output;
+        }
+      }
+      return out;
+    }
+
+    if (type === "content_block_start") {
+      const index = blockIndex(event);
+      const block = event["content_block"];
+      if (index === undefined || !isRecord(block)) return out;
+      const blockType = block["type"];
+      if (blockType === "tool_use") {
+        this.openBlocks.set(index, {
+          kind: "tool_use",
+          id: typeof block["id"] === "string" && block["id"].length > 0 ? block["id"] : `call_${index}`,
+          name: typeof block["name"] === "string" ? block["name"] : "",
+          argsText: "",
+          initialInput: block["input"],
+        });
+      } else if (blockType === "text") {
+        this.openBlocks.set(index, { kind: "text", id: "", name: "", argsText: "", initialInput: undefined });
+        if (typeof block["text"] === "string" && block["text"].length > 0) {
+          this.textAcc += block["text"];
+          out.push({ type: "text", delta: block["text"] });
+        }
+      } else if (blockType === "thinking") {
+        this.hadReasoningFlag = true;
+        this.openBlocks.set(index, { kind: "thinking", id: "", name: "", argsText: "", initialInput: undefined });
+      } else {
+        this.openBlocks.set(index, { kind: "other", id: "", name: "", argsText: "", initialInput: undefined });
+      }
+      return out;
+    }
+
+    if (type === "content_block_delta") {
+      const index = blockIndex(event);
+      const delta = event["delta"];
+      if (index === undefined || !isRecord(delta)) return out;
+      const deltaType = delta["type"];
+      if (deltaType === "text_delta") {
+        if (typeof delta["text"] === "string" && delta["text"].length > 0) {
+          this.textAcc += delta["text"];
+          out.push({ type: "text", delta: delta["text"] });
+        }
+      } else if (deltaType === "input_json_delta") {
+        const open = this.openBlocks.get(index);
+        if (open !== undefined && open.kind === "tool_use" && typeof delta["partial_json"] === "string") {
+          open.argsText += delta["partial_json"];
+        }
+      } else if (deltaType === "thinking_delta") {
+        this.hadReasoningFlag = true;
+      }
+      return out;
+    }
+
+    if (type === "content_block_stop") {
+      const index = blockIndex(event);
+      if (index === undefined) return out;
+      const open = this.openBlocks.get(index);
+      this.openBlocks.delete(index);
+      if (open !== undefined && open.kind === "tool_use" && open.name.length > 0) {
+        this.finishedCalls.set(index, {
+          id: open.id,
+          name: open.name,
+          arguments: finalizeToolInput(open.argsText, open.initialInput),
+        });
+      }
+      return out;
+    }
+
+    if (type === "message_delta") {
+      const delta = event["delta"];
+      if (isRecord(delta) && typeof delta["stop_reason"] === "string" && delta["stop_reason"].length > 0) {
+        this.stopReasonValue = delta["stop_reason"];
+      }
+      const usage = event["usage"];
+      if (isRecord(usage)) {
+        const output = numberOrUndefined(usage["output_tokens"]);
+        if (output !== undefined) this.outputTokensValue = output;
+        const assembled = this.usage;
+        if (assembled !== undefined) out.push({ type: "usage", usage: assembled });
+      }
+      return out;
+    }
+
+    // message_stop / ping / unknown types carry nothing to yield; the
+    // terminal end is built by finish() once the byte stream closes.
+    return out;
+  }
+
+  /** Terminal `end` event, or the empty-response failure when nothing arrived. */
+  finish(): StreamEvent {
+    // A tool block the service never stopped still counts: finalise any
+    // open tool blocks in index order rather than dropping the calls.
+    for (const [index, open] of [...this.openBlocks.entries()].sort((a, b) => a[0] - b[0])) {
+      if (open.kind === "tool_use" && open.name.length > 0 && !this.finishedCalls.has(index)) {
+        this.finishedCalls.set(index, {
+          id: open.id,
+          name: open.name,
+          arguments: finalizeToolInput(open.argsText, open.initialInput),
+        });
+      }
+    }
+    this.openBlocks.clear();
+
+    const calls = this.toolCalls;
+    if (this.textAcc.trim().length === 0 && calls.length === 0) {
+      const parts: string[] = ["stream"];
+      if (this.stopReasonValue !== undefined) parts.push(`stop_reason=${this.stopReasonValue}`);
+      if (this.hadReasoningFlag) parts.push("the response carried reasoning only");
+      throw emptyResponseError(parts.join(", "));
+    }
+    const usage = this.usage;
+    return {
+      type: "end",
+      text: this.textAcc,
+      model: this.modelValue,
+      toolCalls: calls,
+      ...(usage !== undefined ? { usage } : {}),
+    };
+  }
+}
+
+/** The top-level `index` of a content_block_* event, when well-formed. */
+function blockIndex(event: Record<string, unknown>): number | undefined {
+  const index = event["index"];
+  return typeof index === "number" && Number.isInteger(index) && index >= 0 ? index : undefined;
+}
+
+/**
+ * Final tool input: the accumulated partial JSON parsed, falling back
+ * to the block's initial input (or {}) on parse failure — mirroring
+ * the OpenAI adapter's leniency for malformed streamed arguments.
+ */
+function finalizeToolInput(argsText: string, initialInput: unknown): unknown {
+  const trimmed = argsText.trim();
+  if (trimmed.length === 0) return initialInput ?? {};
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Map an Anthropic mid-stream `error` event onto AiError: the kind from
+ * the provider's error type, its own sentence carried as
+ * providerMessage (never as the headline message).
+ */
+function anthropicStreamError(event: Record<string, unknown>): AiError {
+  const error = event["error"];
+  const errorType = isRecord(error) && typeof error["type"] === "string" ? error["type"] : undefined;
+  const providerMessage =
+    isRecord(error) && typeof error["message"] === "string" && error["message"].length > 0
+      ? error["message"]
+      : undefined;
+  const kind: AiError["kind"] =
+    errorType === "authentication_error"
+      ? "auth"
+      : errorType === "rate_limit_error"
+        ? "quota"
+        : errorType === "overloaded_error"
+          ? "network"
+          : "invalid_response";
+  return new AiError(
+    kind,
+    "The service returned an error during streaming.",
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    providerMessage,
+  );
+}
+
+/**
+ * Read just enough of a streamed error body for the status mapper to
+ * quote the provider's own words — bounded, never throwing. Local copy
+ * of the OpenAI adapter's helper (not exported there).
+ */
+async function readStreamErrorBody(
+  chunks: AsyncGenerator<Buffer, void, undefined>,
+): Promise<string> {
+  let text = "";
+  try {
+    for await (const chunk of chunks) {
+      text += chunk.toString("utf8");
+      if (text.length >= 600) break;
+    }
+  } catch {
+    // Keep whatever arrived; the mapper treats an unreadable body as none.
+  }
+  return text;
 }
 
 /**
