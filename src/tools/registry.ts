@@ -6,16 +6,24 @@
  * - find a tool by name
  * - list active (enabled) tools for menus and the model
  *
+ * Desk-card contract (platform Phase 1): a tool that carries a manifest
+ * (desk card) may only register with a COMPLETE card — an incomplete
+ * card is a registration error, thrown here, never a silent degradation
+ * of the model's tool desk. Tools with no card at all are external
+ * adapters (MCP); they are never desk/catalog entries and never
+ * intent-router candidates (see types.ts).
+ *
  * The Registry does NOT decide permissions and does NOT run tools — that is
  * the Executor's job. Keeping lookup and execution separate means a tool
  * appearing in the list never implies the caller may run it.
  */
 import type { Tool } from "./types";
+import { validateManifest } from "./validate_manifest";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool<never, never>>();
 
-  /** Register a tool. Throws on a duplicate name. */
+  /** Register a tool. Throws on a duplicate name or an incomplete desk card. */
   register<TIn extends Record<string, unknown>, TOut>(
     tool: Tool<TIn, TOut>,
   ): this {
@@ -25,6 +33,19 @@ export class ToolRegistry {
     }
     if (this.tools.has(name)) {
       throw new Error(`duplicate tool name: ${name}`);
+    }
+    if (tool.manifest !== undefined) {
+      const problems = validateManifest(tool.manifest);
+      if (problems.length > 0) {
+        throw new Error(
+          `tool "${name}": incomplete desk card — fix the manifest:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+        );
+      }
+      if (tool.manifest.id !== name) {
+        throw new Error(
+          `tool "${name}": desk card id "${tool.manifest.id}" does not match the tool name.`,
+        );
+      }
     }
     this.tools.set(name, tool as unknown as Tool<never, never>);
     return this;

@@ -82,6 +82,17 @@ import { usageReportManifest } from "./usage_report";
 import { generateVideoManifest } from "./video_gen";
 import { webSearchManifest } from "./web_search";
 
+import { runBenchManifest } from "../bench/tool";
+import {
+  curateMemoriesManifest,
+  curatorDecideManifest,
+  listEventsManifest,
+  noteEventManifest,
+  summarizeMemoriesManifest,
+} from "../curator/tools";
+import { groupDigestManifest } from "../groups/group_digest";
+import { skillsManifest } from "../skills/tool";
+
 /**
  * Statically constructible tools, in menu order.
  *
@@ -116,6 +127,8 @@ const CATALOG_ENTRIES: readonly CatalogEntry[] = [
   { manifest: commandsManifest, source: "src/tools/commands.ts" },
   { manifest: completeGoalManifest, source: "src/tools/goals.ts" },
   { manifest: consultModelsManifest, source: "src/tools/consult_models.ts" },
+  { manifest: curateMemoriesManifest, source: "src/curator/tools.ts" },
+  { manifest: curatorDecideManifest, source: "src/curator/tools.ts" },
   { manifest: dateTimeManifest, source: "src/tools/date_time.ts" },
   { manifest: delegateManifest, source: "src/tools/delegate.ts" },
   { manifest: downloadMediaManifest, source: "src/tools/downloader.ts" },
@@ -123,21 +136,27 @@ const CATALOG_ENTRIES: readonly CatalogEntry[] = [
   { manifest: forgetManifest, source: "src/tools/memory.ts" },
   { manifest: generateImageManifest, source: "src/tools/image_gen.ts" },
   { manifest: generateVideoManifest, source: "src/tools/video_gen.ts" },
+  { manifest: groupDigestManifest, source: "src/groups/group_digest.ts" },
+  { manifest: listEventsManifest, source: "src/curator/tools.ts" },
   { manifest: listGoalsManifest, source: "src/tools/goals.ts" },
   { manifest: listNudgesManifest, source: "src/tools/nudge_tool.ts" },
   { manifest: listRemindersManifest, source: "src/tools/reminders.ts" },
   { manifest: listTasksManifest, source: "src/tools/scheduled_tasks.ts" },
+  { manifest: noteEventManifest, source: "src/curator/tools.ts" },
   { manifest: noteFollowupManifest, source: "src/tools/nudge_tool.ts" },
   { manifest: recallManifest, source: "src/tools/memory.ts" },
   { manifest: remindAtManifest, source: "src/tools/reminders.ts" },
   { manifest: remindNlManifest, source: "src/tools/reminders.ts" },
   { manifest: rememberManifest, source: "src/tools/memory.ts" },
+  { manifest: runBenchManifest, source: "src/bench/tool.ts" },
   { manifest: scheduleTaskManifest, source: "src/tools/scheduled_tasks.ts" },
   { manifest: searchHistoryManifest, source: "src/tools/history.ts" },
   { manifest: shortcutAddManifest, source: "src/tools/shortcuts.ts" },
   { manifest: shortcutDeleteManifest, source: "src/tools/shortcuts.ts" },
   { manifest: shortcutListManifest, source: "src/tools/shortcuts.ts" },
+  { manifest: skillsManifest, source: "src/skills/tool.ts" },
   { manifest: snoozeNudgeManifest, source: "src/tools/nudge_tool.ts" },
+  { manifest: summarizeMemoriesManifest, source: "src/curator/tools.ts" },
   { manifest: textUtilitiesManifest, source: "src/tools/text_utilities.ts" },
   { manifest: toolSearchManifest, source: "src/tools/tool_search.ts" },
   { manifest: unitConverterManifest, source: "src/tools/unit_converter.ts" },

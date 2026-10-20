@@ -62,6 +62,15 @@ export const noteFollowupManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Note Follow-up",
   description: "Record a follow-up for the bot to remind about later; reminders repeat until the user explicitly closes it. The time can be given in natural language or ISO with a timezone.",
+  purpose: "nagged follow-up",
+  useWhen: "must chase later",
+  doNotUseWhen:
+    "one-shot reminder at a fixed time — that is remind_at or remind_nl; follow-ups repeat until the user closes them",
+  confusableWith: [
+    { tool: "remind_at", difference: "remind_at fires once at an ISO time; a follow-up repeats until acked" },
+    { tool: "remind_nl", difference: "remind_nl fires once from a Persian phrase; a follow-up keeps resurfacing" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the follow-up id, due time and minutes until due.",
   category: "schedule",
   triggers: { keywordPatterns: ["دنبال کن", "پیگیری کن", "follow up", "note (a )?follow.?up"] },
@@ -156,6 +165,15 @@ export const listNudgesManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "List Nudges",
   description: "List the user's open (not closed) follow-ups.",
+  purpose: "open follow-ups",
+  useWhen: "follow-ups asked",
+  doNotUseWhen:
+    "pending one-shot reminders — that is list_reminders; scheduled cron tasks — that is list_tasks",
+  confusableWith: [
+    { tool: "list_reminders", difference: "list_reminders shows one-shot reminders; this shows open follow-ups" },
+    { tool: "list_tasks", difference: "list_tasks shows cron jobs; this shows follow-ups awaiting closure" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the user's open follow-ups with id, text, due and snooze times.",
   category: "schedule",
   triggers: { keywordPatterns: ["پیگیریهام", "list (my )?(nudges|follow.?ups)"] },
@@ -211,6 +229,15 @@ export const ackNudgeManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Acknowledge Nudge",
   description: "Close a follow-up by its id (done).",
+  purpose: "close a follow-up",
+  useWhen: "follow-up done",
+  doNotUseWhen:
+    "only postponing it — that is snooze_nudge; closing a reminder — that is cancel_reminder",
+  confusableWith: [
+    { tool: "snooze_nudge", difference: "snooze postpones a follow-up; ack closes it for good" },
+    { tool: "cancel_reminder", difference: "cancel_reminder deletes a one-shot reminder; ack closes a follow-up" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the acked flag, nudge id, and count of remaining open nudges.",
   category: "schedule",
   costTier: "free",
@@ -268,6 +295,15 @@ export const snoozeNudgeManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Snooze Nudge",
   description: "Postpone a follow-up to another time.",
+  purpose: "postpone follow-up",
+  useWhen: "delay asked",
+  doNotUseWhen:
+    "follow-up is finished — that is ack_nudge; rescheduling a reminder — cancel and recreate it instead",
+  confusableWith: [
+    { tool: "ack_nudge", difference: "ack closes the follow-up; snooze only moves its due time" },
+    { tool: "note_followup", difference: "note_followup creates a follow-up; snooze moves an existing one" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the snoozed flag, nudge id, and the new snoozed-until time.",
   category: "schedule",
   costTier: "free",

@@ -163,6 +163,15 @@ export const scheduleTaskManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Schedule Task",
   description: "Create a scheduled task with a cron expression (owner only). The action can run a tool, send a message, or run an agent.",
+  purpose: "new recurring task",
+  useWhen: "repeats on cron",
+  doNotUseWhen:
+    "single future ping — that is remind_at or remind_nl; a follow-up nag — that is note_followup",
+  confusableWith: [
+    { tool: "remind_at", difference: "remind_at fires one message once; schedule_task repeats actions on cron" },
+    { tool: "note_followup", difference: "follow-ups nag the user; tasks run tool, message or agent actions" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the scheduled-task id, normalized cron, timezone and next run time.",
   category: "schedule",
   triggers: { keywordPatterns: ["برنامه‌ریزی کن", "برنامه ریزی کن", "زمان‌بندی کن", "schedule (a|this|the) task"] },
@@ -304,6 +313,15 @@ export const listTasksManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "List Tasks",
   description: "List scheduled tasks (owner only).",
+  purpose: "cron task list",
+  useWhen: "tasks asked",
+  doNotUseWhen:
+    "pending reminders — that is list_reminders; open follow-ups — that is list_nudges",
+  confusableWith: [
+    { tool: "list_reminders", difference: "list_reminders shows one-shot reminders; this shows recurring cron tasks" },
+    { tool: "list_nudges", difference: "list_nudges shows follow-ups; this shows cron tasks" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the owner's scheduled tasks with id, cron, next run time and status.",
   category: "schedule",
   triggers: { keywordPatterns: ["تسکهام", "وظایف برنامه‌ریزی شده", "list (my )?(scheduled )?tasks"] },
@@ -360,6 +378,14 @@ export const cancelTaskManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Cancel Task",
   description: "Delete a scheduled task by its id (owner only).",
+  purpose: "delete cron task",
+  useWhen: "cron cancelled",
+  doNotUseWhen:
+    "id unknown — list_tasks first; cancelling a reminder — that is cancel_reminder",
+  confusableWith: [
+    { tool: "cancel_reminder", difference: "cancel_reminder stops a one-shot reminder; this deletes a cron task" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Returns the cancelled flag, task id, and count of remaining tasks.",
   category: "schedule",
   triggers: { keywordPatterns: ["تسک.*(لغو|کنسل)", "cancel (the|my|that) (scheduled )?task"] },

@@ -58,6 +58,16 @@ export const remindAtManifest: ToolManifest = defineManifest({
   title: "Remind At",
   description:
     "Set a reminder at a specific time. The time must be ISO-8601 with a timezone and in the future.",
+  purpose: "reminder at ISO time",
+  useWhen: "ISO time known",
+  doNotUseWhen:
+    "time given as natural Persian words — that is remind_nl; a follow-up that repeats until closed — that is note_followup",
+  confusableWith: [
+    { tool: "remind_nl", difference: "remind_nl parses a Persian phrase; remind_at needs an exact ISO instant" },
+    { tool: "note_followup", difference: "follow-ups resurface until closed; remind_at fires once and retires" },
+    { tool: "schedule_task", difference: "schedule_task runs cron actions; remind_at delivers one message once" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The reminder's id, due time, repeat setting and minutes until it fires.",
   category: "schedule",
   costTier: "free",
@@ -198,6 +208,15 @@ export const remindNlManifest: ToolManifest = defineManifest({
   title: "Remind (Natural Language)",
   description:
     "Set a reminder from a Persian natural-language time expression, like tomorrow at 9 in the morning or in 10 minutes. Times are read in Asia/Tehran.",
+  purpose: "reminder in Persian",
+  useWhen: "time in Persian",
+  doNotUseWhen:
+    "exact ISO instant already computed — that is remind_at; recurring cron work — that is schedule_task",
+  confusableWith: [
+    { tool: "remind_at", difference: "remind_at takes ISO with offset; remind_nl parses Persian, never repeats" },
+    { tool: "note_followup", difference: "follow-ups repeat until closed; remind_nl fires once" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The reminder's id, due time, repeat setting and minutes until it fires.",
   category: "schedule",
   triggers: {
@@ -302,6 +321,15 @@ export const listRemindersManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "List Reminders",
   description: "List the user's active (pending) reminders.",
+  purpose: "pending reminders",
+  useWhen: "reminders asked",
+  doNotUseWhen:
+    "open follow-ups — that is list_nudges; fired reminders are not kept, so past ones cannot be listed",
+  confusableWith: [
+    { tool: "list_nudges", difference: "list_nudges shows follow-ups; this shows one-shot pending reminders" },
+    { tool: "list_tasks", difference: "list_tasks shows cron jobs, not plain reminders" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The user's pending reminders with ids, text and due times.",
   category: "schedule",
   triggers: {
@@ -370,6 +398,15 @@ export const cancelReminderManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Cancel Reminder",
   description: "Cancel a reminder by its id.",
+  purpose: "cancel reminder",
+  useWhen: "cancel asked",
+  doNotUseWhen:
+    "id unknown — list_reminders first; closing a follow-up — that is ack_nudge",
+  confusableWith: [
+    { tool: "ack_nudge", difference: "ack_nudge closes a follow-up; this cancels a one-shot reminder" },
+    { tool: "cancel_task", difference: "cancel_task deletes a cron task; this cancels a plain reminder" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Whether the reminder was cancelled and how many remain.",
   category: "schedule",
   triggers: {

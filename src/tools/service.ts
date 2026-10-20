@@ -55,6 +55,10 @@ export interface ToolDescriptor {
   description: string;
   enabled: boolean;
   requires: readonly string[];
+  /** Desk-card short "what" (from the tool's manifest, when attached). */
+  purpose?: string;
+  /** Desk-card short "when to pick it up" (from the manifest, when attached). */
+  useWhen?: string;
 }
 
 /** One entry of the toolset taxonomy: a toolset name and its tool names. */
@@ -171,6 +175,11 @@ export class ToolService {
         description: t.description,
         enabled: t.enabled,
         requires: t.permission.requires,
+        // Desk-card short forms from the attached manifest, when present
+        // (exactOptionalPropertyTypes: omit the keys when absent).
+        ...(t.manifest !== undefined
+          ? { purpose: t.manifest.purpose, useWhen: t.manifest.useWhen }
+          : {}),
       }));
   }
 

@@ -119,6 +119,15 @@ export const rememberManifest: ToolManifest = defineManifest({
   title: "Remember",
   description:
     "Store a lasting note about the user (name, preference, project). Do not use for fleeting information.",
+  purpose: "lasting user note",
+  useWhen: "durable fact",
+  doNotUseWhen:
+    "fleeting or one-off info; a dated follow-up — that is note_followup; a past-event log — that is note_event",
+  confusableWith: [
+    { tool: "note_followup", difference: "follow-ups resurface until closed; memories are passive stored facts" },
+    { tool: "note_event", difference: "note_event logs a past event; remember stores a standing fact" },
+  ],
+  latencyTier: "instant",
   outputSummary: "The stored memory's key, whether it replaced an old one, and the total count.",
   category: "memory",
   triggers: {
@@ -268,6 +277,15 @@ export const recallManifest: ToolManifest = defineManifest({
   title: "Recall",
   description:
     "Search memories. Without a query, returns recent items.",
+  purpose: "memories by query",
+  useWhen: "memory asked",
+  doNotUseWhen:
+    "past conversation history — that is search_history; a condensed overview of all memories — that is summarize_memories",
+  confusableWith: [
+    { tool: "search_history", difference: "search_history scans past chats; recall searches stored long-term memories" },
+    { tool: "summarize_memories", difference: "summarize_memories condenses all memories; recall returns matching items" },
+  ],
+  latencyTier: "seconds",
   outputSummary: "Matching memories (key, content, importance), best match first.",
   category: "memory",
   triggers: {
@@ -470,6 +488,15 @@ export const forgetManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Forget",
   description: "Delete a memory by its key.",
+  purpose: "delete a memory",
+  useWhen: "forget asked",
+  doNotUseWhen:
+    "memory key unknown — recall first to find it; bulk cleanup of memories is not done here",
+  confusableWith: [
+    { tool: "recall", difference: "recall only reads memories; forget deletes one by its key" },
+    { tool: "curate_memories", difference: "curate_memories bulk-cleans memory; forget removes exactly one key" },
+  ],
+  latencyTier: "instant",
   outputSummary: "Whether a memory was removed and the remaining total.",
   category: "memory",
   triggers: {
