@@ -117,6 +117,62 @@ describe("extractProviderMessage", () => {
   });
 });
 
+describe("extractProviderMessage unwraps nested relay envelopes", () => {
+  const FREE_TIER =
+    "OpenCode's free models aren't available from your current network.";
+
+  test("a [403]: {…FreeTierError…} relay string unwraps to the sentence", () => {
+    // The live 9Router incident shape: the router embedded the upstream
+    // body as a string inside its own error field.
+    const inner = JSON.stringify({
+      type: "error",
+      error: { type: "FreeTierError", message: FREE_TIER },
+    });
+    const body = JSON.stringify({ error: `[403]: ${inner}` });
+    expect(extractProviderMessage(body)).toBe(FREE_TIER);
+  });
+
+  test("two relay levels unwrap", () => {
+    const lvl2 = JSON.stringify({ error: { message: "deep cause" } });
+    const lvl1 = JSON.stringify({ message: `[500]: ${lvl2}` });
+    const body = JSON.stringify({ error: `[502]: ${lvl1}` });
+    expect(extractProviderMessage(body)).toBe("deep cause");
+  });
+
+  test("a relay prefix on a non-JSON string is left untouched", () => {
+    expect(extractProviderMessage('{"error":"[403]: upstream said no"}')).toBe(
+      "[403]: upstream said no",
+    );
+  });
+
+  test("a JSON-looking string without error fields is left untouched", () => {
+    expect(extractProviderMessage('{"error":"[403]: {\\"foo\\":1}"}')).toBe(
+      '[403]: {"foo":1}',
+    );
+  });
+
+  test("redaction still applies after the unwrap", () => {
+    const inner = JSON.stringify({
+      error: { message: "key sk-nested-1 blocked" },
+    });
+    const body = JSON.stringify({ error: `[401]: ${inner}` });
+    const out = extractProviderMessage(body, "sk-nested-1");
+    expect(out).toBe("key ••• blocked");
+    expect(out).not.toContain("sk-nested-1");
+  });
+
+  test("statusToAiError carries the unwrapped sentence", () => {
+    const inner = JSON.stringify({
+      type: "error",
+      error: { type: "FreeTierError", message: FREE_TIER },
+    });
+    const err = statusToAiError(403, undefined, {
+      body: JSON.stringify({ error: `[403]: ${inner}` }),
+    });
+    expect(err.providerMessage).toBe(FREE_TIER);
+  });
+});
+
 describe("statusToAiError with a body", () => {
   test("attaches providerMessage and keeps the mapped label untouched", () => {
     const err = statusToAiError(401, undefined, {

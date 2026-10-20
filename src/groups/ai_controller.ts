@@ -1392,6 +1392,19 @@ export class AiAdminController {
         // list. Before this, the fetch succeeded and the list was silently
         // dropped, so "discover" found models the owner could never use.
         const imported = this.importDiscoveredModels(providerId, discovered.models);
+        // The one exception to "never made default": a REPAIR, not a
+        // pick. For Gemini, discovery is the authoritative chat-model
+        // list, so a stored default it no longer returns (the non-chat
+        // `aqa` a bulk import once landed on) moves to the first
+        // discovered chat model — same repair as the mini app's
+        // discovery. A still-discoverable default is never touched.
+        const provider = this.storage.getProvider(providerId);
+        if (provider?.adapter === "gemini") {
+          this.models.resetDefaultToFirstOf(
+            providerId,
+            discovered.models.map((m) => m.id),
+          );
+        }
         return { ok: true as const, text: this.importReport(imported, lang) };
       },
     );

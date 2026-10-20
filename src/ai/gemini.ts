@@ -100,6 +100,18 @@ export class GeminiAdapter implements AIProviderAdapter {
     const out: RemoteModel[] = [];
     for (const entry of models) {
       if (!isRecord(entry) || typeof entry["name"] !== "string") continue;
+      // Discovery IS the import — every consumer of listModels treats
+      // the result as the provider's usable model list — and this
+      // service's ListModels returns EVERY model it hosts: chat models
+      // alongside aqa, embedding, imagen, veo and TTS entries that
+      // cannot answer a chat completion. Importing them all once landed
+      // a provider's default on `aqa`, whose generateContent call 404s.
+      // Only models the service says support generateContent belong
+      // here. An entry with NO methods field at all is kept: some
+      // compatible endpoints omit the metadata, and absence of metadata
+      // is not evidence of incapability.
+      const methods = entry["supportedGenerationMethods"];
+      if (Array.isArray(methods) && !methods.includes("generateContent")) continue;
       // "models/gemini-2.5-flash" → "gemini-2.5-flash"
       const id = entry["name"].replace(/^models\//, "");
       const displayName = entry["displayName"];

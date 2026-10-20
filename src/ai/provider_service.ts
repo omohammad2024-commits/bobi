@@ -534,6 +534,38 @@ export class ModelService {
     return { ok: true, data: true };
   }
 
+  /**
+   * Repair a stale default after discovery.
+   *
+   * When the provider's effective default — the flagged default if it is
+   * enabled, else the first enabled model (the same pick the health
+   * probe makes) — is not among the model ids a discovery just returned,
+   * point the default at the first discovered id that is actually stored
+   * and enabled, and report true. This is the `aqa` repair: a bulk
+   * import had left a Gemini provider defaulted onto a non-chat model
+   * that discovery no longer returns, and every probe/chat kept hitting
+   * the model that can only 404. A no-op when the current default is
+   * discoverable, when nothing is stored, or when no discovered model
+   * is stored yet (a following import creates the rows; the caller's
+   * next discovery repairs then).
+   */
+  resetDefaultToFirstOf(
+    providerId: number,
+    discoveredModelIds: readonly string[],
+  ): boolean {
+    const rows = this.storage.listModels(providerId);
+    if (rows.length === 0 || discoveredModelIds.length === 0) return false;
+    const allowed = new Set(discoveredModelIds);
+    const current =
+      rows.find((m) => m.isDefault && m.enabled) ?? rows.find((m) => m.enabled);
+    if (current !== undefined && allowed.has(current.modelId)) return false;
+    for (const id of discoveredModelIds) {
+      const row = rows.find((m) => m.modelId === id && m.enabled);
+      if (row !== undefined) return this.storage.setModelDefault(row.id);
+    }
+    return false;
+  }
+
   /** Enabled models of a provider, for the quick-switch picker. */
   enabledModels(providerId: number): ModelView[] {
     return this.list(providerId).filter((m) => m.enabled);

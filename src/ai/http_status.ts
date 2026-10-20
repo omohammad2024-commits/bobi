@@ -96,37 +96,7 @@ export function extractProviderMessage(
     const parsed: unknown = JSON.parse(bounded);
     if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
       parsedJson = true;
-      const record = parsed as Record<string, unknown>;
-      const error = record["error"];
-      if (typeof error === "string" && error.trim().length > 0) {
-        candidate = error;
-      } else if (
-        typeof error === "object" &&
-        error !== null &&
-        !Array.isArray(error) &&
-        typeof (error as Record<string, unknown>)["message"] === "string"
-      ) {
-        candidate = (error as Record<string, unknown>)["message"] as string;
-      }
-      if (candidate === undefined && typeof record["message"] === "string") {
-        candidate = record["message"];
-      }
-      if (candidate === undefined) {
-        const detail = record["detail"];
-        if (typeof detail === "string") {
-          candidate = detail;
-        } else if (Array.isArray(detail)) {
-          const parts = detail
-            .map((item) =>
-              typeof item === "object" && item !== null &&
-              typeof (item as Record<string, unknown>)["msg"] === "string"
-                ? ((item as Record<string, unknown>)["msg"] as string)
-                : "",
-            )
-            .filter((s) => s.length > 0);
-          if (parts.length > 0) candidate = parts.join("; ");
-        }
-      }
+      candidate = errorStringFromRecord(parsed as Record<string, unknown>);
     }
   } catch {
     // Not JSON — the plain-text snippet below handles it.
@@ -138,11 +108,86 @@ export function extractProviderMessage(
     candidate = bounded;
   }
 
+  candidate = unwrapNestedProviderText(candidate);
+
   const cleaned = sanitizeProviderText(candidate, secret);
   if (cleaned.length === 0) return undefined;
   return cleaned.length > PROVIDER_MESSAGE_LIMIT
     ? `${cleaned.slice(0, PROVIDER_MESSAGE_LIMIT - 1)}…`
     : cleaned;
+}
+
+/**
+ * The provider's error words from one parsed JSON record: `error.message`
+ * (record error), `error` (string), `message`, then `detail` (string, or a
+ * FastAPI-style array of `{msg}` entries joined with "; "). Undefined when
+ * the record names none of them.
+ */
+function errorStringFromRecord(record: Record<string, unknown>): string | undefined {
+  const error = record["error"];
+  if (typeof error === "string" && error.trim().length > 0) {
+    return error;
+  }
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    !Array.isArray(error) &&
+    typeof (error as Record<string, unknown>)["message"] === "string"
+  ) {
+    return (error as Record<string, unknown>)["message"] as string;
+  }
+  if (typeof record["message"] === "string") {
+    return record["message"];
+  }
+  const detail = record["detail"];
+  if (typeof detail === "string") {
+    return detail;
+  }
+  if (Array.isArray(detail)) {
+    const parts = detail
+      .map((item) =>
+        typeof item === "object" && item !== null &&
+        typeof (item as Record<string, unknown>)["msg"] === "string"
+          ? ((item as Record<string, unknown>)["msg"] as string)
+          : "",
+      )
+      .filter((s) => s.length > 0);
+    if (parts.length > 0) return parts.join("; ");
+  }
+  return undefined;
+}
+
+/**
+ * Unwrap a provider string that is itself a serialized error envelope.
+ *
+ * Some routers relay an upstream failure by embedding its raw body as a
+ * string inside their own error JSON — a 9Router probe answered with an
+ * error string of `[403]: {"type":"error","error":{…,"message":
+ * "OpenCode's free models aren't available…"}}` — so the extracted
+ * "message" was the whole nested document, relay prefix and braces
+ * included. When the extracted string (after an optional `[NNN]:` relay
+ * prefix) parses as JSON carrying the usual error fields, replace it
+ * with the inner sentence; at most two levels, so a pathological relay
+ * chain still terminates. Anything that does not parse, or parses
+ * without error fields, is left exactly as extracted. Redaction and the
+ * length cap still apply afterwards, in the caller.
+ */
+function unwrapNestedProviderText(candidate: string): string {
+  let current = candidate;
+  for (let level = 0; level < 2; level++) {
+    const stripped = current.replace(/^\[\d{3}\]:\s*/, "");
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(stripped);
+    } catch {
+      break;
+    }
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) break;
+    const inner = errorStringFromRecord(parsed as Record<string, unknown>);
+    if (inner === undefined || inner === current) break;
+    current = inner;
+  }
+  return current;
 }
 
 /**

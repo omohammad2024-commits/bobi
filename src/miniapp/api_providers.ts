@@ -61,6 +61,7 @@ export interface ProviderApiDeps {
     | "setEnabled"
     | "remove"
     | "setDefault"
+    | "resetDefaultToFirstOf"
     | "isActive"
     | "enabledModels"
   >;
@@ -923,12 +924,28 @@ async function discoverModels(
   }
 
   const known = new Set(deps.storage.listModels(providerId).map((m) => m.modelId));
+  // Gemini discovery is authoritative for the chat-model list (the
+  // adapter returns generateContent models only): if the stored default
+  // is a model discovery no longer returns — the `aqa` incident, where
+  // a bulk import had defaulted the provider onto a non-chat model —
+  // move the default onto the first discovered chat model instead of
+  // leaving probes and chats pointed at a model that can only 404.
+  // Other adapters' discovery is not a closed list, so their defaults
+  // are never second-guessed here.
+  const defaultReset =
+    provider.adapter === "gemini"
+      ? deps.modelSvc.resetDefaultToFirstOf(
+          providerId,
+          remote.map((r) => r.id),
+        )
+      : false;
   return {
     models: remote.map((r) => ({
       modelId: r.id,
       label: r.label ?? r.id,
       imported: known.has(r.id),
     })),
+    ...(defaultReset ? { defaultReset: true } : {}),
   };
 }
 
