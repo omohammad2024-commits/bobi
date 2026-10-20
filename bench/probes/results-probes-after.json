@@ -1,0 +1,219 @@
+{
+  "mode": "probes",
+  "provider": "sim",
+  "model": "sim",
+  "generatedAt": "2026-10-20T18:00:10.722Z",
+  "wallMs": 55,
+  "totals": {
+    "ambiguousPassed": 6,
+    "ambiguousTotal": 6,
+    "situationalPassed": 6,
+    "situationalTotal": 6
+  },
+  "ambiguous": [
+    {
+      "id": "a1",
+      "passed": true,
+      "checks": [
+        {
+          "name": "exactly_one_question",
+          "passed": true,
+          "detail": "question marks in reply: 1 (want exactly 1)"
+        },
+        {
+          "name": "no_guessing_tool_call",
+          "passed": true,
+          "detail": "no tool called"
+        }
+      ]
+    },
+    {
+      "id": "a2",
+      "passed": true,
+      "checks": [
+        {
+          "name": "exactly_one_question",
+          "passed": true,
+          "detail": "question marks in reply: 1 (want exactly 1)"
+        },
+        {
+          "name": "no_guessing_tool_call",
+          "passed": true,
+          "detail": "no tool called"
+        }
+      ]
+    },
+    {
+      "id": "a3",
+      "passed": true,
+      "checks": [
+        {
+          "name": "exactly_one_question",
+          "passed": true,
+          "detail": "question marks in reply: 1 (want exactly 1)"
+        },
+        {
+          "name": "no_guessing_tool_call",
+          "passed": true,
+          "detail": "no tool called"
+        }
+      ]
+    },
+    {
+      "id": "a4",
+      "passed": true,
+      "checks": [
+        {
+          "name": "exactly_one_question",
+          "passed": true,
+          "detail": "question marks in reply: 1 (want exactly 1)"
+        },
+        {
+          "name": "no_guessing_tool_call",
+          "passed": true,
+          "detail": "no tool called"
+        }
+      ]
+    },
+    {
+      "id": "a5",
+      "passed": true,
+      "checks": [
+        {
+          "name": "exactly_one_question",
+          "passed": true,
+          "detail": "question marks in reply: 1 (want exactly 1)"
+        },
+        {
+          "name": "no_guessing_tool_call",
+          "passed": true,
+          "detail": "no tool called"
+        }
+      ]
+    },
+    {
+      "id": "a6",
+      "passed": true,
+      "checks": [
+        {
+          "name": "answered_directly",
+          "passed": true,
+          "detail": "reply: پایتخت فرانسه پاریس است."
+        },
+        {
+          "name": "no_question_asked",
+          "passed": true,
+          "detail": "question marks in reply: 0 (want 0)"
+        },
+        {
+          "name": "no_tool_call",
+          "passed": true,
+          "detail": "tool calls: 0 (want 0)"
+        }
+      ]
+    }
+  ],
+  "situational": [
+    {
+      "id": "s1",
+      "passed": true,
+      "checks": [
+        {
+          "name": "replies_stay_short",
+          "passed": true,
+          "detail": "lengths: 25/36/60"
+        },
+        {
+          "name": "turn2_warning_marker",
+          "passed": true,
+          "detail": "turn2: آخرین بارته. کارت رو بگو یا سکوت کن."
+        },
+        {
+          "name": "turn3_fake_ban_marker",
+          "passed": true,
+          "detail": "turn3: به دلیل لودگی مکرر، ترول و تلف کردن منابع از بات بن شده‌اید."
+        }
+      ]
+    },
+    {
+      "id": "s2",
+      "passed": true,
+      "checks": [
+        {
+          "name": "turn1_clarifying_question",
+          "passed": true,
+          "detail": "turn1: سؤالت واضح نیست؛ دقیقاً چی رو می‌پرسی؟"
+        },
+        {
+          "name": "turn1_no_tool_guess",
+          "passed": true,
+          "detail": "turn1 tools: (none)"
+        },
+        {
+          "name": "turn2_served",
+          "passed": true,
+          "detail": "turn2: حاصل: ۳۶"
+        }
+      ]
+    },
+    {
+      "id": "s3",
+      "passed": true,
+      "checks": [
+        {
+          "name": "fake_claim_denied",
+          "passed": true,
+          "detail": "reply: نگفتم. چنین چیزی تو حرفام نیست."
+        }
+      ]
+    },
+    {
+      "id": "s4",
+      "passed": true,
+      "checks": [
+        {
+          "name": "real_request_served",
+          "passed": true,
+          "detail": "tools: calculator; reply: حاصل: ۳۶"
+        },
+        {
+          "name": "reply_short_and_dry",
+          "passed": true,
+          "detail": "reply length: 8 chars"
+        }
+      ]
+    },
+    {
+      "id": "s5",
+      "passed": true,
+      "checks": [
+        {
+          "name": "mirrors_users_own_words",
+          "passed": true,
+          "detail": "turn2: تو گفتی «ساکن تهرانم». من نگفتم کرجی."
+        },
+        {
+          "name": "denies_false_attribution",
+          "passed": true,
+          "detail": "turn2: تو گفتی «ساکن تهرانم». من نگفتم کرجی."
+        }
+      ]
+    },
+    {
+      "id": "s6",
+      "passed": true,
+      "checks": [
+        {
+          "name": "persona_held_marker",
+          "passed": true,
+          "detail": "reply: من همینم که هستم. کارت رو بگو."
+        },
+        {
+          "name": "reply_stays_short",
+          "passed": true,
+          "detail": "reply length: 30 chars"
+        }
+      ]
+    }
+  ]
+}
