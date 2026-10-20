@@ -22,6 +22,33 @@ function fail<T>(message: string, reason = "invalid"): ServiceResult<T> {
   return { ok: false, reason, message };
 }
 
+/**
+ * Normalize a pasted API key before it is encrypted (audit L10).
+ *
+ * Keys are routinely pasted from an Authorization header or wrapped
+ * across lines by a dashboard; storing either verbatim encrypts a key
+ * that can never authenticate and presents forever as a provider
+ * problem. Strip ONE leading `Bearer ` (case-insensitive) and remove
+ * ALL interior whitespace — real API keys contain neither.
+ */
+export function normalizeApiKey(raw: string): string {
+  return raw.trim().replace(/^bearer\s+/i, "").replace(/\s+/g, "");
+}
+
+/**
+ * Save-time base-URL sanity (audit L9): a query string or fragment in
+ * a stored base URL makes adapters build paths INSIDE the query
+ * (`https://host/v1?key=x/chat/completions`) — a guaranteed, confusing
+ * failure. Reject it here, at the save layer, so already-stored rows
+ * keep their current runtime behavior and only new saves are gated.
+ */
+export function baseUrlShapeError(baseUrl: string): string | undefined {
+  if (baseUrl.includes("?") || baseUrl.includes("#")) {
+    return "Service address must not contain a query string or fragment.";
+  }
+  return undefined;
+}
+
 /** A pool credential as the panel sees it. Labels only — never key material. */
 export interface PoolKeyView {
   id: number;
@@ -196,11 +223,13 @@ export class ProviderService {
     if (label.length > MAX_LABEL) return fail("Display name is too long.");
     if (!isAdapterType(input.adapter)) return fail("Invalid connection type.");
     if (input.baseUrl.trim().length === 0) return fail("Service address is required.");
+    const urlError = baseUrlShapeError(input.baseUrl.trim());
+    if (urlError !== undefined) return fail(urlError);
 
     let credential: { iv: string; ciphertext: string; tag: string } | undefined;
-    if (input.apiKey !== undefined && input.apiKey.trim().length > 0) {
+    if (input.apiKey !== undefined && normalizeApiKey(input.apiKey).length > 0) {
       try {
-        credential = this.secrets.encrypt(input.apiKey.trim());
+        credential = this.secrets.encrypt(normalizeApiKey(input.apiKey));
       } catch (err) {
         if (err instanceof SecretStoreError && err.kind === "missing_key") {
           return fail(err.message, "missing_key");
@@ -267,11 +296,13 @@ export class ProviderService {
     }
     if (patch.baseUrl !== undefined) {
       if (patch.baseUrl.trim().length === 0) return fail("Service address is required.");
+      const urlError = baseUrlShapeError(patch.baseUrl.trim());
+      if (urlError !== undefined) return fail(urlError);
       this.storage.updateProvider(id, { baseUrl: patch.baseUrl.trim() });
     }
-    if (patch.apiKey !== undefined && patch.apiKey.trim().length > 0) {
+    if (patch.apiKey !== undefined && normalizeApiKey(patch.apiKey).length > 0) {
       try {
-        const enc = this.secrets.encrypt(patch.apiKey.trim());
+        const enc = this.secrets.encrypt(normalizeApiKey(patch.apiKey));
         this.storage.upsertCredential({ providerId: id, ...enc });
       } catch (err) {
         if (err instanceof SecretStoreError && err.kind === "missing_key") {
@@ -343,9 +374,9 @@ export class ProviderService {
     const cleanLabel = label.trim();
     if (cleanLabel.length === 0) return fail("A display name for the backup key is required.");
     if (cleanLabel.length > MAX_LABEL) return fail("Backup key display name is too long.");
-    if (apiKey.trim().length === 0) return fail("The provided key was not valid.");
+    if (normalizeApiKey(apiKey).length === 0) return fail("The provided key was not valid.");
     try {
-      const id = this.pool.savePoolCredential(providerId, cleanLabel, apiKey.trim());
+      const id = this.pool.savePoolCredential(providerId, cleanLabel, normalizeApiKey(apiKey));
       return { ok: true, data: id };
     } catch (err) {
       if (err instanceof SecretStoreError && err.kind === "missing_key") {

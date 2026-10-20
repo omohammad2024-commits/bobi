@@ -18,13 +18,14 @@
  *   providers.setKey  { id, key }
  *   providers.clearKey { id, confirm:true }
  *   providers.setActive { id }
- *   models.list       { providerId } -> { models: [{ id, label, modelId, enabled, isActive }] }
- *   models.discover   { providerId } -> { models: [{ modelId, label, imported }] }
+ *   models.list       { providerId } -> { models: [{ id, label, modelId, enabled, isActive, isDefault }] }
+ *   models.discover   { providerId } -> { models: [{ modelId, label, imported }], stale?: [{ id, modelId, label }] }
  *   models.import     { providerId, modelIds } -> { imported, skipped }
  *   models.add        { providerId, modelId, label? }
  *   models.toggle     { id, enabled }
  *   models.delete     { id, confirm:true }
  *   models.setActive  { id }
+ *   models.setDefault { id }
  *   models.test       { providerId, modelId } -> { ok, latencyMs, atMs, message? }
  */
 (function () {
@@ -47,6 +48,9 @@
       "prov.activeBadge": "Active",
       "prov.probeNever": "Untested",
       "prov.setActiveProvider": "Set active",
+      "prov.makeDefault": "Make default",
+      "prov.modelDefault": "Default",
+      "prov.defaultSet": "Default model updated",
       "prov.autoActive": "Provider activated — the bot now answers with it.",
       "prov.needKeyFirst": "Set the key first",
       "prov.keyRequired": "Enter the API key",
@@ -853,6 +857,9 @@
           (m.isActive
             ? '<div style="margin-top:5px"><span class="badge badge-accent">' + ctx.icon("star") + ctx.esc(ctx.t("prov.modelActive")) + "</span></div>"
             : "") +
+          (m.isDefault
+            ? '<div style="margin-top:5px"><span class="badge">' + ctx.esc(ctx.t("prov.modelDefault")) + "</span></div>"
+            : "") +
           "</div>" +
           '<button type="button" class="toggle" role="switch" aria-checked="' + (m.enabled ? "true" : "false") + '" aria-label="' + ctx.esc(ctx.t("prov.enabled")) + '"></button>' +
           "</div>" +
@@ -860,6 +867,9 @@
           (m.isActive
             ? ""
             : '<button type="button" class="btn btn-sm btn-subtle act-active">' + ctx.icon("star") + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>") +
+          (m.isDefault
+            ? ""
+            : '<button type="button" class="btn btn-sm btn-subtle act-default">' + ctx.esc(ctx.t("prov.makeDefault")) + "</button>") +
           '<button type="button" class="btn btn-sm btn-subtle act-test">' + ctx.icon("zap") + ctx.esc(ctx.t("prov.testModel")) + "</button>" +
           '<span class="model-test-out" style="align-self:center"></span>' +
           '<button type="button" class="btn btn-sm btn-danger act-del" aria-label="' + ctx.esc(ctx.t("action.delete")) + '">' + ctx.icon("trash") + "</button>" +
@@ -873,6 +883,18 @@
           }
           paint();
         });
+        const defBtn = row.querySelector(".act-default");
+        if (defBtn) {
+          defBtn.addEventListener("click", async function () {
+            try {
+              await ctx.api("models.setDefault", { id: m.id });
+              ctx.toast(ctx.t("prov.defaultSet"), "ok");
+            } catch (e) {
+              ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
+            }
+            paint();
+          });
+        }
         const actBtn = row.querySelector(".act-active");
         if (actBtn) {
           actBtn.addEventListener("click", async function () {

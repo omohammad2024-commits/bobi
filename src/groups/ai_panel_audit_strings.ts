@@ -47,8 +47,8 @@ const AUDIT_STRINGS: Record<string, AuditEntry> = {
     en: "No new models found; all were already in the list.",
   },
   "audit.discover.capped": {
-    fa: " (فقط {n} تای اول وارد شد)",
-    en: " (only the first {n} were imported)",
+    fa: " (فقط {n} تای اول از {total} مدل وارد شد)",
+    en: " (only the first {n} of {total} models were imported)",
   },
 
   // ---- provider/model quick-switch ----

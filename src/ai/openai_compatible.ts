@@ -152,7 +152,7 @@ export class OpenAICompatibleAdapter implements AIProviderAdapter {
     }
 
     const parser = new SseParser();
-    const toolDeltas = new Map<number, { id: string; name: string; args: string }>();
+    const toolDeltas: ToolCallFragments = { byIndex: new Map(), lastIndex: undefined };
     let text = "";
     let usage: TokenUsage | undefined;
     let hadReasoning = false;
@@ -856,16 +856,30 @@ function choiceFinishReason(event: Record<string, unknown>): string | undefined 
   return typeof fr === "string" && fr.length > 0 ? fr : undefined;
 }
 
+/** Accumulated streamed tool-call fragments, plus the recency marker. */
+interface ToolCallFragments {
+  /** Fragments keyed by the wire `index` of the call they belong to. */
+  byIndex: Map<number, { id: string; name: string; args: string }>;
+  /**
+   * Index of the most recently touched call. A fragment WITHOUT an index
+   * continues this call; before any fragment has been seen there is none.
+   */
+  lastIndex: number | undefined;
+}
+
 /**
  * Accumulate fragmented tool-call deltas.
  *
  * OpenAI streams one tool call across many chunks: the first carries
  * `index`, `id` and `function.name`, later ones append to
  * `function.arguments`. Fragments are keyed by `index`; a fragment without
- * one is appended to the most recent call.
+ * one is appended to the most recently touched call (tracked in
+ * `acc.lastIndex`), or to slot 0 when no call exists yet. Keying an
+ * index-less fragment to a FRESH slot instead would split one logical
+ * call into several same-name calls that would all execute (audit L2).
  */
 function accumulateToolCallDeltas(
-  acc: Map<number, { id: string; name: string; args: string }>,
+  acc: ToolCallFragments,
   deltas: unknown[],
 ): void {
   for (const d of deltas) {
@@ -874,14 +888,15 @@ function accumulateToolCallDeltas(
     const index =
       typeof rawIndex === "number" && Number.isInteger(rawIndex) && rawIndex >= 0
         ? rawIndex
-        : acc.size;
+        : (acc.lastIndex ?? 0);
     const fn = isRecord(d["function"]) ? d["function"] : undefined;
 
-    let entry = acc.get(index);
+    let entry = acc.byIndex.get(index);
     if (entry === undefined) {
       entry = { id: "", name: "", args: "" };
-      acc.set(index, entry);
+      acc.byIndex.set(index, entry);
     }
+    acc.lastIndex = index;
     const id = d["id"];
     if (typeof id === "string" && id.length > 0) entry.id = id;
     if (fn !== undefined) {
@@ -902,12 +917,12 @@ function accumulateToolCallDeltas(
  * same leniency parseResponse applies.
  */
 function buildStreamedToolCalls(
-  acc: Map<number, { id: string; name: string; args: string }>,
+  acc: ToolCallFragments,
 ): ToolCall[] {
   const out: ToolCall[] = [];
-  const indexes = [...acc.keys()].sort((a, b) => a - b);
+  const indexes = [...acc.byIndex.keys()].sort((a, b) => a - b);
   for (const index of indexes) {
-    const entry = acc.get(index);
+    const entry = acc.byIndex.get(index);
     if (entry === undefined || entry.name.length === 0) continue;
     out.push({
       id: entry.id.length > 0 ? entry.id : `call_${out.length}`,

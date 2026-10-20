@@ -1422,7 +1422,7 @@ export class AiAdminController {
   private importDiscoveredModels(
     providerId: number,
     remote: readonly RemoteModel[],
-  ): { added: number; existing: number; capped: boolean } {
+  ): { added: number; existing: number; capped: boolean; total: number } {
     const CAP = 50;
     const present = new Set(this.models.list(providerId).map((m) => m.modelId));
     let added = 0;
@@ -1446,16 +1446,26 @@ export class AiAdminController {
       present.add(r.id);
       added++;
     }
-    return { added, existing, capped: remote.length > CAP };
+    return { added, existing, capped: remote.length > CAP, total: remote.length };
   }
 
   /** The user-facing report for a discovery import. */
   private importReport(
-    imported: { added: number; existing: number; capped: boolean },
+    imported: { added: number; existing: number; capped: boolean; total: number },
     lang: PanelLang,
   ): string {
-    if (imported.added === 0) return atr(lang, "audit.discover.none_new");
-    let text = atr(lang, "audit.discover.imported", {
+    // When the cap truncated the import, the report must say so as
+    // "first 50 of N" (audit M7) — including when nothing in the first
+    // 50 was new, where the old code returned the plain "none new"
+    // text and dropped the truncation note entirely.
+    const cappedSuffix = imported.capped
+      ? atr(lang, "audit.discover.capped", {
+          n: formatNum(50, lang),
+          total: formatNum(imported.total, lang),
+        })
+      : "";
+    if (imported.added === 0) return atr(lang, "audit.discover.none_new") + cappedSuffix;
+    const text = atr(lang, "audit.discover.imported", {
       added: formatNum(imported.added, lang),
       existing:
         imported.existing > 0
@@ -1464,10 +1474,7 @@ export class AiAdminController {
             })
           : "",
     });
-    if (imported.capped) {
-      text += atr(lang, "audit.discover.capped", { n: formatNum(50, lang) });
-    }
-    return text;
+    return text + cappedSuffix;
   }
 
   /** The active provider + its models, for the quick-switch screen. */

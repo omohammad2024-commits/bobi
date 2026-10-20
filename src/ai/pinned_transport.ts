@@ -363,7 +363,12 @@ function streamOneAddress(
     // pinned `lookup` below still wins per connection, so pooling never
     // widens the validated address set. When pooling is off the option is
     // omitted entirely — the pre-pooling stream behaviour, byte for byte.
-    const pooled = connectionManager.agentFor(url, [address], secure, req.allowLocalTargets === true);
+    //
+    // M12: keyed by the FULL validated set (req.addresses), like the
+    // buffered path — not by this attempt's single address — so a stream
+    // fallback step reuses the same pooled agent instead of destroying
+    // it. The lookup below still pins this attempt to `address` alone.
+    const pooled = connectionManager.agentFor(url, req.addresses, secure, req.allowLocalTargets === true);
 
     try {
       outgoing = requestFn({
@@ -484,7 +489,7 @@ async function attemptAddresses(req: PinnedRequest, url: URL): Promise<PinnedRes
       // keyed by host.
       const startedAt = Date.now();
       try {
-        const res = await attemptOne(req, url, [address], Math.min(share, remaining));
+        const res = await attemptOne(req, url, [address], Math.min(share, remaining), req.addresses);
         connectionManager.noteOutcome(url, req.allowLocalTargets === true, {
           latencyMs: Date.now() - startedAt,
         });
@@ -519,6 +524,10 @@ const MIN_ATTEMPT_MS = 2_000;
 /**
  * Send one request, bound to the given addresses.
  *
+ * `addresses` is the single address THIS attempt dials (the per-request
+ * lookup); `poolAddresses` is the full validated set for the host, used
+ * only to key the pooled keep-alive agent (M12 — see the agentFor call).
+ *
  * @throws AiError: `invalid_response` for an unusable URL, `timeout` when the
  * deadline passes, `aborted` when the caller cancels, `network` on a transport
  * failure. Messages never contain the pinned address or headers.
@@ -528,6 +537,7 @@ function attemptOne(
   url: URL,
   addresses: readonly string[],
   timeoutMs: number,
+  poolAddresses: readonly string[],
 ): Promise<PinnedResponse> {
   const secure = url.protocol === "https:";
   const requestFn = secure ? httpsRequest : httpRequest;
@@ -582,7 +592,16 @@ function attemptOne(
     // pinned "all" lookup, and this request's own `lookup` below still
     // wins per-connection, so pooling never widens the validated address
     // set.
-    const pooled = connectionManager.agentFor(url, addresses, secure, req.allowLocalTargets === true);
+    //
+    // M12: the agent is keyed by `poolAddresses` — the FULL validated set
+    // for this host — not by this attempt's single address. Keying by the
+    // attempt address made every fallback step destroy the previous
+    // agent and its warm socket, so the next request started cold again.
+    // This changes pool KEYING only: the agent's own lookup is built
+    // from the same validated set, this attempt's lookup below still
+    // pins the connection to `addresses`, and a changed validated set
+    // still rebuilds the agent immediately (the rebinding defense).
+    const pooled = connectionManager.agentFor(url, poolAddresses, secure, req.allowLocalTargets === true);
     const agent: (HttpAgent | HttpsAgent) | false = pooled ?? false;
 
     try {

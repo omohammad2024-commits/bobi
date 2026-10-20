@@ -52,10 +52,18 @@ export function parseRetryAfterMs(
 }
 
 /** How much of a non-2xx response body is even looked at, in chars. */
-export const PROVIDER_BODY_READ_LIMIT = 600;
+export const PROVIDER_BODY_READ_LIMIT = 1200;
 
 /** Hard cap on the extracted provider message, in chars. */
-export const PROVIDER_MESSAGE_LIMIT = 300;
+export const PROVIDER_MESSAGE_LIMIT = 600;
+
+/**
+ * Slack beyond PROVIDER_MESSAGE_LIMIT that a URL token may extend a
+ * truncated message by (see truncateProviderMessage): a link the
+ * provider included as the remedy is worth a few dozen extra chars,
+ * never a partial token.
+ */
+export const PROVIDER_MESSAGE_URL_SLACK = 40;
 
 /**
  * Append ` (HTTP <status>)` to a message — idempotently.
@@ -112,9 +120,42 @@ export function extractProviderMessage(
 
   const cleaned = sanitizeProviderText(candidate, secret);
   if (cleaned.length === 0) return undefined;
-  return cleaned.length > PROVIDER_MESSAGE_LIMIT
-    ? `${cleaned.slice(0, PROVIDER_MESSAGE_LIMIT - 1)}…`
-    : cleaned;
+  return truncateProviderMessage(cleaned);
+}
+
+/**
+ * Cap a provider message at PROVIDER_MESSAGE_LIMIT, humanely (audit M9).
+ *
+ * The old hard slice cut mid-sentence — in the live 9Router incident
+ * the surfaced text ended "…or subscribe t", amputating exactly the
+ * remedy the provider put last. The rule now:
+ *   - truncate at a word boundary when the cut lands mid-word and a
+ *     boundary exists earlier in the text;
+ *   - never cut inside an http(s)://… token: if the cut lands inside
+ *     one, extend to the token's end when that end is within
+ *     PROVIDER_MESSAGE_URL_SLACK of the cap, otherwise back off to
+ *     just before the token (the word-boundary step then applies).
+ * A text with no spaces at all still gets the hard cut — a cap is a cap.
+ */
+function truncateProviderMessage(text: string): string {
+  if (text.length <= PROVIDER_MESSAGE_LIMIT) return text;
+  let cut = PROVIDER_MESSAGE_LIMIT - 1; // leave room for the "…"
+  const urlRe = /https?:\/\/\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = urlRe.exec(text)) !== null) {
+    const start = m.index;
+    const end = start + m[0].length;
+    if (start >= cut) break;
+    if (cut < end) {
+      cut = end <= PROVIDER_MESSAGE_LIMIT + PROVIDER_MESSAGE_URL_SLACK ? end : start;
+      break;
+    }
+  }
+  if (cut > 0 && cut < text.length && text[cut] !== " " && text[cut - 1] !== " ") {
+    const lastSpace = text.lastIndexOf(" ", cut - 1);
+    if (lastSpace > 0) cut = lastSpace;
+  }
+  return `${text.slice(0, cut).trimEnd()}…`;
 }
 
 /**

@@ -139,6 +139,8 @@ export async function handleProviderApi(
       return deleteModel(params, deps);
     case "models.setActive":
       return setActiveModel(params, deps);
+    case "models.setDefault":
+      return setDefaultModel(params, deps);
     case "models.test":
       return testModel(params, deps);
     default:
@@ -338,6 +340,15 @@ function validateProviderUrl(raw: unknown): string {
     throw new ProviderApiError(
       400,
       "The service address contains an unfilled placeholder; replace it with the real value.",
+    );
+  }
+  // Query/fragment in a base URL (audit L9): adapters append paths to
+  // the base, so a stored `https://host/v1?key=x` would build the path
+  // inside the query — reject it here, at save time.
+  if (trimmed.includes("?") || trimmed.includes("#")) {
+    throw new ProviderApiError(
+      400,
+      "Service address must not contain a query string or fragment.",
     );
   }
   let url: URL;
@@ -854,6 +865,7 @@ function listModels(
     modelId: m.modelId,
     enabled: m.enabled,
     isActive: deps.modelSvc.isActive(m.id),
+    isDefault: m.isDefault,
   }));
 }
 
@@ -923,7 +935,17 @@ async function discoverModels(
     clearTimeout(timer);
   }
 
-  const known = new Set(deps.storage.listModels(providerId).map((m) => m.modelId));
+  const storedRows = deps.storage.listModels(providerId);
+  const known = new Set(storedRows.map((m) => m.modelId));
+  // Staleness (audit M7): stored models the upstream list no longer
+  // returns are flagged so the UI can mark them "no longer offered"
+  // (and, in a later pass, offer one-tap removal) instead of presenting
+  // retired ids as usable forever. Flagging only — nothing is deleted
+  // or disabled here.
+  const remoteIds = new Set(remote.map((r) => r.id));
+  const stale = storedRows
+    .filter((m) => !remoteIds.has(m.modelId))
+    .map((m) => ({ id: m.id, modelId: m.modelId, label: m.label }));
   // Gemini discovery is authoritative for the chat-model list (the
   // adapter returns generateContent models only): if the stored default
   // is a model discovery no longer returns — the `aqa` incident, where
@@ -945,6 +967,7 @@ async function discoverModels(
       label: r.label ?? r.id,
       imported: known.has(r.id),
     })),
+    ...(stale.length > 0 ? { stale } : {}),
     ...(defaultReset ? { defaultReset: true } : {}),
   };
 }
@@ -1169,6 +1192,26 @@ function setActiveModel(
     }
     return out;
   })();
+}
+
+/**
+ * Mark a model as its provider's DEFAULT (audit M8). Probes test the
+ * default while chat uses the active model, so without this action a
+ * junk/retired default made Provider Test fail forever with no miniapp
+ * remedy. Mirrors models.setActive's validation conventions.
+ */
+function setDefaultModel(
+  params: Record<string, unknown>,
+  deps: ProviderApiDeps,
+): Record<string, unknown> {
+  const id = asId(params["id"]);
+  if (id === undefined) throw new ProviderApiError(400, "Invalid model ID.");
+  if (!deps.modelSvc.get(id)) {
+    throw new ProviderApiError(404, "Model not found.");
+  }
+  const r = deps.modelSvc.setDefault(id);
+  if (!r.ok) throw new ProviderApiError(400, r.message);
+  return { ok: true };
 }
 
 /**
