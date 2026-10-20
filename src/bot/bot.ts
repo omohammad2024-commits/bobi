@@ -101,6 +101,7 @@ import {
 import { maybeExtractDocuments } from "../tools/extract_document";
 import {
   getPersonality,
+  personalityMenuLabel,
   personalityNames,
   resolvePersonalityName,
 } from "../personality/personalities";
@@ -1299,15 +1300,15 @@ export async function handlePersonalityCommand(
       const mark = skin.name === currentName ? t("personality.current_mark", lang) : "";
       return t("personality.list_item", lang, {
         name: skin.name,
-        label: skin.labelEn,
-        description: skin.descriptionEn,
+        label: personalityMenuLabel(skin),
+        description: skin.descriptionFa,
         mark,
       });
     });
     const keyboard = buildPersonalityKeyboard(
       skins.map((s) => ({
         name: s.name,
-        label: s.labelEn,
+        label: `${s.emoji} ${s.labelFa}`,
       })),
       currentName,
       lang,
@@ -1340,7 +1341,7 @@ export async function handlePersonalityCommand(
     return;
   }
   const skin = getPersonality(name);
-  const label = skin?.labelEn ?? name;
+  const label = skin !== undefined ? personalityMenuLabel(skin) : name;
   await safeReply(ctx, t("personality.changed", lang, { label }));
 }
 

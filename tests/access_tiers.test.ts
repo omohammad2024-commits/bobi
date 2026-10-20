@@ -52,7 +52,7 @@ import {
   paletteCategoriesRender,
 } from "../src/bot/palette";
 import { buildSystemPrompt } from "../src/agent/prompt";
-import { getPersonality } from "../src/personality/personalities";
+import { getPersonality, personalityNames } from "../src/personality/personalities";
 import { createMemoryTools } from "../src/tools/memory";
 import { createHistoryTools } from "../src/tools/history";
 import { SqliteMemoryProvider } from "../src/memory/sqlite_provider";
@@ -574,7 +574,7 @@ describe("creator identity", () => {
   });
 
   test("identity survives every personality skin", () => {
-    for (const name of ["default", "concise", "playful"]) {
+    for (const name of personalityNames()) {
       const skin = getPersonality(name)!;
       const prompt = buildSystemPrompt({ ...base, personality: skin.systemAddition });
       expect(prompt, name).toContain("Mohammad");

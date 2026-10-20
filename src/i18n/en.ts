@@ -67,7 +67,7 @@ export const en: LanguagePack = {
   // ---- /personality ----
   "personality.unavailable": "Changing personality is unavailable.",
   "personality.current_title": "Current reply personality:",
-  "personality.list_item": "• {name} — {label}: {description}{mark}",
+  "personality.list_item": "• {label} — /personality {name}: {description}{mark}",
   "personality.current_mark": " ← current",
   "personality.usage": "To change: /personality <name>",
   "personality.unknown": "Unknown personality \"{name}\". Options: {options}",

@@ -388,7 +388,7 @@ export function renderProfile(lang: Lang, get: (key: string) => string | undefin
     const skin = getPersonality(name) ?? BUILT_IN_PERSONALITIES.default!;
     const label = lang === "en" ? skin.labelEn : skin.labelFa;
     const mark = name === current ? " ✅" : "";
-    keyboard.text(`${label}${mark}`, `${ONBOARDING_CALLBACK_PREFIX}pers:${name}`).row();
+    keyboard.text(`${skin.emoji} ${label}${mark}`, `${ONBOARDING_CALLBACK_PREFIX}pers:${name}`).row();
   }
   // (Removed Oct 2026: the UI is English-only, so no language picker is
   // rendered anymore. The onb:lang callback stays strictly parsed and
