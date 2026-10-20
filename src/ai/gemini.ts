@@ -33,6 +33,7 @@ import { pinnedFetch, pinnedStream } from "./pinned_transport";
 import { SseParser } from "./openai_compatible";
 import { selectParts, textWithPartNotes } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
+import { sanitizeSchemaForDialect } from "./schema_sanitize";
 
 export interface GeminiTarget extends AdapterTarget {
   settings?: AdapterSettings;
@@ -363,7 +364,7 @@ export function buildBody(target: GeminiTarget, req: CompletionRequest): Record<
         functionDeclarations: req.tools.map((t) => ({
           name: t.name,
           description: t.description,
-          parameters: t.parameters,
+          parameters: sanitizeSchemaForDialect(t.parameters, "gemini"),
         })),
       },
     ];

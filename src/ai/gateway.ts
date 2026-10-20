@@ -975,6 +975,11 @@ export class AiGateway implements AiProvider {
    * Credential handling is identical to send(): decrypted per request, never
    * retained.
    *
+   * The FULL response is returned — toolCalls and usage preserved, exactly
+   * like complete() (audit C1). Orchestration callers (mixture-of-agents)
+   * run tool-capable models too; stripping toolCalls here would silently
+   * turn a tool request into an empty "final answer" for them as well.
+   *
    * @throws AiError when the model is unknown, disabled, or its provider fails.
    */
   async completeForModel(req: CompletionRequest): Promise<CompletionResponse> {
@@ -989,7 +994,16 @@ export class AiGateway implements AiProvider {
       const res = await this.send(candidate, req, req.timeoutMs);
       if (this.breakersOn) this.breakers.recordSuccess(candidate.providerId);
       this.noteModelOutcome(candidate);
-      return { text: res.text, model: res.model };
+      // Pass toolCalls and usage through like complete() does (audit C1):
+      // send() already produced them, and dropping them here loses the
+      // model's tool requests. Absent fields stay absent (exactOptional
+      // style used throughout this file), never explicit undefined.
+      return {
+        text: res.text,
+        model: res.model,
+        ...(res.toolCalls !== undefined ? { toolCalls: res.toolCalls } : {}),
+        ...(res.usage !== undefined ? { usage: res.usage } : {}),
+      };
     } catch (err) {
       const mapped = this.mapError(err, "gateway");
       if (this.breakersOn && tripsBreaker(mapped)) {

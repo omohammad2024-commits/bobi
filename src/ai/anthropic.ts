@@ -39,6 +39,7 @@ import { selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
 import { promptCacheEnabled, anthropicCacheBreakpoint } from "./cache_policy";
+import { sanitizeSchemaForDialect } from "./schema_sanitize";
 
 /** Anthropic requires an explicit cap; this is only a fallback. */
 const DEFAULT_MAX_TOKENS = 1024;
@@ -318,7 +319,7 @@ export function buildBody(target: AnthropicTarget, req: CompletionRequest): Reco
     body["tools"] = req.tools.map((t) => ({
       name: t.name,
       description: t.description,
-      input_schema: t.parameters,
+      input_schema: sanitizeSchemaForDialect(t.parameters, "anthropic"),
     }));
   }
 

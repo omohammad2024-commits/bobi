@@ -38,6 +38,7 @@ import { pinnedFetch, pinnedStream } from "./pinned_transport";
 import { dataUrl, partDropNote, selectParts, textWithPartNotes } from "./parts";
 import type { SendablePart } from "./parts";
 import { resolveReasoningEffort, reasoningParamsFor } from "./reasoning";
+import { sanitizeSchemaForDialect } from "./schema_sanitize";
 
 export interface OpenAITarget extends AdapterTarget {
   /** Owner-tunable settings. Only known keys are honored. */
@@ -455,7 +456,7 @@ export function buildRequestBody(
   if (req.tools !== undefined && req.tools.length > 0) {
     body["tools"] = req.tools.map((t) => ({
       type: "function",
-      function: { name: t.name, description: t.description, parameters: t.parameters },
+      function: { name: t.name, description: t.description, parameters: sanitizeSchemaForDialect(t.parameters, "openai") },
     }));
   }
 
