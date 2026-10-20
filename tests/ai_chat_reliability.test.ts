@@ -548,7 +548,11 @@ describe("per-model quarantine", () => {
 
   test("(f) gateway skips a 3×-failing model, recovers after cooldown, never skips a lone candidate", async () => {
     // Breakers OFF so the only skip mechanism under test is quarantine.
-    await withEnv({ BOBI_CIRCUIT_BREAKER: "0" }, async () => {
+    // Smart routing OFF for the same reason: since H4 the ROUTER also
+    // honors quarantine when picking the primary, which would mask the
+    // gateway-level eligibleCandidates behavior isolated here (the
+    // router's gate has its own suite: smart_router_health.test.ts).
+    await withEnv({ BOBI_CIRCUIT_BREAKER: "0", BOBI_SMART_ROUTING: "0" }, async () => {
       let clock = 10_000;
       const registry = new ModelQuarantineRegistry({
         now: () => clock,

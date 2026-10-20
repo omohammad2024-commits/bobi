@@ -218,7 +218,7 @@ describe("failover enabled", () => {
     h.storage.close();
   });
 
-  test("a quota failure is not retried", async () => {
+  test("a quota failure advances to the next candidate, once per provider", async () => {
     const h = build({ behavior: { fail: new AiError("quota", "rate limited") } });
     const a = seedProvider(h.storage, h.providers, h.models, "a");
     const b = seedProvider(h.storage, h.providers, h.models, "b");
@@ -226,7 +226,10 @@ describe("failover enabled", () => {
     h.storage.setFailoverSettings({ enabled: true, maxAttempts: 3 });
     h.storage.setFailoverCandidates([{ providerId: b.providerId, modelId: b.modelId }]);
     await expect(h.gateway.complete(REQUEST)).rejects.toThrow(AiError);
-    expect(h.log.length).toBe(1);
+    // C2: quota is account-level exhaustion — the SAME provider is never
+    // retried, but the chain advances, so each provider is sent to once.
+    // (Before C2 this asserted 1 send: quota killed the turn outright.)
+    expect(h.log.length).toBe(2);
     h.storage.close();
   });
 

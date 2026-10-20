@@ -572,7 +572,11 @@ describe("background health prober", () => {
     await expect(health.runBackgroundProbePass(breakers)).resolves.toBe(0);
     release();
     await expect(first).resolves.toBe(1);
-    expect(calls.n).toBe(1);
+    // H1: one probe is two sends — the ping plus the realistic stage
+    // (this fake has no completeStream, so the stage falls back to
+    // complete()). The overlap guarantee above is what this test pins;
+    // the count simply records the two-stage shape.
+    expect(calls.n).toBe(2);
     storage.close();
   });
 
