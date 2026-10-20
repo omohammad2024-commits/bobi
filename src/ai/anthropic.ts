@@ -51,12 +51,50 @@ export interface AnthropicTarget extends AdapterTarget {
   allowLocalTargets?: boolean;
 }
 
+/**
+ * A completion as parsed by this adapter.
+ *
+ * The shared CompletionResponse contract (provider.ts) has NO stop /
+ * finish-reason field, and the OpenAI-compatible adapter exposes its
+ * `finish_reason` only inside the empty-response error detail — so no
+ * shared field is invented here. This adapter-local subtype is the
+ * Anthropic surface for the same information (mirroring
+ * GeminiCompletionResponse and the AnthropicStreamAssembler `stopReason`
+ * getter): `stopReason` carries the wire value verbatim ("end_turn",
+ * "max_tokens", "tool_use", "refusal", …) when the service sent one, so
+ * a max_tokens finish with partial text returns the text AND names its
+ * truncation instead of presenting the partial answer as silently
+ * complete. Callers typed against the shared contract simply do not
+ * read the extra field.
+ */
+export interface AnthropicCompletionResponse extends CompletionResponse {
+  stopReason?: string;
+}
+
+/**
+ * The headers every Anthropic call carries: the version pin always,
+ * the key (as a header, never in a URL) when one is set. Shared by the
+ * completion, streaming and model-list paths so auth cannot drift
+ * between them.
+ */
+function authHeaders(target: { apiKey: string | undefined }, accept: string): Record<string, string> {
+  return {
+    "content-type": "application/json",
+    accept,
+    "anthropic-version": ANTHROPIC_VERSION,
+    ...(target.apiKey !== undefined && target.apiKey.length > 0
+      ? { "x-api-key": target.apiKey }
+      : {}),
+  };
+}
+
 export class AnthropicAdapter implements AIProviderAdapter {
   /** Equals the adapter type; the engine reads this for its fake check. */
   readonly name = "anthropic";
   readonly type = "anthropic" as const;
   readonly capabilities = {
     notes: "POST {baseUrl}/messages",
+    listModels: true,
     documentInput: true,
     streaming: true,
   };
@@ -79,14 +117,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
     const res = await fetchJson(resolved, "/messages", {
       method: "POST",
       secret: this.target.apiKey,
-      headers: {
-        "content-type": "application/json",
-        accept: "application/json",
-        "anthropic-version": ANTHROPIC_VERSION,
-        ...(this.target.apiKey !== undefined && this.target.apiKey.length > 0
-          ? { "x-api-key": this.target.apiKey }
-          : {}),
-      },
+      headers: authHeaders(this.target, "application/json"),
       body: JSON.stringify(body),
       timeoutMs: req.timeoutMs,
       signal: req.signal,
@@ -115,14 +146,7 @@ export class AnthropicAdapter implements AIProviderAdapter {
     const stream = await pinnedStream({
       url: `${resolved.baseUrl}/messages`,
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        accept: "text/event-stream",
-        "anthropic-version": ANTHROPIC_VERSION,
-        ...(this.target.apiKey !== undefined && this.target.apiKey.length > 0
-          ? { "x-api-key": this.target.apiKey }
-          : {}),
-      },
+      headers: authHeaders(this.target, "text/event-stream"),
       body: JSON.stringify(body),
       timeoutMs: req.timeoutMs,
       signal: req.signal,
@@ -162,8 +186,68 @@ export class AnthropicAdapter implements AIProviderAdapter {
     yield assembler.finish();
   }
 
-  // The service's model list is not a simple GET for this adapter's needs, so
-  // the capability is intentionally not declared: the panel offers manual entry.
+  async listModels(req: ListModelsRequest): Promise<readonly RemoteModel[]> {
+    const resolved = await resolveTarget(req.target, {
+      ...(this.target.allowLocalTargets !== undefined
+        ? { allowLocalTargets: this.target.allowLocalTargets }
+        : {}),
+    });
+
+    // ListModels paginates by cursor: while a page says `has_more`,
+    // the next page is fetched with `after_id` set to that page's
+    // `last_id`. Follow it until the service stops, with two
+    // termination guards against a misbehaving endpoint: a hard cap
+    // of 10 pages, and a stop when a cursor repeats (a loop would
+    // otherwise re-fetch the same pages until the cap).
+    const MAX_PAGES = 10;
+    const seenCursors = new Set<string>();
+    const seenIds = new Set<string>();
+    const out: RemoteModel[] = [];
+    let afterId: string | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const path =
+        afterId === undefined
+          ? "/models"
+          : `/models?after_id=${encodeURIComponent(afterId)}`;
+      const res = await fetchJson(resolved, path, {
+        method: "GET",
+        secret: req.target.apiKey,
+        headers: authHeaders({ apiKey: req.target.apiKey }, "application/json"),
+        timeoutMs: req.timeoutMs,
+        signal: req.signal,
+      });
+
+      const data = res["data"];
+      if (!Array.isArray(data)) {
+        throw new AiError("invalid_response", "Service response was unreadable.");
+      }
+      for (const entry of data) {
+        if (!isRecord(entry) || typeof entry["id"] !== "string") continue;
+        const id = entry["id"];
+        // First occurrence wins if an id repeats across pages (a
+        // repeating-cursor page re-lists the same models; discovery
+        // is an import, so duplicates would be imported twice).
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        const displayName = entry["display_name"];
+        out.push({
+          id,
+          ...(typeof displayName === "string" && displayName.length > 0
+            ? { label: displayName }
+            : {}),
+        });
+      }
+
+      if (res["has_more"] !== true) break;
+      const lastId = res["last_id"];
+      if (typeof lastId !== "string" || lastId.length === 0) break;
+      if (seenCursors.has(lastId)) break;
+      seenCursors.add(lastId);
+      afterId = lastId;
+    }
+    return out;
+  }
 }
 
 /**
@@ -330,18 +414,25 @@ function attachmentBlock(part: SendablePart): Record<string, unknown> {
 export function parseResponse(
   res: Record<string, unknown>,
   requestedModel: string,
-): CompletionResponse {
+): AnthropicCompletionResponse {
   const text = extractText(res);
   const extras = responseExtras(res);
   if (text.trim().length === 0 && (extras.toolCalls ?? []).length === 0) {
     // No text block and no tool_use block: a candidate failure, not a
     // silent empty success. A thinking-only payload is still empty —
-    // chain-of-thought is never surfaced as the answer.
+    // chain-of-thought is never surfaced as the answer. The detail
+    // names the stop_reason when the service sent one — a "refusal"
+    // stop is a different problem (and a different fix) from an
+    // unexplained empty answer, mirroring the OpenAI adapter's
+    // finish_reason detail.
     const content = res["content"];
     const thinkingOnly =
       Array.isArray(content) &&
       content.some((b) => isRecord(b) && b["type"] === "thinking");
-    throw emptyResponseError(thinkingOnly ? "the response carried reasoning only" : undefined);
+    const parts: string[] = [];
+    if (extras.stopReason !== undefined) parts.push(`stop_reason=${extras.stopReason}`);
+    if (thinkingOnly) parts.push("the response carried reasoning only");
+    throw emptyResponseError(parts.length > 0 ? parts.join(", ") : undefined);
   }
   return {
     text,
@@ -644,12 +735,21 @@ function extractText(res: Record<string, unknown>): string {
   return texts.join("");
 }
 
-/** `tool_use` blocks and token usage, when present. */
+/** `tool_use` blocks, token usage and the stop reason, when present. */
 function responseExtras(res: Record<string, unknown>): {
   toolCalls?: ToolCall[];
   usage?: TokenUsage;
+  stopReason?: string;
 } {
-  const out: { toolCalls?: ToolCall[]; usage?: TokenUsage } = {};
+  const out: { toolCalls?: ToolCall[]; usage?: TokenUsage; stopReason?: string } = {};
+
+  // The stop reason rides along here — the extras surface — so a
+  // max_tokens finish with partial text is exposed as truncated (see
+  // AnthropicCompletionResponse) rather than looking silently complete.
+  const stopReason = res["stop_reason"];
+  if (typeof stopReason === "string" && stopReason.length > 0) {
+    out.stopReason = stopReason;
+  }
 
   const content = res["content"];
   if (Array.isArray(content)) {

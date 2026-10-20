@@ -85,7 +85,12 @@ export class AdapterRegistry {
         return {
           label: type === "nine_router" ? "9Router" : "Custom / OpenAI-compatible",
           notes: "POST {baseUrl}/chat/completions",
-          listModels: type === "openai_compatible",
+          // nine_router IS the OpenAI-compatible adapter (see create()
+          // above), so every capability declared here is inherited from
+          // it — listModels included. (Streaming is not a describes()
+          // field: it is read off the constructed adapter, where
+          // nine_router already reports it via the same class.)
+          listModels: true,
           audioInput: false,
           documentInput: false,
           embeddings: true,
@@ -103,7 +108,7 @@ export class AdapterRegistry {
         return {
           label: "Anthropic",
           notes: "messages",
-          listModels: false,
+          listModels: true,
           audioInput: false,
           documentInput: true,
           embeddings: false,

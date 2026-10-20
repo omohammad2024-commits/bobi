@@ -39,6 +39,40 @@ export interface GeminiTarget extends AdapterTarget {
   allowLocalTargets?: boolean;
 }
 
+/**
+ * A completion as parsed by this adapter.
+ *
+ * The shared CompletionResponse contract (provider.ts) has NO finish /
+ * stop-reason field, and the OpenAI-compatible adapter exposes its
+ * `finish_reason` only inside the empty-response error detail — so no
+ * shared field is invented here. This adapter-local subtype is the
+ * Gemini surface for the same information (mirroring how
+ * GeminiStreamAssembler exposes `finishReason` as a getter alongside —
+ * not inside — the StreamEvent contract): `finishReason` carries the
+ * candidate's wire value verbatim ("STOP", "MAX_TOKENS", "SAFETY", …)
+ * when the service sent one, so a MAX_TOKENS finish with partial text
+ * returns the text AND names its truncation instead of presenting the
+ * partial answer as silently complete. Callers typed against the shared
+ * contract simply do not read the extra field.
+ */
+export interface GeminiCompletionResponse extends CompletionResponse {
+  finishReason?: string;
+}
+
+/**
+ * Strip a single leading `models/` prefix from a model id.
+ *
+ * Discovery already stores bare ids, but Google's own documentation
+ * presents ids as `models/gemini-2.5-flash`, so a hand-typed or legacy
+ * stored id can carry the prefix. Used verbatim it doubled up in the
+ * request URL (`/models/models%2Fgemini-2.5-flash:generateContent` →
+ * 404). Normalizing at every model-addressed URL build lets those
+ * stored rows heal themselves; what discovery stores is unchanged.
+ */
+export function normalizeGeminiModelId(model: string): string {
+  return model.replace(/^models\//, "");
+}
+
 export class GeminiAdapter implements AIProviderAdapter {
   /** Equals the adapter type; the engine reads this for its fake check. */
   readonly name = "gemini";
@@ -65,10 +99,11 @@ export class GeminiAdapter implements AIProviderAdapter {
         : {}),
     });
 
+    const model = normalizeGeminiModelId(req.model);
     const body = buildBody(this.target, req);
     const res = await fetchJson(
       resolved,
-      `/models/${encodeURIComponent(req.model)}:generateContent`,
+      `/models/${encodeURIComponent(model)}:generateContent`,
       {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -79,7 +114,7 @@ export class GeminiAdapter implements AIProviderAdapter {
       },
     );
 
-    return parseResponse(res, req.model);
+    return parseResponse(res, model);
   }
 
   /**
@@ -101,9 +136,10 @@ export class GeminiAdapter implements AIProviderAdapter {
       throw new AiError("auth", "Service key is not set.");
     }
 
+    const model = normalizeGeminiModelId(req.model);
     const body = buildBody(this.target, req);
     const url = new URL(
-      `${resolved.baseUrl}/models/${encodeURIComponent(req.model)}:streamGenerateContent`,
+      `${resolved.baseUrl}/models/${encodeURIComponent(model)}:streamGenerateContent`,
     );
     url.searchParams.set("alt", "sse");
     url.searchParams.set("key", this.target.apiKey);
@@ -133,7 +169,7 @@ export class GeminiAdapter implements AIProviderAdapter {
     }
 
     const parser = new SseParser();
-    const assembler = new GeminiStreamAssembler(req.model);
+    const assembler = new GeminiStreamAssembler(model);
 
     try {
       for await (const chunk of stream.chunks) {
@@ -157,42 +193,71 @@ export class GeminiAdapter implements AIProviderAdapter {
         ? { allowLocalTargets: this.target.allowLocalTargets }
         : {}),
     });
-    const res = await fetchJson(resolved, "/models", {
-      method: "GET",
-      headers: { accept: "application/json" },
-      timeoutMs: req.timeoutMs,
-      signal: req.signal,
-      apiKey: req.target.apiKey,
-    });
 
-    const models = res["models"];
-    if (!Array.isArray(models)) {
-      throw new AiError("invalid_response", "Service response was unreadable.");
-    }
+    // ListModels paginates (default page size 50): a single GET silently
+    // loses every model past page 1. Follow `nextPageToken` via the
+    // `pageToken` query parameter until the service stops handing one
+    // out, with two termination guards against a misbehaving endpoint:
+    // a hard cap of 10 pages, and a stop when a token repeats (a loop
+    // would otherwise re-fetch the same pages until the cap).
+    const MAX_PAGES = 10;
+    const seenTokens = new Set<string>();
+    const seenIds = new Set<string>();
     const out: RemoteModel[] = [];
-    for (const entry of models) {
-      if (!isRecord(entry) || typeof entry["name"] !== "string") continue;
-      // Discovery IS the import — every consumer of listModels treats
-      // the result as the provider's usable model list — and this
-      // service's ListModels returns EVERY model it hosts: chat models
-      // alongside aqa, embedding, imagen, veo and TTS entries that
-      // cannot answer a chat completion. Importing them all once landed
-      // a provider's default on `aqa`, whose generateContent call 404s.
-      // Only models the service says support generateContent belong
-      // here. An entry with NO methods field at all is kept: some
-      // compatible endpoints omit the metadata, and absence of metadata
-      // is not evidence of incapability.
-      const methods = entry["supportedGenerationMethods"];
-      if (Array.isArray(methods) && !methods.includes("generateContent")) continue;
-      // "models/gemini-2.5-flash" → "gemini-2.5-flash"
-      const id = entry["name"].replace(/^models\//, "");
-      const displayName = entry["displayName"];
-      out.push({
-        id,
-        ...(typeof displayName === "string" && displayName.length > 0
-          ? { label: displayName }
-          : {}),
+    let pageToken: string | undefined;
+
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const path =
+        pageToken === undefined
+          ? "/models"
+          : `/models?pageToken=${encodeURIComponent(pageToken)}`;
+      const res = await fetchJson(resolved, path, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        timeoutMs: req.timeoutMs,
+        signal: req.signal,
+        apiKey: req.target.apiKey,
       });
+
+      const models = res["models"];
+      if (!Array.isArray(models)) {
+        throw new AiError("invalid_response", "Service response was unreadable.");
+      }
+      for (const entry of models) {
+        if (!isRecord(entry) || typeof entry["name"] !== "string") continue;
+        // Discovery IS the import — every consumer of listModels treats
+        // the result as the provider's usable model list — and this
+        // service's ListModels returns EVERY model it hosts: chat models
+        // alongside aqa, embedding, imagen, veo and TTS entries that
+        // cannot answer a chat completion. Importing them all once landed
+        // a provider's default on `aqa`, whose generateContent call 404s.
+        // Only models the service says support generateContent belong
+        // here. An entry with NO methods field at all is kept: some
+        // compatible endpoints omit the metadata, and absence of metadata
+        // is not evidence of incapability. The filter applies per page.
+        const methods = entry["supportedGenerationMethods"];
+        if (Array.isArray(methods) && !methods.includes("generateContent")) continue;
+        // "models/gemini-2.5-flash" → "gemini-2.5-flash"
+        const id = entry["name"].replace(/^models\//, "");
+        // First occurrence wins if an id repeats across pages (a
+        // repeating-token page re-lists the same models; discovery is
+        // an import, so duplicates would be imported twice).
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+        const displayName = entry["displayName"];
+        out.push({
+          id,
+          ...(typeof displayName === "string" && displayName.length > 0
+            ? { label: displayName }
+            : {}),
+        });
+      }
+
+      const next = res["nextPageToken"];
+      if (typeof next !== "string" || next.length === 0) break;
+      if (seenTokens.has(next)) break;
+      seenTokens.add(next);
+      pageToken = next;
     }
     return out;
   }
@@ -364,19 +429,111 @@ function firstParts(res: Record<string, unknown>): unknown[] | undefined {
 export function parseResponse(
   res: Record<string, unknown>,
   requestedModel: string,
-): CompletionResponse {
-  const text = extractText(res);
+): GeminiCompletionResponse {
+  const finishReason = finishReasonOf(res);
+  const blockReason = blockReasonOf(res);
+
+  let text: string;
+  try {
+    text = extractText(res);
+  } catch (err) {
+    // extractText throws only when the payload carries no candidate
+    // parts at all. A prompt-level block lands exactly there (Google
+    // answers with promptFeedback and NO candidates): name the block
+    // instead of surfacing the bare "had no text" label, so the owner
+    // can tell "Google blocked the prompt" from a gateway glitch.
+    if (blockReason !== undefined) throw promptBlockedError(res, blockReason);
+    if (finishReason !== undefined) {
+      throw emptyResponseError(emptyPayloadDetail(finishReason, blockReason));
+    }
+    throw err;
+  }
+
   const extras = responseExtras(res);
   if (text.trim().length === 0 && (extras.toolCalls ?? []).length === 0) {
     // No text and no function call: a candidate failure, not a silent
-    // empty success (same rule as the OpenAI-compatible adapter).
-    throw emptyResponseError();
+    // empty success (same rule as the OpenAI-compatible adapter). The
+    // detail names the finish/block reason when the service sent one —
+    // a SAFETY/RECITATION finish is a different problem (and a
+    // different fix) from an unexplained empty answer, mirroring the
+    // OpenAI adapter's finish_reason detail.
+    if (blockReason !== undefined && finishReason === undefined) {
+      throw promptBlockedError(res, blockReason);
+    }
+    const detail = emptyPayloadDetail(finishReason, blockReason);
+    throw emptyResponseError(detail.length > 0 ? detail : undefined);
   }
   return {
     text,
     model: extractModel(res, requestedModel),
     ...extras,
   };
+}
+
+/**
+ * Machine-safe detail for an empty Gemini payload: the candidate's
+ * finish reason and/or the prompt block reason, when the service sent
+ * either. Never carries response content.
+ */
+function emptyPayloadDetail(
+  finishReason: string | undefined,
+  blockReason: string | undefined,
+): string {
+  const parts: string[] = [];
+  if (finishReason !== undefined) parts.push(`finishReason=${finishReason}`);
+  if (blockReason !== undefined) parts.push(`blockReason=${blockReason}`);
+  return parts.join(", ");
+}
+
+/**
+ * The failure for a prompt-level block: Google refused the PROMPT
+ * (promptFeedback.blockReason, e.g. SAFETY) and returned no candidates.
+ * Built as the empty-response failure — another candidate may answer —
+ * with the block named in BOTH the message detail and the provider
+ * words, since blockReason (and its optional human-readable message)
+ * are the provider's own explanation of the refusal.
+ */
+function promptBlockedError(res: Record<string, unknown>, blockReason: string): AiError {
+  const feedback = res["promptFeedback"];
+  const blockMessage =
+    isRecord(feedback) &&
+    typeof feedback["blockReasonMessage"] === "string" &&
+    feedback["blockReasonMessage"].length > 0
+      ? feedback["blockReasonMessage"].slice(0, 600)
+      : undefined;
+  const providerMessage =
+    blockMessage ?? `promptFeedback blockReason=${blockReason}`;
+  return new AiError(
+    "invalid_response",
+    `Provider returned an empty response (promptFeedback blockReason=${blockReason})`,
+    undefined,
+    undefined,
+    true,
+    undefined,
+    providerMessage,
+  );
+}
+
+/** The first candidate record of a payload, when present and well-formed. */
+function firstCandidate(res: Record<string, unknown>): Record<string, unknown> | undefined {
+  const candidates = res["candidates"];
+  if (!Array.isArray(candidates) || candidates.length === 0) return undefined;
+  const first = candidates[0];
+  return isRecord(first) ? first : undefined;
+}
+
+/** `candidates[0].finishReason` ("STOP" / "MAX_TOKENS" / "SAFETY" / …). */
+function finishReasonOf(res: Record<string, unknown>): string | undefined {
+  const fr = firstCandidate(res)?.["finishReason"];
+  return typeof fr === "string" && fr.length > 0 ? fr : undefined;
+}
+
+/** `promptFeedback.blockReason` ("SAFETY" / "OTHER" / …), when blocked. */
+function blockReasonOf(res: Record<string, unknown>): string | undefined {
+  const feedback = res["promptFeedback"];
+  if (!isRecord(feedback)) return undefined;
+  const br = feedback["blockReason"];
+  return typeof br === "string" && br.length > 0 ? br : undefined;
 }
 
 /**
@@ -540,12 +697,19 @@ function extractText(res: Record<string, unknown>): string {
   return texts.join("");
 }
 
-/** `functionCall` parts and token usage, when present. */
+/** `functionCall` parts, token usage and the finish reason, when present. */
 function responseExtras(res: Record<string, unknown>): {
   toolCalls?: ToolCall[];
   usage?: TokenUsage;
+  finishReason?: string;
 } {
-  const out: { toolCalls?: ToolCall[]; usage?: TokenUsage } = {};
+  const out: { toolCalls?: ToolCall[]; usage?: TokenUsage; finishReason?: string } = {};
+
+  // The finish reason rides along here — the extras surface — so a
+  // MAX_TOKENS finish with partial text is exposed as truncated (see
+  // GeminiCompletionResponse) rather than looking silently complete.
+  const finishReason = finishReasonOf(res);
+  if (finishReason !== undefined) out.finishReason = finishReason;
 
   const parts = firstParts(res);
   if (parts) {

@@ -742,13 +742,42 @@ export class AiGateway implements AiProvider {
           this.noteModelOutcome(candidate, mapped);
           return { kind: "error", error: mapped };
         }
-        await this.sleep(delay);
+        const abortedWhileWaiting = await this.sleepWithAbort(delay, req.signal);
         waitedMs += delay;
         retriesUsed += 1;
-        if (req.signal.aborted) {
+        if (abortedWhileWaiting || req.signal.aborted) {
           return { kind: "error", error: new AiError("aborted", "Request was cancelled.") };
         }
       }
+    }
+  }
+
+  /**
+   * Sleep for the in-call retry backoff, abort-aware (audit R5).
+   *
+   * The plain sleep used to run to completion even after the caller
+   * aborted: a 429's Retry-After (up to the 30 s parse cap) kept the
+   * gateway parked long after the agent loop's deadline had killed the
+   * turn, and the post-sleep signal check only ran once the full delay
+   * had elapsed. Racing the sleep against the caller's signal makes
+   * the wait end the moment the caller gives up; the retry loop then
+   * reports the abort instead of sending into a dead turn. Returns
+   * true when the wait ended via abort.
+   */
+  private async sleepWithAbort(ms: number, signal: AbortSignal): Promise<boolean> {
+    if (signal.aborted) return true;
+    let onAbort: (() => void) | undefined;
+    const aborted = new Promise<true>((resolve) => {
+      onAbort = () => resolve(true);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    try {
+      return await Promise.race([
+        this.sleep(ms).then(() => false as const),
+        aborted,
+      ]);
+    } finally {
+      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
     }
   }
 
@@ -924,10 +953,10 @@ export class AiGateway implements AiProvider {
           this.noteModelOutcome(candidate, mapped);
           return { kind: "error", error: mapped };
         }
-        await this.sleep(delay);
+        const abortedWhileWaiting = await this.sleepWithAbort(delay, req.signal);
         waitedMs += delay;
         retriesUsed += 1;
-        if (req.signal.aborted) {
+        if (abortedWhileWaiting || req.signal.aborted) {
           return { kind: "error", error: new AiError("aborted", "Request was cancelled.") };
         }
       }
@@ -1529,11 +1558,21 @@ export class AiGateway implements AiProvider {
  * marked via isEmptyResponseError, and another candidate CAN fix it —
  * emptiness is a property of the model that answered, not of the request.
  * It therefore advances the chain like a network failure does.
+ *
+ * A 404 invalid_response is likewise model-scoped (audit M1): the
+ * provider refused because THIS model id is retired or renamed, so a
+ * different candidate with a different model can fix it — within the
+ * same turn, not only via quarantine on a later one. A 400/422
+ * invalid_response stays non-advancing: the request itself is malformed
+ * and every candidate would reject it the same way. Quarantine counting
+ * (noteModelOutcome) is untouched by this: 404s counted before and
+ * still count.
  */
 function isRetryable(err: AiError): boolean {
   // Direct property read, not the isEmptyResponseError predicate: the
   // predicate narrows `err` to `never` in the negative branch for tsc.
   if (err.emptyResponse === true) return true;
+  if (err.kind === "invalid_response" && err.status === 404) return true;
   switch (err.kind) {
     case "network":
     case "timeout":

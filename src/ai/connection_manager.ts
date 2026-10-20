@@ -471,6 +471,13 @@ export class ConnectionManager {
    * also when the DNS TTL is 0 ("resolve every request" mode): each
    * request's fresh resolution is compared via addressesKey, so pinning
    * stays honest while the socket stays warm.
+   *
+   * CALLER CONTRACT (M12): `addresses` must be the FULL address set
+   * dns_guard validated for this host on this request — never a single
+   * fallback step's address. Keying by a per-attempt subset made every
+   * address fallback destroy the pooled agent and its warm sockets; the
+   * per-attempt selection itself is the caller's per-request lookup,
+   * which stays pinned to the one address being attempted.
    */
   agentFor(
     url: URL,
@@ -563,11 +570,16 @@ export class ConnectionManager {
     const secure = url.protocol === "https:";
     const key = this.hostKey(url, target.allowLocalTargets);
 
+    // ONE agent for the host, keyed by the FULL validated address set —
+    // exactly the key a real request uses (M12). Building it per address
+    // destroyed the previous attempt's agent (and its warm socket) on
+    // every fallback step; the per-address fallback happens through the
+    // connector calls below, all sharing this one agent. The connector
+    // still pins each warm-up connection to a single validated address
+    // via its own lookup, so the address set never widens.
+    const agent = this.agentFor(url, target.addresses, secure, target.allowLocalTargets);
+    if (agent === undefined) return false;
     for (const address of target.addresses) {
-      // Key the warm agent exactly like a real single-address attempt, so
-      // the socket it pools is the one the next real request reuses.
-      const agent = this.agentFor(url, [address], secure, target.allowLocalTargets);
-      if (agent === undefined) return false;
       const startedAt = this.now();
       try {
         await this.connector({ url, address, agent, timeoutMs: WARM_TIMEOUT_MS });

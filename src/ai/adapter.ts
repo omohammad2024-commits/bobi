@@ -7,9 +7,13 @@
  *
  * Design rules:
  * - Input is untrusted; the adapter must not assume well-formed settings.
- * - Every failure is mapped onto AiError's categories. Raw provider text, a
- *   status page, or a response body never escapes this layer, because those can
- *   echo a request (and therefore a key).
+ * - Every failure is mapped onto AiError's categories. A raw response body
+ *   never escapes this layer, because it can echo a request (and therefore
+ *   a key). The one sanctioned exception is `AiError.providerMessage`: the
+ *   provider's own error words, extracted by the status mapper in
+ *   http_status.ts only after sanitizing, credential redaction and a hard
+ *   length cap — the sanitized quote may ride the error, the body itself
+ *   may not.
  * - `capabilities` is declared, not assumed: an adapter says whether it can
  *   list models, so the panel offers "discover models" only when it is real.
  */
@@ -273,6 +277,13 @@ export const PROVIDER_PRESETS: readonly ProviderPreset[] = [
     note: "Address verified. Models with a vendor/model prefix.",
   },
   {
+    id: "kimi",
+    label: "Kimi (Moonshot AI)",
+    baseUrl: "https://api.moonshot.ai/v1",
+    suggestedModel: "kimi-k2.5",
+    note: "OpenAI-compatible wire. Address from Moonshot's published API docs.",
+  },
+  {
     id: "opencode",
     label: "OpenCode Zen",
     baseUrl: "https://opencode.ai/zen/v1",
@@ -313,7 +324,13 @@ export const ADAPTER_TEMPLATES: readonly AdapterTemplate[] = [
     label: "9Router",
     suggestedBaseUrl: "",
     prefilled: false,
-    capabilities: { notes: "Requires an address and model set by the admin" },
+    capabilities: {
+      // Display metadata only: discovery is gated by the registry's
+      // describes(), but the template must not understate it — nine_router
+      // IS the OpenAI-compatible adapter, listModels included.
+      listModels: true,
+      notes: "Requires an address and model set by the admin",
+    },
   },
   {
     type: "gemini",
@@ -327,6 +344,8 @@ export const ADAPTER_TEMPLATES: readonly AdapterTemplate[] = [
     label: "Anthropic",
     suggestedBaseUrl: "https://api.anthropic.com/v1",
     prefilled: false,
-    capabilities: { notes: "messages" },
+    // listModels: display metadata only (discovery is gated by the
+    // registry's describes()); the adapter does serve GET /v1/models.
+    capabilities: { listModels: true, notes: "messages" },
   },
 ] as const;
