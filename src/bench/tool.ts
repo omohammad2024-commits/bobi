@@ -48,28 +48,45 @@
  * drives the same regression alert path below. Offline scheduled runs stay
  * synchronous — they finish in seconds, inside the budget.
  */
+import { createRequire } from "node:module";
 import { ToolError } from "../tools/errors";
+import { defineManifest } from "../tools/manifest";
+import type { ToolManifest } from "../tools/manifest";
 import type { Tool, ToolContext } from "../tools/types";
-import {
-  buildOfflineStack,
-  buildLiveStack,
-  buildReport,
-  runTask,
-  stampName,
-  type BenchReport,
-  type BenchStack,
-  type TaskResult,
-} from "../../bench/run";
+import type { BenchReport, BenchStack, TaskResult } from "../../bench/run";
 import { loadTasks } from "../../bench/schema";
 import { BenchHistory } from "./history";
-import {
-  tryAcquireBenchRunLock,
-  releaseBenchRunLock,
-  defaultBenchTasksDir,
-  type BenchJobSource,
-  type BenchJobSpec,
-  type EnqueueOutcome,
-} from "./worker";
+import type { BenchJobSource, BenchJobSpec, EnqueueOutcome } from "./worker";
+
+// ---------------------------------------------------------------------------
+// Lazy module loads (platform Phase 1 cycle break).
+//
+// bench/run and ./worker are loaded on FIRST USE, not at module init:
+// both reach src/tools/service.ts (bench/run subclasses ToolService;
+// the worker builds bench stacks), and service.ts statically imports
+// src/tools/plugins.ts, which catalogs this module's manifest. A static
+// import of either module from here deadlocks that graph in TDZ
+// (whichever of service/plugins/this module is entered first, one of
+// them reads an uninitialized binding). By the time any bench code
+// actually runs, boot is long finished and both modules load cleanly.
+// ---------------------------------------------------------------------------
+const requireModule = createRequire(import.meta.url);
+
+type BenchRunModule = typeof import("../../bench/run");
+type BenchWorkerModule = typeof import("./worker");
+
+let benchRunModule: BenchRunModule | undefined;
+let benchWorkerModule: BenchWorkerModule | undefined;
+
+/** bench/run (stack builders, task runner, report builder), first-use load. */
+function benchRun(): BenchRunModule {
+  return (benchRunModule ??= requireModule("../../bench/run") as BenchRunModule);
+}
+
+/** src/bench/worker (run lock, default tasks dir), first-use load. */
+function benchWorker(): BenchWorkerModule {
+  return (benchWorkerModule ??= requireModule("./worker") as BenchWorkerModule);
+}
 import {
   compareToBaseline,
   decideAlert,
@@ -180,7 +197,7 @@ export interface RunBenchToolDeps {
 
 /** Default tasks dir: <repo>/bench/tasks. Single source lives in worker.ts. */
 export function defaultTasksDir(): string {
-  return defaultBenchTasksDir();
+  return benchWorker().defaultBenchTasksDir();
 }
 
 /**
@@ -188,7 +205,7 @@ export function defaultTasksDir(): string {
  * with the runner's refuse-when-unconfigured semantics.
  */
 export function defaultLiveStackBuilder(dbPath: string): () => BenchStack {
-  return () => buildLiveStack(dbPath).stack;
+  return () => benchRun().buildLiveStack(dbPath).stack;
 }
 
 async function defaultExecuteSuite(
@@ -205,14 +222,40 @@ async function defaultExecuteSuite(
   }
   const results: TaskResult[] = [];
   for (const task of tasks) {
-    results.push(await runTask(stack, task, runId));
+    results.push(await benchRun().runTask(stack, task, runId));
   }
-  return buildReport(results, {
+  return benchRun().buildReport(results, {
     mode,
     provider: stack.providerName,
     model: stack.model,
   });
 }
+
+export const runBenchManifest: ToolManifest = defineManifest({
+  id: "run_bench",
+  version: "1.0.0",
+  title: "Run Benchmark",
+  purpose: "run benchmark suite",
+  useWhen: "quality check",
+  doNotUseWhen:
+    "Not for chatting or single answers; live mode needs a configured provider or it skips loudly.",
+  confusableWith: [
+    {
+      tool: "usage_report",
+      difference: "usage_report shows past usage stats; run_bench executes scored test tasks.",
+    },
+    {
+      tool: "delegate",
+      difference: "delegate hands one task to a sub-agent; run_bench runs the whole scored suite.",
+    },
+  ],
+  latencyTier: "minutes",
+  description:
+    "Run the benchmark suite offline (fake provider) or live (owner's real provider), record the run in history and alert the owner on regression. Owner-only.",
+  outputSummary: "Run status, pass/fail counts, average score and whether a regression alert fired.",
+  category: "bench",
+  costTier: "cheap",
+});
 
 export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, RunBenchOutput> {
   const tasksDir = deps.tasksDir ?? defaultTasksDir();
@@ -220,6 +263,7 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
 
   return {
     name: "run_bench",
+    manifest: runBenchManifest,
     description:
       "اجرای بنچ‌مارک بابی (آفلاین یا زنده)، ذخیرهٔ نتیجه در تاریخچه و هشدار افت کیفیت به مالک. زمان‌بندی‌شده: آفلاین همیشه، زنده فقط وقتی ارائه‌دهنده پیکربندی شده باشد (فقط مالک).",
     enabled: true,
@@ -279,7 +323,7 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
       // background worker. A manual run while the worker is busy fails LOUDLY
       // instead of interleaving the task-mock state — a wrong silent score
       // is worse than a clear "busy".
-      if (!tryAcquireBenchRunLock()) {
+      if (!benchWorker().tryAcquireBenchRunLock()) {
         throw new ToolError(
           "overloaded",
           "یک اجرای بنچ‌مارک دیگر (پس‌زمینه) در حال انجام است؛ کمی بعد تلاش کنید یا با «/bench cancel» لغوش کنید.",
@@ -288,7 +332,7 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
       try {
         return await runSynchronous(deps, mode, taskIds, tasksDir, now);
       } finally {
-        releaseBenchRunLock();
+        benchWorker().releaseBenchRunLock();
       }
     },
   };
@@ -370,10 +414,10 @@ async function runSynchronous(
       };
     }
   } else {
-    stack = buildOfflineStack();
+    stack = benchRun().buildOfflineStack();
   }
 
-  const runId = stampName();
+  const runId = benchRun().stampName();
   const executeSuite =
     deps.executeSuite ??
     ((stack: BenchStack, execRunId: string, execTaskIds?: string[]) =>

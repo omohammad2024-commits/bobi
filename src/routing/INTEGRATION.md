@@ -34,11 +34,13 @@ const hints = detectIntents(userText, getPluginManifests());
 Then:
 
 1. **Strong intent (`hasStrongIntent(hints)`, any confidence ≥ 0.9)**
-   — narrow the tool specs passed to the model to the hinted tools
-   PLUS the always-on core tools (memory recall, commands). A bare
-   YouTube link should not ship a 35-tool catalog in the prompt.
-   The Executor still enforces permissions independently; narrowing
-   is an ergonomics/latency optimization, never a security boundary.
+   — do NOT narrow. Order the hinted tools' specs first in the full
+   catalog passed to the model and attach the note with the
+   pre-extracted args. The full catalog is always passed: no tool is
+   ever hidden by the router, so a misfired hint is always
+   recoverable in-turn. The Executor still enforces permissions
+   independently; ordering is an ergonomics optimization, never a
+   security boundary.
 
 2. **Weak hints only (0.7-0.89)** — do NOT narrow. Pass the hints as a
    catalog ORDER preference: hinted tools' specs first, so the model
@@ -55,9 +57,11 @@ Then:
    fast-lane for `commands` (static catalog) if one is introduced.
 
 5. **Permissions and visibility still apply.** A hint for a tool the
-   actor may not run (owner-only, disabled, filtered toolset) must be
-   dropped before narrowing — reuse `ToolService.can()` /
+   actor may not run (owner-only, disabled, filtered toolset) is
+   dropped from the ordering and the note — reuse `ToolService.can()` /
    `toolSpecsFor()` as the filter, exactly like `tool_search` does.
+   The specs themselves are never filtered by the router: whatever
+   specs the consumer was given are passed on in full, only reordered.
 
 ## Kill switch
 

@@ -954,21 +954,30 @@ export class ConversationEngine {
     // describes exactly what THIS run may do — the same set the loop passes as
     // `tools`, so the prompt can never advertise something unavailable.
     //
-    // Intent routing (core upgrade): the deterministic router narrows a
-    // strong-intent turn (a bare video link) to the hinted tools + the
-    // always-on core set, or orders hinted tools first on weak hints.
+    // Intent routing (core upgrade): the deterministic router is
+    // advisory only — it reorders hinted tools first and adds a note,
+    // but never removes a tool from the catalog.
     // BOBI_INTENT_ROUTER=0 leaves the catalog untouched (see route_specs).
     const routed = applyIntentRouting(
       this.tools.toolSpecsFor(actor),
       userText,
       this.tools.pluginCatalog,
     );
-    const specs = routed.specs.map((s) => ({
-      name: s.name,
-      description: s.description,
-      enabled: true,
-      requires: [] as readonly string[],
-    }));
+    const cardByName = new Map(
+      this.tools.pluginCatalog.map((m) => [m.id, m] as const),
+    );
+    const specs = routed.specs.map((s) => {
+      const card = cardByName.get(s.name);
+      return {
+        name: s.name,
+        description: s.description,
+        enabled: true,
+        requires: [] as readonly string[],
+        ...(card !== undefined
+          ? { purpose: card.purpose, useWhen: card.useWhen }
+          : {}),
+      };
+    });
 
     const memoryCount =
       this.memoryCount !== undefined && actor.userId !== "unknown"

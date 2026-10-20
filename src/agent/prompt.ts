@@ -19,12 +19,12 @@
  * arrive the same way via `contextFiles` — a prebuilt block the caller
  * snapshots once per turn, pasted after the skills block.
  *
- * Prompt diet (perf): the request's `tools` field already carries every
- * visible tool's name, description, and full input schema, so the prompt text
- * does NOT repeat all of that. Only CORE_TOOLS get a name + one-line
- * description inline; every other visible tool is named once, and its full
- * definition is one `tool_search` call away. Nothing is withheld — the model
- * can still call any visible tool by name.
+ * Tool desk (platform Phase 1): the prompt carries the compact FULL
+ * catalog — every permitted tool gets one line from its desk card
+ * (purpose — useWhen; see toolBlock). The request's `tools` field still
+ * carries every visible tool's full input schema, so the desk lines stay
+ * telegraphic, but nothing is hidden and no tool is left as an anonymous
+ * count: a tool the actor may not use is never in the list.
  */
 import type { ToolDescriptor } from "../tools/service";
 import type { Lang } from "../i18n/types";
@@ -150,17 +150,19 @@ function languageBlock(_lang: Lang | undefined): string {
 }
 
 /**
- * Personality: natural, warm, witty-when-apt — tone only.
+ * Personality: Michael default — cold, dry, heavy, ultra-terse (owner's order).
  *
- * Kept deliberately compact (prompt diet, ≤180 tokens): it is tone and
- * length only — it never touches identity, access, or language rules, which
- * are all stated above it. The owner block ("Greet him like family") stays
- * authoritative for Mohammad; this line makes the warmth natural rather
- * than robotic.
+ * Kept compact (prompt diet, ≤280 tokens — raised from 180 by the owner's
+ * persona order): it is tone and length only — it never touches identity,
+ * access, or language rules, which are all stated above it. The owner block
+ * ("Greet him like family") stays authoritative for Mohammad; this block
+ * gives him the same voice, familiar — insider, family, never a stranger.
  */
 const PERSONALITY = [
-  "Personality: text like a real person, not a bot. Witty when the vibe invites it; deadpan ok, never forced. To Mohammad, your creator: warm and familiar like a sharp friend — never cold.",
-  "Length: match the user's energy — short in, short out. No fluff, no sycophancy. React, then answer; contractions; no \"Certainly!\", no \"I'd be happy to\". Emoji: max one, when it lands.",
+  "Personality: cold, dry, heavy, ultra-terse, precise, anti-cliché. Short imperative sentences. Zero service-politeness, no stock phrases.",
+  "Edge: destructive — tear down nonsense, roast bad ideas. Playful, never genuinely hostile, never insulting toward users. With Mohammad: same voice, but familiar — insider, family, never a stranger.",
+  "Length: shortest natural answer — often a few words, one line. Greetings/small talk: dry minimum + get-to-it nudge: سلام → «سلام. بنال. کارتو بگو.». No padding, no recap, no \"here's what I did\" narration unless asked. Expand only for results, asked-for explanations, or long-form on explicit ask.",
+  "No sycophancy. Contractions; no \"Certainly!\", no \"I'd be happy to\". Emoji: max one, when it lands.",
   "Persian: محاوره‌ای خودمونی only: می‌خوام، می‌تونم، بده، بگو، خب، دیگه; short lines, fragments ok. Never bookish: no می‌باشد/همچنین/لذا/در صورت تمایل. بد: «همچنین ازش استفاده می‌کنم»؛ خوب: «بفرست، می‌گیرمش».",
   "Long (8+ lines): markdown blockquotes — '> ' at START of every line, intro/outro stay plain, e.g. > detail line one (collapses the quote).",
 ].join("\n");
@@ -179,22 +181,15 @@ const ANSWER_RULE =
   "When you have enough information, answer directly without calling tools.";
 
 /**
- * Core tools: the only ones spelled out (name + one-line description) in the
- * system prompt on every turn.
+ * Core tools: the most-used vocabulary — tools that answer the most
+ * common turns (math/time, lookup, memory, the discovery tool itself,
+ * and skill lookup), where benchmark and production traffic concentrate.
  *
- * Everything else the actor may use is still named in the prompt (one compact
- * line) and fully described in the request's `tools` field, plus discoverable
- * with `tool_search` — so the diet never withholds capability, it only stops
- * paying full-description rent for tools the turn almost certainly needs.
- *
- * Membership rule: tools that answer the most common turns — math/time,
- * lookup, memory, the discovery tool itself, and skill lookup. Benchmark and
- * production traffic both concentrate here; the long tail (goals, tasks,
- * curator, media, …) is one tool_search away.
- *
- * Exported so the agent loop can apply the SAME partition to the request's
- * `tools` field later (full schemas for core only, on-demand for the rest)
- * without the two drifting apart.
+ * This set is NO longer a visibility partition: since the Phase-1 tool
+ * desk, every permitted tool is listed in the prompt with its desk
+ * card, core or not. The set remains exported for callers that want the
+ * most-used vocabulary (e.g. prioritisation), not to decide what the
+ * model may see.
  */
 export const CORE_TOOLS: ReadonlySet<string> = new Set([
   "calculator",
@@ -210,22 +205,18 @@ export const CORE_TOOLS: ReadonlySet<string> = new Set([
   "skills",
 ]);
 
-/** True when the tool earns a full name + description line in the prompt. */
+/** True when the tool is in the most-used core vocabulary (see CORE_TOOLS). */
 export function isCoreTool(name: string): boolean {
   return CORE_TOOLS.has(name);
 }
 
 /**
- * Tool-discovery threshold (prompt diet).
+ * Tool-discovery threshold — legacy bound on the CORE_TOOLS set size.
  *
- * At most this many tools get a full name + description line in the system
- * prompt. It caps the CORE_TOOLS listing above so a future core-set growth
- * cannot silently re-inflate the prompt.
- *
- * (Supersedes the old "hint when > 20 tools" semantic: the old prompt listed
- * every tool in full and only appended a hint past 20. Now full inline
- * definitions are the exception — core only — and every remaining visible
- * tool is named once with its definition one tool_search away.)
+ * Kept (value and export) because other tests pin it, but it no longer
+ * caps the prompt listing: since the Phase-1 tool desk, every permitted
+ * tool is listed, however many there are. It now only bounds how large
+ * the most-used core vocabulary above should grow.
  */
 export const TOOL_DISCOVERY_THRESHOLD = 12;
 
@@ -318,41 +309,29 @@ export function buildSystemPrompt(ctx: PromptContext): string {
 }
 
 /**
- * The tool list (diet version).
+ * The tool desk (platform Phase 1) — the compact FULL catalog.
  *
- * Only CORE_TOOLS get a name + one-line description here: the full argument
- * schema already travels in the request's `tools` field, so repeating it in
- * the prompt would spend tokens twice for no benefit — and repeating even
- * the one-liners for all ~35 tools was the prompt's single biggest cost.
- *
- * The remaining visible tools are counted, not listed: their full
- * definitions ride along in the request's `tools` field anyway, and the
- * discovery line points at `tool_search` for descriptions and inputs on
- * demand. The listing is always intersected with the actor's visible set
- * first: a tool the actor may not call is never advertised — the prompt can
- * never promise what the executor would refuse.
+ * Every permitted tool gets one line, rendered from its desk card
+ * (purpose — useWhen) when the descriptor carries the card fields, or
+ * from its description as a fallback. The cards are the single source
+ * for these lines; the request's `tools` field still carries the full
+ * schemas, so the desk lines stay telegraphic without hiding anything.
+ * There is no anonymous count and no discovery pointer: nothing is
+ * hidden — a tool the actor may not use is never in the list, as before,
+ * so the prompt can never promise what the executor would refuse.
  */
 function toolBlock(tools: readonly ToolDescriptor[]): string | undefined {
   if (tools.length === 0) {
     return "No tools available; answer from your own knowledge.";
   }
-  const inline = tools
-    .filter((t) => isCoreTool(t.name))
-    .slice(0, TOOL_DISCOVERY_THRESHOLD);
-  const inlineNames = new Set(inline.map((t) => t.name));
-  const restCount = tools.length - inline.length;
-
   const lines = [
-    `Tools (${tools.length}). Most-used:`,
-    ...inline.map((t) => `- ${t.name}: ${t.description}`),
+    `Tool desk (${tools.length}) — every tool you may use; each line: what — when to pick it up:`,
+    ...tools.map((t) =>
+      t.purpose !== undefined && t.useWhen !== undefined
+        ? `- ${t.name}: ${t.purpose} — ${t.useWhen}`
+        : `- ${t.name}: ${t.description}`,
+    ),
   ];
-  if (restCount > 0) {
-    lines.push(
-      inlineNames.has("tool_search")
-        ? `Plus ${restCount} more (full definitions attached to this request). Need one? Call tool_search with a keyword for its description and inputs, then call it by name.`
-        : `Plus ${restCount} more — full definitions for all ${tools.length} tools are attached to this request.`,
-    );
-  }
   return lines.join("\n");
 }
 

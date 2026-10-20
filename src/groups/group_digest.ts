@@ -50,6 +50,8 @@
  *    retention).
  */
 import { ToolError } from "../tools/errors";
+import { defineManifest } from "../tools/manifest";
+import type { ToolManifest } from "../tools/manifest";
 import type { Tool, ToolContext } from "../tools/types";
 import {
   buildSummaryText,
@@ -182,9 +184,36 @@ export function buildGroupDigestText(
   return `${header}\n${buildSummaryText(messages, lang)}`;
 }
 
+export const groupDigestManifest: ToolManifest = defineManifest({
+  id: "group_digest",
+  version: "1.0.0",
+  title: "Group Digest",
+  purpose: "daily group recap",
+  useWhen: "group digest due",
+  doNotUseWhen:
+    "Never posts into the group; for the owner's own daily digest use build_digest instead.",
+  confusableWith: [
+    {
+      tool: "build_digest",
+      difference: "build_digest is the owner's personal digest; group_digest summarizes one group.",
+    },
+    {
+      tool: "schedule_task",
+      difference: "schedule_task creates the schedule; group_digest is the action it runs.",
+    },
+  ],
+  latencyTier: "seconds",
+  description:
+    "Build one group's statistical digest (counts, top speakers, top words) and deliver it to the owner's DM only. Optional smart layer adds an LLM summary; owner-only.",
+  outputSummary: "Whether the digest was delivered and how many messages it spanned.",
+  category: "groups",
+  costTier: "cheap",
+});
+
 export function createGroupDigestTool(deps: GroupDigestToolDeps): Tool<GroupDigestInput, GroupDigestOutput> {
   return {
     name: GROUP_DIGEST_TOOL_NAME,
+    manifest: groupDigestManifest,
     description:
       "خلاصهٔ روزانهٔ آماری گروه را به مالک ارسال می‌کند (فقط مالک؛ بدون مدل زبانی، مگر خلاصهٔ هوشمند فعال باشد).",
     enabled: true,

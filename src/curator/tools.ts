@@ -39,6 +39,8 @@ import {
 } from "../memory/events";
 import { applyFactCandidate, factKindOfKey } from "../memory/contradictions";
 import type { FactCandidate } from "../memory/auto_extract";
+import { defineManifest } from "../tools/manifest";
+import type { ToolManifest } from "../tools/manifest";
 import type { Tool, ToolContext } from "../tools/types";
 
 export const CURATE_MEMORIES_PERMISSION = "tools:curate_memories";
@@ -80,10 +82,40 @@ export interface CurateMemoriesOutput {
   count: number;
 }
 
+export const curateMemoriesManifest: ToolManifest = defineManifest({
+  id: "curate_memories",
+  version: "1.0.0",
+  title: "Curate Memories",
+  purpose: "memory tidy plan",
+  useWhen: "tidy memory asked",
+  doNotUseWhen:
+    "Applying a proposal — that is curator_decide; storing one new fact — that is remember.",
+  confusableWith: [
+    {
+      tool: "curator_decide",
+      difference: "curate only proposes; decide applies or rejects a stored proposal.",
+    },
+    {
+      tool: "summarize_memories",
+      difference: "summarize archives old entries; curate flags duplicates, stale and overloaded ones.",
+    },
+    {
+      tool: "recall",
+      difference: "recall reads memories for the chat; curate reviews them for cleanup.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "Scan the owner's long-term memories and store cleanup proposals (merge duplicates, drop stale, split overloaded). Changes nothing itself; owner-only.",
+  outputSummary: "Stored proposals with ids, kinds and Persian summaries, plus the count.",
+  category: "memory",
+});
+
 export function createCurateMemoriesTool(deps: CuratorToolDeps): Tool<Record<string, never>, CurateMemoriesOutput> {
   const service = createCuratorService(deps);
   return {
     name: "curate_memories",
+    manifest: curateMemoriesManifest,
     description:
       'Review long-term memories and store improvement proposals (merge duplicates, remove stale entries, split overloaded ones). It changes nothing by itself; proposals are applied only via the curator_decide tool with owner approval (owner only).',
     enabled: true,
@@ -127,9 +159,35 @@ export interface CuratorDecideOutput {
   summaryFa: string;
 }
 
+export const curatorDecideManifest: ToolManifest = defineManifest({
+  id: "curator_decide",
+  version: "1.0.0",
+  title: "Curator Decide",
+  purpose: "decide on proposal",
+  useWhen: "owner decides",
+  doNotUseWhen:
+    "No proposal id yet — run curate_memories or summarize_memories first to create one.",
+  confusableWith: [
+    {
+      tool: "curate_memories",
+      difference: "curate creates proposals; decide is the only path that applies one.",
+    },
+    {
+      tool: "forget",
+      difference: "forget deletes one named memory directly; decide applies a reviewed proposal.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "Apply or reject one stored memory proposal by id. Approve writes the stored action to memory; reject just closes it. The only apply path; owner-only.",
+  outputSummary: "The proposal id, the decision, whether it was applied, and its summary.",
+  category: "memory",
+});
+
 export function createCuratorDecideTool(deps: CuratorToolDeps): Tool<CuratorDecideInput, CuratorDecideOutput> {
   return {
     name: "curator_decide",
+    manifest: curatorDecideManifest,
     description:
       'Decide on a memory-review proposal: "approve" applies the proposal to memory, "reject" just closes it. No proposal is applied without explicit approval (owner only).',
     enabled: true,
@@ -231,9 +289,35 @@ export interface SummarizeMemoriesOutput {
  * originals through the EXISTING curator flow — nothing is deleted without
  * the owner's explicit curator_decide approval. Owner-only.
  */
+export const summarizeMemoriesManifest: ToolManifest = defineManifest({
+  id: "summarize_memories",
+  version: "1.0.0",
+  title: "Summarize Memories",
+  purpose: "old memories merged",
+  useWhen: "consolidation due",
+  doNotUseWhen:
+    "Deleting originals happens only via curator_decide on the filed proposal; for duplicates use curate_memories.",
+  confusableWith: [
+    {
+      tool: "curate_memories",
+      difference: "curate flags duplicates/stale/split; summarize archives old entries into one.",
+    },
+    {
+      tool: "curator_decide",
+      difference: "summarize files the deletion proposal; decide approves or rejects it.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "Consolidate not-recently-updated memories into one archive entry and file deletion of the originals as a curator proposal. Nothing deleted without approval; owner-only.",
+  outputSummary: "Whether archived, the archive key and count, the deletion proposal id, and a summary.",
+  category: "memory",
+});
+
 export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<SummarizeMemoriesInput, SummarizeMemoriesOutput> {
   return {
     name: "summarize_memories",
+    manifest: summarizeMemoriesManifest,
     description:
       'Automatically archive old memories (owner only): summarizes not-recently-updated old memories into one "archive" entry and files deletion of the originals as a proposal — deletion only with owner approval in curator_decide. Default: older than 90 days.',
     enabled: true,
@@ -313,9 +397,39 @@ export interface NoteEventOutput {
  * one-off). The morning digest lists upcoming events and the event sweep
  * sends proactive reminders ahead of them. Owner-only.
  */
+export const noteEventManifest: ToolManifest = defineManifest({
+  id: "note_event",
+  version: "1.0.0",
+  title: "Note Event",
+  purpose: "log dated event",
+  useWhen: "birthday/due date",
+  doNotUseWhen:
+    "A one-off timed ping is a reminder (remind_at/remind_nl); a plain fact is remember.",
+  confusableWith: [
+    {
+      tool: "remind_at",
+      difference: "remind_at pings once at a set time; note_event tracks recurring dated events.",
+    },
+    {
+      tool: "remember",
+      difference: "remember stores free facts; note_event stores a Persian-calendar date.",
+    },
+    {
+      tool: "list_events",
+      difference: "note_event writes an event; list_events reads them back.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "Record a dated event (birthday, anniversary, monthly commitment, one-off) with a Persian date. Upcoming events surface in the morning digest; owner-only.",
+  outputSummary: "The event key, name, kind, Persian date label and a confirmation line.",
+  category: "memory",
+});
+
 export function createNoteEventTool(deps: CuratorToolDeps): Tool<NoteEventInput, NoteEventOutput> {
   return {
     name: "note_event",
+    manifest: noteEventManifest,
     description:
       "Record a dated event in memory (owner only): birthday, anniversary, monthly commitment or one-off event. Persian date like «۱۵ مرداد» or «۲۰ شهریور ۱۴۰۳»; upcoming events appear in the morning digest and are reminded ahead of time.",
     enabled: true,
@@ -400,9 +514,34 @@ export interface ListEventsOutput {
 }
 
 /** Phase-3: list the owner's dated events with days-until for each. Owner-only. */
+export const listEventsManifest: ToolManifest = defineManifest({
+  id: "list_events",
+  version: "1.0.0",
+  title: "List Events",
+  purpose: "events + countdown",
+  useWhen: "events asked",
+  doNotUseWhen: "Adding an event is note_event; listing timed pings is list_reminders.",
+  confusableWith: [
+    {
+      tool: "note_event",
+      difference: "list_events reads events; note_event records a new one.",
+    },
+    {
+      tool: "list_reminders",
+      difference: "list_reminders shows one-off timed pings; list_events shows dated events.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "List the owner's recorded dated events with the days until each next occurrence. Read-only; owner-only.",
+  outputSummary: "Events with key, name, kind, date label and days-until, plus the count.",
+  category: "memory",
+});
+
 export function createListEventsTool(deps: CuratorToolDeps): Tool<Record<string, never>, ListEventsOutput> {
   return {
     name: "list_events",
+    manifest: listEventsManifest,
     description: "List recorded dated events with days until the next occurrence (owner only).",
     enabled: true,
     ownerOnly: true,

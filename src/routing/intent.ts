@@ -4,8 +4,10 @@
  * Given the user's message and the plugin manifest catalog, it answers
  * "which tool(s) is this message almost certainly for?" in microseconds,
  * with zero model calls. The consumer (agent loop / prompt builder, see
- * INTEGRATION.md) uses the hints to narrow the tool catalog the model
- * sees: a bare YouTube link should not cost a full-catalog prompt.
+ * INTEGRATION.md) uses the hints only as advice: to reorder the tool
+ * catalog the model sees (hinted tools first) and to attach a note with
+ * pre-extracted args. The full catalog is always passed — hints never
+ * remove a tool from what the model sees.
  *
  * Layers, in order:
  *  1. URL detector — every http(s) URL in the text is tested against
