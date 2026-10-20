@@ -41,6 +41,17 @@ export interface ProbeResult {
   /** unix ms */
   checkedAt: number;
   /**
+   * HTTP status of the failure, when the adapter reported one. Additive —
+   * absent on success and on configuration failures (no request was sent).
+   * Mirrors the stored health record's `status` field.
+   */
+  status?: number;
+  /**
+   * Wall-clock ms the probe took, on provider-level probes (probe()).
+   * Mirrors the stored health record's `latencyMs` field.
+   */
+  latencyMs?: number;
+  /**
    * The gateway's circuit-breaker snapshot for this provider, when a
    * breaker source was injected (the constructor's trailing optional).
    * The probe never consults the breaker — its whole job is to test the
@@ -209,6 +220,8 @@ export class ProviderHealthService {
       ok: h.ok,
       checkedAt: h.checkedAt,
       ...(h.message !== undefined ? { message: h.message } : {}),
+      ...(h.status !== undefined ? { status: h.status } : {}),
+      ...(h.latencyMs !== undefined ? { latencyMs: h.latencyMs } : {}),
       ...this.circuitField(providerId),
       ...this.connectionField(providerId),
       ...this.quarantineField(providerId, this.defaultModelId(providerId)),
@@ -264,6 +277,18 @@ export class ProviderHealthService {
       return this.record(providerId, false, "Credential is not set.");
     }
 
+    // No model, no probe: sending a completion against an invented model
+    // id ("default") makes strict services 404/400 it, and the recorded
+    // health then blames the service for what is a configuration gap.
+    const modelId = this.defaultModelId(providerId);
+    if (modelId === undefined) {
+      return this.record(
+        providerId,
+        false,
+        "No model configured — discover or add a model first, then test.",
+      );
+    }
+
     const timeoutMs = opts.timeoutMs ?? this.defaultTimeoutMs;
 
     // The adapter owns the request timeout: it aborts at its own deadline and
@@ -272,13 +297,14 @@ export class ProviderHealthService {
     // of a timeout — hiding a slow service behind a wrong diagnosis. So the
     // health service supplies a signal it never fires.
     const neverAborted = new AbortController().signal;
+    const started = Date.now();
 
     try {
       const adapter = this.adapters.create(provider.adapter, {
         baseUrl: provider.baseUrl,
         apiKey,
-        // The probe needs a model id that exists; prefer the provider's default.
-        model: this.defaultModelId(providerId) ?? "probe",
+        // The probe needs a model id that exists: the provider's default.
+        model: modelId,
         // The owner may have granted this provider the local-target exception;
         // the probe must honor the same boundary as the runtime, or a local
         // provider would always report "unreachable" right after being allowed.
@@ -291,7 +317,7 @@ export class ProviderHealthService {
       // The completion test catches those cases.
       await adapter.complete({
         messages: [{ role: "user", content: "ping" }],
-        model: this.defaultModelId(providerId) ?? "default",
+        model: modelId,
         // A probe only needs ANY answer back; capping generation keeps it
         // fast (and cheap) instead of waiting for a full-length reply.
         maxTokens: 16,
@@ -299,9 +325,16 @@ export class ProviderHealthService {
         signal: neverAborted,
       });
 
-      return this.record(providerId, true, "Connection succeeded.");
+      return this.record(providerId, true, "Connection succeeded.", {
+        latencyMs: Date.now() - started,
+      });
     } catch (err) {
-      return this.record(providerId, false, probeMessage(err));
+      return this.record(providerId, false, probeMessage(err), {
+        latencyMs: Date.now() - started,
+        ...(err instanceof AiError && err.status !== undefined
+          ? { status: err.status }
+          : {}),
+      });
     }
   }
 
@@ -582,13 +615,20 @@ export class ProviderHealthService {
     return (models.find((m) => m.isDefault && m.enabled) ?? models.find((m) => m.enabled))?.modelId;
   }
 
-  private record(providerId: number, ok: boolean, message: string): ProbeResult {
+  private record(
+    providerId: number,
+    ok: boolean,
+    message: string,
+    extra: { status?: number; latencyMs?: number } = {},
+  ): ProbeResult {
     const checkedAt = Date.now();
-    this.storage.setProviderHealth({ providerId, ok, message });
+    this.storage.setProviderHealth({ providerId, ok, message, ...extra });
     return {
       ok,
       message,
       checkedAt,
+      ...(extra.status !== undefined ? { status: extra.status } : {}),
+      ...(extra.latencyMs !== undefined ? { latencyMs: extra.latencyMs } : {}),
       ...this.circuitField(providerId),
       ...this.connectionField(providerId),
       ...this.quarantineField(providerId, this.defaultModelId(providerId)),
@@ -682,27 +722,44 @@ function probeMessage(err: unknown): string {
     ) {
       return err.message;
     }
+    let base: string;
     switch (err.kind) {
       case "auth":
-        return "Key or address was not accepted.";
+        base = "Key or address was not accepted.";
+        break;
       case "quota":
         // 402 is balance exhaustion, not a rate limit — say so (a fixed
         // string keyed by the status number; the error's own message is
         // NOT surfaced for this kind).
-        return err.status === 402
-          ? "Provider balance or quota is exhausted (HTTP 402)."
-          : "Service rate limit is full.";
+        base =
+          err.status === 402
+            ? "Provider balance or quota is exhausted (HTTP 402)."
+            : "Service rate limit is full.";
+        break;
       case "timeout":
-        return "No response arrived in time.";
+        base = "No response arrived in time.";
+        break;
       case "aborted":
-        return "Probe was cancelled.";
+        base = "Probe was cancelled.";
+        break;
       case "network":
-        return "Could not connect.";
+        base = "Could not connect.";
+        break;
       case "invalid_response":
-        return "Service response was invalid.";
+        base = "Service response was invalid.";
+        break;
       default:
-        return "Probe failed.";
+        base = "Probe failed.";
+        break;
     }
+    // Preserve the HTTP status whenever the error carries one, phrased the
+    // way http_status.ts phrases it: a bare "Could not connect." cannot
+    // tell a 500 from a 503, and a bare "invalid" cannot tell a 404 (wrong
+    // address) from a 400 (bad request) — the number IS the diagnosis.
+    if (err.status !== undefined && !base.includes(`(HTTP ${err.status})`)) {
+      base = `${base.replace(/\.$/, "")} (HTTP ${err.status}).`;
+    }
+    return base;
   }
   return "Probe failed.";
 }

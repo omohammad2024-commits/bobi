@@ -420,6 +420,11 @@ describe("probe outcomes", () => {
         apiKey: "k",
       });
       if (!p.ok) throw new Error("create failed");
+      // A model is required: probe() now fails fast on a model-less
+      // provider (M2) before ever reaching the adapter under test.
+      const added = h.models.add({ providerId: p.data, modelId: "m1", label: "M1" });
+      if (!added.ok) throw new Error("model add failed");
+      h.models.setDefault(added.data);
       const res = await h.health.probe(p.data);
       expect(res.ok, kind).toBe(false);
       expect(res.message, kind).toBe(msg);
@@ -438,6 +443,11 @@ describe("probe outcomes", () => {
       apiKey: "k",
     });
     if (!p.ok) throw new Error("create failed");
+    // A model is required, or the probe stops at the no-model message (M2)
+    // instead of reaching the failing adapter.
+    const added = h.models.add({ providerId: p.data, modelId: "m1", label: "M1" });
+    if (!added.ok) throw new Error("model add failed");
+    h.models.setDefault(added.data);
     const c = fakeCallbackCtx();
     await h.ai.handleCallback(c.ctx, encode({ kind: "ai_test", providerId: p.data }));
     // Progress first, then the result lead on the provider screen.

@@ -289,7 +289,7 @@ describe("miniapp turn", () => {
 // -------------------------------------------------------------- providers ----
 
 describe("miniapp providers api", () => {
-  test("providers.presets returns the 8 presets plus custom/9Router templates", async () => {
+  test("providers.presets returns the 8 presets plus all adapter templates (incl. native gemini/anthropic)", async () => {
     const { deps } = makeDeps();
     const handler = createMiniAppHandler(deps);
     const { status, json } = await apiJson(handler, "providers.presets", {
@@ -301,6 +301,8 @@ describe("miniapp providers api", () => {
     expect(presets.map((p) => p["id"])).toContain("openrouter");
     const templates = json["templates"] as Record<string, unknown>[];
     expect(templates.map((t) => t["type"]).sort()).toEqual([
+      "anthropic",
+      "gemini",
       "nine_router",
       "openai_compatible",
     ]);

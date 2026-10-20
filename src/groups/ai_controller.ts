@@ -27,6 +27,10 @@ import { ModelService, ProviderService, type ProviderView } from "../ai/provider
 import type { RemoteModel } from "../ai/adapter";
 import { ADAPTER_TEMPLATES, providerPreset } from "../ai/adapter";
 import { setupFromPreset, parseSetupReply, setupPrompt, type SetupResult } from "../ai/setup";
+import {
+  checkProviderUrl,
+  type ProviderUrlGuardIssue,
+} from "../ai/provider_url_guard";
 import { isAdapterType } from "../ai/adapter";
 import type { Storage } from "../storage/storage";
 import { resolveLang } from "../i18n";
@@ -1924,6 +1928,15 @@ export class AiAdminController {
         return true;
       }
 
+      // Type ↔ URL mismatch (e.g. the native Gemini address under the
+      // OpenAI-compatible type) can never work — every request would 404.
+      // Refuse the save with the guard's fix instead of storing a dead row.
+      const urlIssue = checkProviderUrl(flow.adapter ?? "openai_compatible", baseUrl);
+      if (urlIssue !== null) {
+        await this.render(ctx, urlGuardRefusalText(urlIssue), backKeyboard(lang));
+        return true;
+      }
+
       const r = await this.admin.runAdmin(
         { actor, operation: "ai.add", permission: PERM_MANAGE },
         () => {
@@ -2105,6 +2118,25 @@ export class AiAdminController {
       }
       this.pending.delete(id);
 
+      // Same type ↔ URL guard as the create path, applied to the EFFECTIVE
+      // combination (a patch may change only the type or only the URL).
+      // Label/key-only edits skip it — a pre-existing mismatch is not made
+      // worse by renaming, and the owner must stay able to fix fields one
+      // at a time.
+      if (parsed.adapter !== undefined || parsed.baseUrl !== undefined) {
+        const current = this.providers.view(providerId);
+        if (current !== undefined) {
+          const urlIssue = checkProviderUrl(
+            parsed.adapter ?? current.adapter,
+            parsed.baseUrl ?? current.baseUrl,
+          );
+          if (urlIssue !== null) {
+            await this.render(ctx, urlGuardRefusalText(urlIssue), backKeyboard(lang));
+            return true;
+          }
+        }
+      }
+
       const r = await this.admin.runAdmin(
         {
           actor,
@@ -2240,6 +2272,17 @@ function parseModelSubmission(
   if (modelId === undefined || label === undefined) return undefined;
   if (modelId.length === 0 || label.length === 0) return undefined;
   return { modelId, label };
+}
+
+/**
+ * The panel text for a type ↔ URL guard refusal: the guard's own message
+ * (short, English, names the fix), plus the corrected address when the
+ * guard could name one unambiguously.
+ */
+function urlGuardRefusalText(issue: ProviderUrlGuardIssue): string {
+  return issue.suggestion !== undefined
+    ? `${issue.message}\n\nSuggested address: ${issue.suggestion}`
+    : issue.message;
 }
 
 /**

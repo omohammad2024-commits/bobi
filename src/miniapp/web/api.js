@@ -10,9 +10,12 @@
  *   turn                    { conversationId, text } -> { reply }
  *   providers.list          {} -> { providers: [{ id, label, adapterType, adapterLabel,
  *                               enabled, keyPresent, keyHint, modelCount, isActive,
- *                               activeModelId, lastProbe: { ok, atMs, latencyMs, message? } | null }] }
+ *                               baseUrl, activeModelId,
+ *                               lastProbe: { ok, atMs, latencyMs, message?, status? } | null }] }
  *   providers.presets       {} -> { presets: [{ id, label, baseUrl, suggestedModel?,
- *                               hasPlaceholder, requiredPlaceholder?, note? }], templates }
+ *                               hasPlaceholder, requiredPlaceholder?, note? }],
+ *                               templates: [{ type, label, suggestedBaseUrl, … }] (ALL
+ *                               adapter types, incl. gemini + anthropic) }
  *   providers.add           preset: { kind:"preset", preset, label?, baseUrl?, key? } -> { id, modelId?, autoSelected? }
  *                           custom: { kind:"custom", label, baseUrl, key?, model?|suggestedModel? }
  *                           9Router: { kind:"nine_router", label, baseUrl, key, model }
@@ -72,9 +75,16 @@
  *   moderation.get          { groupId } -> { groupId, config }
  *   moderation.set          { groupId, ...patch } -> { groupId, config }
  *
- * Success shape: { ok: true, ...data }. Failure shape:
- *   { ok: false, error: { code, message } } — or non-JSON / HTTP errors,
- *   which are normalized to { code: "http_<status>" | "network" | "timeout" }.
+ * Success shape: { ok: true, ...data }. Two different `ok: false` shapes:
+ *   - Transport/API failure: { ok: false, error: { code, message, suggestion? } }
+ *     (or error as a plain string) → apiCall throws an Error carrying the
+ *     REAL message, plus .code / .suggestion when present.
+ *   - Domain result (probe / model-test outcomes): { ok: false, message?,
+ *     status?, latencyMs?, ping?, real?, … } with NO `error` field → the
+ *     body is returned to the caller untouched; a failed probe is data,
+ *     not an exception.
+ *   Non-JSON / HTTP / network failures are normalized to a thrown
+ *   { code: "http_<status>" | "network" | "timeout" | "server", message }.
  */
 (function () {
   "use strict";
@@ -124,18 +134,34 @@
       body = null;
     }
 
-    if (!res.ok) {
-      // The backend returns { error: "<fa string>" } (a plain string); be
-      // liberal and accept an { code, message } object too.
-      const rawErr = body && body.error;
-      const err = typeof rawErr === "string" ? { message: rawErr } : rawErr || {};
-      throw { code: err.code || "http_" + res.status, message: err.message || "HTTP " + res.status };
-    }
-    if (body && body.ok === false) {
+    // Envelope rule: `ok === false` WITH an `error` field is a transport/API
+    // failure — throw an Error carrying the real message (never a synthetic
+    // "Server error" when the server actually said what went wrong).
+    if (body && body.ok === false && body.error !== undefined && body.error !== null) {
       const rawErr = body.error;
-      const err = typeof rawErr === "string" ? { message: rawErr } : rawErr || {};
-      throw { code: err.code || "server", message: err.message || "Server error" };
+      const errObj = typeof rawErr === "string" ? { message: rawErr } : rawErr || {};
+      const message =
+        errObj.message ??
+        (typeof rawErr === "string" ? rawErr : undefined) ??
+        body.message ??
+        "Server error";
+      const err = new Error(message);
+      err.code = errObj.code || (res.ok ? "server" : "http_" + res.status);
+      const suggestion = errObj.suggestion ?? body.suggestion;
+      if (suggestion !== undefined) err.suggestion = suggestion;
+      throw err;
     }
+    if (!res.ok) {
+      // Non-JSON / HTTP failure with no usable error envelope: synthesize.
+      const rawErr = body && body.error;
+      const errObj = typeof rawErr === "string" ? { message: rawErr } : rawErr || {};
+      const err = new Error(errObj.message || "HTTP " + res.status);
+      err.code = errObj.code || "http_" + res.status;
+      if (errObj.suggestion !== undefined) err.suggestion = errObj.suggestion;
+      throw err;
+    }
+    // `ok === false` with NO `error` field is a domain result (a failed
+    // probe / model test): hand it to the caller untouched.
     return body || {};
   }
 

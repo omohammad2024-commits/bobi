@@ -20,8 +20,10 @@ import { AdapterRegistry } from "../ai/adapter_registry";
 import {
   ADAPTER_TEMPLATES,
   PROVIDER_PRESETS,
+  isAdapterType,
   providerPreset,
 } from "../ai/adapter";
+import { checkProviderUrl } from "../ai/provider_url_guard";
 import { validateTarget } from "../ai/target";
 import { AiError } from "../ai/provider";
 import type { Storage } from "../storage/storage";
@@ -61,7 +63,15 @@ export interface ProviderApiDeps {
     | "isActive"
     | "enabledModels"
   >;
-  health: Pick<ProviderHealthService, "probe" | "probeModel">;
+  health: Pick<ProviderHealthService, "probe" | "probeModel"> & {
+    /**
+     * Optional: the real health service carries `last()` (with the
+     * gateway's circuit-breaker / model-quarantine snapshot attached).
+     * listProviders surfaces it when present; test fakes without it
+     * simply omit the additive card fields.
+     */
+    last?: ProviderHealthService["last"];
+  };
   /** Overridable in tests; defaults to the real registry. */
   adapters?: AdapterRegistry;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -69,11 +79,18 @@ export interface ProviderApiDeps {
 
 /** A client-facing API failure: Persian message + HTTP status. */
 export class ProviderApiError extends Error {
+  /** Machine error code, when the failure has one (e.g. the URL guard). */
+  readonly code?: string;
+  /** Corrected value the client can offer, when one is unambiguous. */
+  readonly suggestion?: string;
   constructor(
     readonly status: number,
     message: string,
+    extra?: { code?: string; suggestion?: string },
   ) {
     super(message);
+    if (extra?.code !== undefined) this.code = extra.code;
+    if (extra?.suggestion !== undefined) this.suggestion = extra.suggestion;
   }
 }
 
@@ -193,17 +210,66 @@ interface ProbeView {
   atMs: number;
   latencyMs: number | null;
   message?: string;
+  /** HTTP status of the failed probe, when the adapter reported one. */
+  status?: number;
 }
 
-function lastProbeView(view: ProviderView): ProbeView | null {
+function lastProbeView(
+  deps: ProviderApiDeps,
+  view: ProviderView,
+): ProbeView | null {
   if (view.lastTestOk === undefined || view.lastTestAt === undefined) return null;
+  // The health record persists status + real latency (the ProviderView
+  // does not carry them); read them from storage so a stored probe row
+  // shows why it failed and how long it took, not just ✓/✗ + time.
+  let health: ReturnType<Storage["getProviderHealth"]>;
+  try {
+    health = deps.storage.getProviderHealth(view.id);
+  } catch {
+    health = undefined;
+  }
   const out: ProbeView = {
     ok: view.lastTestOk,
     atMs: view.lastTestAt,
-    // The health store does not record latency; a fresh probe reports its own.
-    latencyMs: null,
+    latencyMs: health?.latencyMs ?? null,
   };
   if (view.lastTestMessage !== undefined) out.message = view.lastTestMessage;
+  if (health?.status !== undefined) out.status = health.status;
+  return out;
+}
+
+/**
+ * Compact circuit-breaker / model-quarantine card fields, read from the
+ * health service's `last()` snapshot (the production service is built
+ * with the gateway's shared breaker registry, so this needs no extra
+ * plumbing). Sparse: absent entirely when no source is injected or the
+ * breaker is closed and nothing is quarantined.
+ */
+function reliabilityView(
+  deps: ProviderApiDeps,
+  providerId: number,
+): Record<string, unknown> {
+  if (deps.health.last === undefined) return {};
+  let last: ReturnType<NonNullable<ProviderApiDeps["health"]["last"]>>;
+  try {
+    last = deps.health.last(providerId);
+  } catch {
+    return {};
+  }
+  if (last === undefined) return {};
+  const out: Record<string, unknown> = {};
+  if (last.circuit !== undefined) {
+    out["breaker"] = {
+      state: last.circuit.state,
+      open: last.circuit.state === "open",
+      consecutiveFailures: last.circuit.consecutiveFailures,
+      ...(last.circuit.nextRetryAt !== undefined
+        ? { nextRetryAt: last.circuit.nextRetryAt }
+        : {}),
+    };
+    out["breakerOpen"] = last.circuit.state === "open";
+  }
+  if (last.quarantined === true) out["quarantined"] = true;
   return out;
 }
 
@@ -214,13 +280,15 @@ function listProviders(deps: ProviderApiDeps): Record<string, unknown>[] {
     label: v.label,
     adapterType: v.adapter,
     adapterLabel: v.adapterLabel,
+    baseUrl: v.baseUrl,
     enabled: v.enabled,
     keyPresent: v.hasCredential,
     keyHint: keyHint(deps, v.id),
     modelCount: v.modelCount,
     isActive: v.isActive,
     activeModelId: v.isActive ? settings.activeModelId : null,
-    lastProbe: lastProbeView(v),
+    lastProbe: lastProbeView(deps, v),
+    ...reliabilityView(deps, v.id),
   }));
 }
 
@@ -235,12 +303,16 @@ function presetsView(): Record<string, unknown> {
       ...(p.requiredPlaceholder !== undefined ? { requiredPlaceholder: p.requiredPlaceholder } : {}),
       note: p.note,
     })),
-    templates: ADAPTER_TEMPLATES.filter(
-      (t) => t.type === "openai_compatible" || t.type === "nine_router",
-    ).map((t) => ({
+    // ALL adapter templates — native types (gemini, anthropic) included.
+    // Filtering them out is what made a native provider uncreatable from
+    // the miniapp (audit C2); each entry exposes its adapter type so the
+    // add form can lock the type to the template.
+    templates: ADAPTER_TEMPLATES.map((t) => ({
       type: t.type,
+      adapterType: t.type,
       label: t.label,
       suggestedBaseUrl: t.suggestedBaseUrl,
+      ...(t.suggestedModel !== undefined ? { suggestedModel: t.suggestedModel } : {}),
       notes: t.capabilities.notes,
     })),
   };
@@ -287,6 +359,67 @@ function validateProviderUrl(raw: unknown): string {
   }
 }
 
+/**
+ * The adapter type a payload explicitly asks for (`adapter`, `type`, or
+ * `template` — the add/discover forms have used all three spellings).
+ * Returns undefined when the payload names none; throws when it names
+ * one that is not a registered adapter type.
+ */
+function payloadAdapterType(params: Record<string, unknown>): string | undefined {
+  const raw =
+    asNonEmptyString(params["adapter"], 64) ??
+    asNonEmptyString(params["type"], 64) ??
+    asNonEmptyString(params["template"], 64);
+  if (raw === undefined) return undefined;
+  if (!isAdapterType(raw)) {
+    throw new ProviderApiError(400, "Invalid provider type.");
+  }
+  return raw;
+}
+
+/**
+ * Server-side type ↔ URL cross-check (audit C3): refuse to save a known
+ * vendor address under the wrong wire format. The rejection carries the
+ * guard's message with the corrected address appended, plus the stable
+ * code/suggestion on the error for clients that render them.
+ */
+function assertUrlMatchesType(adapterType: string, baseUrl: string): void {
+  const issue = checkProviderUrl(adapterType, baseUrl);
+  if (issue === null) return;
+  const message =
+    issue.suggestion !== undefined
+      ? `${issue.message} Suggested address: ${issue.suggestion}`
+      : issue.message;
+  throw new ProviderApiError(400, message, {
+    code: "provider_url_mismatch",
+    ...(issue.suggestion !== undefined ? { suggestion: issue.suggestion } : {}),
+  });
+}
+
+/**
+ * Surface a model-discovery failure honestly (audit H4): an adapter
+ * AiError keeps its message and HTTP status (appended when the message
+ * does not already name it) instead of collapsing into a generic 502
+ * sentence that makes a 401, a 404 and a dead network indistinguishable.
+ */
+function discoveryError(err: unknown): ProviderApiError {
+  if (err instanceof AiError) {
+    let message = err.message;
+    if (err.status !== undefined && !message.includes(String(err.status))) {
+      message = `${message} (HTTP ${err.status})`;
+    }
+    const status =
+      err.status !== undefined && err.status >= 400 && err.status < 600
+        ? err.status
+        : 502;
+    return new ProviderApiError(status, message);
+  }
+  return new ProviderApiError(
+    502,
+    "Model discovery failed; check the connection or address.",
+  );
+}
+
 function labelTaken(deps: ProviderApiDeps, label: string): boolean {
   const needle = label.trim().toLowerCase();
   return deps.storage
@@ -304,6 +437,9 @@ function addProvider(
   if (kind === "preset") {
     return addFromPreset(params, deps);
   }
+  if (kind === "template") {
+    return addFromTemplate(params, deps);
+  }
   if (kind === "custom" || kind === "nine_router") {
     return addCustom(params, deps, kind);
   }
@@ -317,6 +453,15 @@ function addFromPreset(
   const presetId = asNonEmptyString(params["preset"], 64);
   const preset = presetId !== undefined ? providerPreset(presetId) : undefined;
   if (!preset) {
+    // Not a service preset: the id may name an adapter template (the
+    // gallery lists both) — create it with the template's own type.
+    const template =
+      presetId !== undefined
+        ? ADAPTER_TEMPLATES.find((t) => t.type === presetId)
+        : undefined;
+    if (template !== undefined) {
+      return addFromTemplate(params, deps, template.type);
+    }
     throw new ProviderApiError(400, "Unknown service.");
   }
   // The owner may rename the provider; fall back to the preset label.
@@ -338,11 +483,15 @@ function addFromPreset(
     );
   }
   const baseUrl = validateProviderUrl(resolved);
+  // Service presets are OpenAI-compatible by construction; an explicit
+  // adapter type in the payload (the gallery locks one per entry) wins.
+  const adapter = payloadAdapterType(params) ?? "openai_compatible";
+  assertUrlMatchesType(adapter, baseUrl);
 
   const key = asNonEmptyString(params["key"], 1024);
   const created = deps.providerSvc.create({
     label,
-    adapter: "openai_compatible",
+    adapter,
     baseUrl,
     ...(key !== undefined ? { apiKey: key } : {}),
   });
@@ -362,6 +511,59 @@ function addFromPreset(
   }
   // Auto-select: when nothing valid is selected yet (fresh setup), the new
   // provider becomes active immediately — no separate "select" step.
+  const auto = autoSelectIfNone(deps);
+  if (auto !== undefined) out["autoSelected"] = auto;
+  return out;
+}
+
+/**
+ * Add from an adapter template (audit C2): the provider is created with
+ * the TEMPLATE's adapter type — this is the only route that can create a
+ * native gemini/anthropic provider — and the template's suggested base
+ * URL unless the form sent an edited one.
+ */
+function addFromTemplate(
+  params: Record<string, unknown>,
+  deps: ProviderApiDeps,
+  forcedType?: string,
+): Record<string, unknown> {
+  const type = forcedType ?? payloadAdapterType(params);
+  const template =
+    type !== undefined
+      ? ADAPTER_TEMPLATES.find((t) => t.type === type)
+      : undefined;
+  if (template === undefined) {
+    throw new ProviderApiError(400, "Unknown provider type.");
+  }
+  const label = asNonEmptyString(params["label"], 64) ?? template.label;
+  if (labelTaken(deps, label)) {
+    throw new ProviderApiError(400, "A provider with this name is already registered.");
+  }
+  const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
+  const baseUrl = validateProviderUrl(override ?? template.suggestedBaseUrl);
+  assertUrlMatchesType(template.type, baseUrl);
+
+  const key = asNonEmptyString(params["key"], 1024);
+  const created = deps.providerSvc.create({
+    label,
+    adapter: template.type,
+    baseUrl,
+    ...(key !== undefined ? { apiKey: key } : {}),
+  });
+  if (!created.ok) {
+    throw new ProviderApiError(400, created.message);
+  }
+  const providerId = created.data;
+  const out: Record<string, unknown> = { id: providerId };
+
+  const modelId =
+    asNonEmptyString(params["model"], 128) ??
+    asNonEmptyString(params["suggestedModel"], 128) ??
+    template.suggestedModel;
+  if (modelId !== undefined) {
+    const added = deps.modelSvc.add({ providerId, modelId, label: modelId });
+    if (added.ok) out["modelId"] = added.data;
+  }
   const auto = autoSelectIfNone(deps);
   if (auto !== undefined) out["autoSelected"] = auto;
   return out;
@@ -392,9 +594,18 @@ function addCustom(
     }
   }
 
+  // An explicit adapter type in the payload wins (audit C2); nine_router
+  // keeps its own type regardless, everything else defaults to
+  // openai_compatible as before.
+  const adapter =
+    kind === "nine_router"
+      ? "nine_router"
+      : (payloadAdapterType(params) ?? "openai_compatible");
+  assertUrlMatchesType(adapter, baseUrl);
+
   const created = deps.providerSvc.create({
     label,
-    adapter: kind === "nine_router" ? "nine_router" : "openai_compatible",
+    adapter,
     baseUrl,
     ...(key !== undefined ? { apiKey: key } : {}),
   });
@@ -422,7 +633,8 @@ function updateProvider(
 ): Record<string, unknown> {
   const id = asId(params["id"]);
   if (id === undefined) throw new ProviderApiError(400, "Invalid provider ID.");
-  if (!deps.providerSvc.view(id)) {
+  const existing = deps.providerSvc.view(id);
+  if (!existing) {
     throw new ProviderApiError(404, "Provider not found.");
   }
 
@@ -445,11 +657,18 @@ function updateProvider(
   }
   if (params["baseUrl"] !== undefined) {
     patch.baseUrl = validateProviderUrl(params["baseUrl"]);
+    // Type ↔ URL cross-check on change (audit C3): an edit must not be
+    // able to recreate the incident combo the add path now refuses.
+    if (patch.baseUrl !== existing.baseUrl) {
+      assertUrlMatchesType(existing.adapter, patch.baseUrl);
+    }
   }
   if (Object.keys(patch).length === 0) {
     throw new ProviderApiError(400, "No fields to change were given.");
   }
   const r = deps.providerSvc.update(id, patch);
+  // Service-layer refusals (e.g. the active-provider lock, audit L1)
+  // reach the client with their actionable message intact.
   if (!r.ok) throw new ProviderApiError(400, r.message);
   return { ok: true };
 }
@@ -687,8 +906,8 @@ async function discoverModels(
       timeoutMs: 15_000,
       signal: controller.signal,
     });
-  } catch {
-    throw new ProviderApiError(502, "Model discovery failed; check the connection or address.");
+  } catch (err) {
+    throw discoveryError(err);
   } finally {
     clearTimeout(timer);
   }
@@ -716,6 +935,10 @@ async function discoverDraftModels(
 ): Promise<Record<string, unknown>> {
   const kind = params["kind"];
   let baseUrl: string;
+  // Build the adapter for the type the form actually asked for (audit
+  // H4/C2) — a draft Gemini provider must be discovered through the
+  // native Gemini wire format, not a hardcoded openai_compatible one.
+  let adapterType = "openai_compatible";
   if (kind === "preset") {
     const presetId = asNonEmptyString(params["preset"], 64);
     const preset = presetId !== undefined ? providerPreset(presetId) : undefined;
@@ -725,21 +948,33 @@ async function discoverDraftModels(
     // The form may send a placeholder-resolved base URL (e.g. Cloudflare).
     const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
     baseUrl = validateProviderUrl(override ?? preset.baseUrl);
-  } else if (kind === "custom") {
-    baseUrl = validateProviderUrl(params["baseUrl"]);
+    adapterType = payloadAdapterType(params) ?? "openai_compatible";
+  } else if (kind === "custom" || kind === "template") {
+    adapterType = payloadAdapterType(params) ?? "openai_compatible";
+    const template =
+      kind === "template"
+        ? ADAPTER_TEMPLATES.find((t) => t.type === adapterType)
+        : undefined;
+    const override = asNonEmptyString(params["baseUrl"], MAX_URL_CHARS);
+    baseUrl = validateProviderUrl(
+      override ?? template?.suggestedBaseUrl ?? params["baseUrl"],
+    );
   } else {
     throw new ProviderApiError(400, "Invalid provider type for model discovery.");
   }
+  // Draft discovery is a pre-save check: run the type ↔ URL guard here
+  // too, so the incident combo is refused before a provider exists.
+  assertUrlMatchesType(adapterType, baseUrl);
 
   const apiKey = asNonEmptyString(params["key"], 1024);
   if (apiKey === undefined) {
     throw new ProviderApiError(400, "An API key is required to fetch models.");
   }
 
-  if (!adapters.describes("openai_compatible").listModels) {
+  if (!adapters.describes(adapterType).listModels) {
     throw new ProviderApiError(400, "This provider type does not support model discovery.");
   }
-  const adapter = adapters.create("openai_compatible", {
+  const adapter = adapters.create(adapterType, {
     baseUrl,
     apiKey,
     model: "discover",
@@ -757,11 +992,8 @@ async function discoverDraftModels(
       timeoutMs: 15_000,
       signal: controller.signal,
     });
-  } catch {
-    throw new ProviderApiError(
-      502,
-      "Model discovery failed; check the key or address.",
-    );
+  } catch (err) {
+    throw discoveryError(err);
   } finally {
     clearTimeout(timer);
   }

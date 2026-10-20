@@ -218,6 +218,12 @@ describe("local-target exception threading", () => {
       });
       const id = (created as { ok: true; data: number }).data;
       if (allowLocal) providerSvc.setAllowLocal(id, true);
+      // probe() fails fast without a model (M2); give each provider one so
+      // the probe reaches adapter creation, which is what this test records.
+      const modelSvc = new ModelService(storage);
+      const m = modelSvc.add({ providerId: id, modelId: "m1", label: "M1" });
+      if (!m.ok) throw new Error("model add failed");
+      modelSvc.setDefault(m.data);
       return id;
     };
 

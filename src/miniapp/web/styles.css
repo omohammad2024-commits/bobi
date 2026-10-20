@@ -2512,3 +2512,76 @@ div:has(> .mx-table) {
     animation: none !important;
   }
 }
+
+/* ---------- Providers (Phase 2, provider-scoped only) ---------- */
+
+.prov-url,
+.prov-model {
+  font-size: var(--fs-micro);
+  color: var(--hint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+  max-width: 100%;
+}
+
+.prov-url-inline {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 62%;
+}
+
+.prov-slug {
+  opacity: 0.75;
+  font-size: var(--fs-micro);
+}
+
+.prov-probe-msg {
+  margin-top: 8px;
+  font-size: var(--fs-caption);
+  color: var(--danger);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.prov-badges {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.prov-badge {
+  flex: 0 0 auto;
+}
+
+.prov-type-sub {
+  white-space: normal;
+}
+
+.prov-type-locked {
+  font-weight: 600;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-2);
+}
+
+.prov-add-result {
+  margin-top: 12px;
+}
+
+.prov-check-line {
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+  margin-top: 6px;
+  word-break: break-word;
+}
+
+.prov-set-active {
+  margin-top: 12px;
+  min-height: 50px;
+  font-size: 15px;
+}

@@ -90,12 +90,29 @@
       "prov.actionsTitle": "Actions",
       "prov.keyTitle": "API key",
       "prov.dangerTitle": "Delete",
-      "prov.presetNote": "Pick a service — just a name and key.",
+      "prov.presetNote": "Pick a service — the type is locked to the right wire format, the address is prefilled, then just add the key.",
+      "prov.baseUrl": "Base URL",
+      "prov.typeLabel": "Type",
+      "prov.activeModel": "Active model",
+      "prov.customEndpoint": "Custom endpoint",
+      "prov.customTypeNote": "Type: OpenAI-compatible (openai_compatible). Native Gemini or Anthropic addresses do not work here — use their presets above instead.",
+      "prov.templateFormNote": "Adapter type is locked by this preset; the address is prefilled and can be adjusted before saving.",
+      "prov.activeLocked": "This provider is active — its base URL and type are locked. Activate another provider first to change them.",
+      "prov.typeChangeNote": "Type cannot be changed on an existing provider. To switch type, delete this provider and add it again with the correct preset.",
+      "prov.autoChecking": "Saved. Discovering models, then testing the connection…",
+      "prov.addResultTitle": "Setup check",
+      "prov.discoveredN": "Discovered {n} models",
+      "prov.importedN": "Imported {n} models",
+      "prov.discoverFailed": "Model discovery failed",
+      "prov.viewProvider": "View provider",
+      "prov.breakerOpen": "Circuit open",
+      "prov.quarantined": "Quarantined",
+      "prov.httpStatus": "HTTP {n}",
     });
 
   // Fallback presets if providers.presets is unreachable.
   const FALLBACK_PRESETS = [
-    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", suggestedModel: "anthropic/claude-haiku-4.5", hasPlaceholder: false },
+    { id: "openrouter", label: "OpenRouter", baseUrl: "https://openrouter.ai/api/v1", suggestedModel: "anthropic/claude-haiku-5.5", hasPlaceholder: false },
     { id: "deepseek", label: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", suggestedModel: "deepseek-chat", hasPlaceholder: false },
     { id: "groq", label: "Groq", baseUrl: "https://api.groq.com/openai/v1", suggestedModel: "llama-3.3-70b-versatile", hasPlaceholder: false },
     { id: "mistral", label: "Mistral", baseUrl: "https://api.mistral.ai/v1", suggestedModel: "mistral-large-latest", hasPlaceholder: false },
@@ -105,8 +122,78 @@
     { id: "cloudflare", label: "Cloudflare Workers AI", baseUrl: "https://api.cloudflare.com/client/v4/accounts/{ACCOUNT_ID}/ai/v1", suggestedModel: "@cf/meta/llama-3.1-8b-instruct", hasPlaceholder: true, requiredPlaceholder: "ACCOUNT_ID", note: "The URL contains your account ID; replace {ACCOUNT_ID} with it." },
   ];
 
+  // Fallback adapter templates (mirrors ADAPTER_TEMPLATES in src/ai/adapter.ts)
+  // for when providers.presets is unreachable. `isTemplate` marks entries the
+  // presets list does not carry; saving one sends its locked adapter type.
+  const FALLBACK_TEMPLATES = [
+    { id: "gemini", type: "gemini", label: "Google Gemini", baseUrl: "https://generativelanguage.googleapis.com/v1beta", suggestedBaseUrl: "https://generativelanguage.googleapis.com/v1beta", isTemplate: true },
+    { id: "anthropic", type: "anthropic", label: "Anthropic", baseUrl: "https://api.anthropic.com/v1", suggestedBaseUrl: "https://api.anthropic.com/v1", isTemplate: true },
+  ];
+
   function urlOk(u) {
     return /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(String(u || "").trim());
+  }
+
+  function adapterLabelFor(type) {
+    if (type === "gemini") return "Google Gemini";
+    if (type === "anthropic") return "Anthropic";
+    if (type === "nine_router") return "9Router";
+    if (type === "openai_compatible") return "OpenAI-compatible";
+    return type || "";
+  }
+
+  // Client-side mirror of the server type↔URL guard: catches the incident
+  // combination (native Gemini URL under OpenAI-compatible, and friends)
+  // BEFORE save. Returns { message, correctedUrl? } or null.
+  function mismatchFor(url, adapterType) {
+    const raw = String(url || "").trim();
+    if (!raw || !adapterType) return null;
+    let host = "", path = "";
+    try {
+      const u = new URL(raw);
+      host = u.hostname.toLowerCase();
+      path = u.pathname || "";
+    } catch (e) {
+      return null; // urlOk / the server own malformed-URL errors
+    }
+    const hasOpenAiSeg = /(^|\/)openai(\/|$)/.test(path);
+    if (host === "generativelanguage.googleapis.com") {
+      if (adapterType === "openai_compatible" && !hasOpenAiSeg) {
+        const corrected = raw.replace(/\/+$/, "") + "/openai/";
+        return {
+          message:
+            "This is the native Gemini address, but the type here is OpenAI-compatible — the request would go to a path that does not exist. " +
+            "Fix: use " + corrected + " with this type, or go back and pick the Google Gemini preset (type gemini) to keep this URL.",
+          correctedUrl: corrected,
+        };
+      }
+      if (adapterType === "gemini" && hasOpenAiSeg) {
+        const corrected = raw.replace(/\/openai(?=\/|$)/, "");
+        return {
+          message:
+            "This URL has the /openai segment, but the type here is native Gemini (gemini) — that segment only exists on the OpenAI-compatible surface. " +
+            "Fix: use " + corrected + " with this type, or pick an OpenAI-compatible preset to keep this URL.",
+          correctedUrl: corrected,
+        };
+      }
+    }
+    if (host === "api.anthropic.com" && adapterType === "openai_compatible") {
+      return {
+        message:
+          "api.anthropic.com is the native Anthropic address — it does not speak the OpenAI format, and the type here is OpenAI-compatible. " +
+          "Fix: go back and pick the Anthropic preset (type anthropic) for this address.",
+      };
+    }
+    return null;
+  }
+
+  // Render a thrown API error inline: real message + suggestion when present.
+  function showServerError(errEl, e) {
+    if (!errEl) return;
+    const msg = (e && (e.message || e.code)) || "Server error";
+    const sugg = e && e.suggestion ? " " + e.suggestion : "";
+    errEl.textContent = msg + sugg;
+    errEl.hidden = false;
   }
 
   function render(el, ctx) {
@@ -135,7 +222,56 @@
       const mark = lp.ok ? "✓" : "✗";
       let s = mark + " " + fmtAgo(lp.atMs);
       if (lp.latencyMs !== undefined && lp.latencyMs !== null) s += " · " + num(lp.latencyMs) + " " + ctx.t("prov.ms");
+      if (lp.status !== undefined && lp.status !== null) s += " · " + fmt("prov.httpStatus", lp.status);
+      // M3: a failed probe's stored reason is part of the line, not hidden.
+      if (!lp.ok && lp.message) s += " · " + lp.message;
       return s;
+    }
+    function truncUrl(u) {
+      const s = String(u || "");
+      return s.length > 52 ? s.slice(0, 49) + "…" : s;
+    }
+    function typeLine(p) {
+      const slug = p.adapterType || "";
+      const label = p.adapterLabel || adapterLabelFor(slug);
+      if (!label && !slug) return "";
+      return label + (slug ? " · " + slug : "");
+    }
+    function activeModelOf(p) {
+      return p.activeModelId || p.defaultModelId || p.defaultModel || "";
+    }
+    // Breaker/quarantine badges — defensive: render only when the API item
+    // actually carries such a field (older payloads simply omit them).
+    function healthBadges(p) {
+      let h = "";
+      const breaker = p.breakerOpen || p.circuitOpen || (p.breaker && (p.breaker.open || p.breaker.state === "open")) || p.circuitBreaker === "open";
+      const quar = p.quarantined || p.quarantine || (p.modelQuarantine && p.modelQuarantine.active);
+      if (breaker) h += '<span class="badge badge-warn prov-badge">' + ctx.esc(ctx.t("prov.breakerOpen")) + "</span>";
+      if (quar) h += '<span class="badge badge-danger prov-badge">' + ctx.esc(ctx.t("prov.quarantined")) + "</span>";
+      return h;
+    }
+    // Live two-stage breakdown (Ping / Real) for probe + model-test results.
+    function stageBreakdown(r) {
+      if (!r || !r.ping) return "";
+      const ms = function (v) {
+        return v !== undefined && v !== null ? num(v) + " " + ctx.t("prov.ms") : "";
+      };
+      const pingPart = "Ping " + (r.ping.ok ? "✅ " + ms(r.ping.latencyMs) : "❌ " + (r.ping.error || r.ping.message || ""));
+      let realPart = "";
+      if (r.real) {
+        realPart = r.real.ok
+          ? "Real ✅ " + ms(r.real.latencyMs)
+          : "Real ⚠️ " + (r.real.detail === "empty response" ? "empty" : r.real.error || r.real.message || "failed");
+      }
+      return [pingPart, realPart, r.quarantined ? "⛔ " + ctx.t("prov.quarantined") : ""].filter(Boolean).join(" · ");
+    }
+    function probeLineText(r) {
+      const base = (r.ok ? ctx.t("prov.probeOkLine") : ctx.t("prov.probeFailLine")) +
+        (r.latencyMs !== undefined && r.latencyMs !== null ? " · " + num(r.latencyMs) + " " + ctx.t("prov.ms") : "") +
+        (r.status !== undefined && r.status !== null ? " · " + fmt("prov.httpStatus", r.status) : "") +
+        (r.message ? " · " + r.message : "");
+      const stages = stageBreakdown(r);
+      return stages ? base + " — " + stages : base;
     }
     function statusDot(p) {
       const lp = p.lastProbe;
@@ -246,13 +382,17 @@
           ? '<span class="badge badge-success" dir="ltr">' + ctx.icon("key") + "••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span>"
           : '<span class="badge badge-danger">' + ctx.esc(ctx.t("prov.noKey")) + "</span>";
         const actBadge = p.isActive ? activeBadge() : "";
+        const am = activeModelOf(p);
         b.innerHTML =
           provTile(p.label || p.adapterLabel) +
           '<div class="list-main"><div class="list-title">' + statusDot(p) + ctx.esc(p.label || "#" + p.id) + "</div>" +
           '<div class="list-sub">' +
-          ctx.esc(p.adapterLabel || "") + " · " + fmt("prov.modelCount", p.modelCount || 0) + " · " + ctx.esc(probeText(p)) +
-          "</div></div>" +
-          '<div class="list-meta">' + actBadge + keyBadge + "</div>" +
+          ctx.esc(typeLine(p)) + " · " + fmt("prov.modelCount", p.modelCount || 0) + " · " + ctx.esc(probeText(p)) +
+          "</div>" +
+          (p.baseUrl ? '<div class="prov-url mono" dir="ltr" title="' + ctx.esc(p.baseUrl) + '">' + ctx.esc(truncUrl(p.baseUrl)) + "</div>" : "") +
+          (am ? '<div class="prov-model mono" dir="ltr">' + ctx.esc(truncUrl(am)) + "</div>" : "") +
+          "</div>" +
+          '<div class="list-meta">' + actBadge + keyBadge + healthBadges(p) + "</div>" +
           '<span class="chev">' + ctx.icon("chevR") + "</span>";
         (function (id) {
           b.addEventListener("click", function () { setView({ name: "detail", id: id }); });
@@ -353,8 +493,22 @@
           ? '<span class="v"><span class="badge badge-success" dir="ltr">' + ctx.icon("key") + "••••" + ctx.esc(String(p.keyHint || "").slice(-4)) + "</span></span>"
           : '<span class="v"><span class="badge badge-danger">' + ctx.esc(ctx.t("prov.noKey")) + "</span></span>") +
         "</div>" +
+        '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.typeLabel")) + '</span><span class="v">' +
+        ctx.esc(p.adapterLabel || adapterLabelFor(p.adapterType)) +
+        (p.adapterType ? ' <span class="mono prov-slug" dir="ltr">' + ctx.esc(p.adapterType) + "</span>" : "") + "</span></div>" +
+        (p.baseUrl
+          ? '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.baseUrl")) + '</span><span class="v mono prov-url-inline" dir="ltr" title="' + ctx.esc(p.baseUrl) + '">' + ctx.esc(truncUrl(p.baseUrl)) + "</span></div>"
+          : "") +
+        (activeModelOf(p)
+          ? '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.activeModel")) + '</span><span class="v mono" dir="ltr">' + ctx.esc(truncUrl(activeModelOf(p))) + "</span></div>"
+          : "") +
         '<div class="kv"><span class="k">' + ctx.esc(ctx.t("prov.lastProbe")) + '</span><span class="v" id="probeLine">' +
         statusDot(p) + " " + ctx.esc(probeText(p)) + "</span></div>" +
+        (p.lastProbe && !p.lastProbe.ok && p.lastProbe.message
+          ? '<div class="prov-probe-msg" id="probeDetail">' + ctx.esc(p.lastProbe.message) +
+            (p.lastProbe.status !== undefined && p.lastProbe.status !== null ? " (" + ctx.esc(fmt("prov.httpStatus", p.lastProbe.status)) + ")" : "") + "</div>"
+          : '<div class="prov-probe-msg" id="probeDetail" hidden></div>') +
+        (healthBadges(p) ? '<div class="prov-badges">' + healthBadges(p) + "</div>" : "") +
         '<div class="mx-row" style="margin-top:12px"><span style="font-weight:600">' +
         ctx.esc(ctx.t(p.enabled ? "prov.enabled" : "prov.disabled")) + "</span>" +
         '<button type="button" class="toggle" id="enabledToggle" role="switch" aria-checked="' + (p.enabled ? "true" : "false") +
@@ -396,12 +550,16 @@
         probeBtn.disabled = true;
         probeResult.textContent = ctx.t("prov.probing");
         try {
+          // Domain results (ok:false, no `error`) now come back from api.js
+          // instead of throwing — the real message/status/stages render here.
           const r = await ctx.api("providers.probe", { id: p.id });
-          const line = (r.ok ? ctx.t("prov.probeOkLine") : ctx.t("prov.probeFailLine")) +
-            (r.latencyMs !== undefined && r.latencyMs !== null ? " · " + num(r.latencyMs) + " " + ctx.t("prov.ms") : "") +
-            (r.message ? " · " + r.message : "");
-          probeResult.textContent = line;
+          probeResult.textContent = probeLineText(r);
           probeResult.style.color = r.ok ? "var(--success)" : "var(--danger)";
+          const pd = card.querySelector("#probeDetail");
+          if (pd) {
+            pd.textContent = !r.ok && r.message ? r.message : "";
+            pd.hidden = !(!r.ok && r.message);
+          }
           // refresh the status line in place
           const pl = card.querySelector("#probeLine");
           if (pl) pl.innerHTML = statusDot({ lastProbe: { ok: r.ok } }) + " " +
@@ -445,34 +603,63 @@
       editCard.innerHTML =
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.label")) + "</label>" +
         '<input id="editLabel" type="text" value="' + ctx.esc(p.label || "") + '" dir="auto"></div>' +
+        '<div class="field"><label>' + ctx.esc(ctx.t("prov.typeLabel")) + "</label>" +
+        '<div class="prov-type-locked">' + ctx.esc(p.adapterLabel || adapterLabelFor(p.adapterType)) +
+        (p.adapterType ? ' <span class="mono prov-slug" dir="ltr">' + ctx.esc(p.adapterType) + "</span>" : "") + "</div>" +
+        '<div class="hint-text">' + ctx.esc(ctx.t("prov.typeChangeNote")) + "</div></div>" +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.url")) + "</label>" +
-        '<input id="editUrl" type="url" value="' + ctx.esc(p.baseUrl || "") + '" dir="ltr">' +
+        '<input id="editUrl" type="url" value="' + ctx.esc(p.baseUrl || "") + '" dir="ltr"' + (p.isActive ? " disabled" : "") + ">" +
         '<div class="error" id="editUrlErr" hidden></div></div>' +
+        (p.isActive
+          ? '<div class="note note-warn" style="margin:0 0 12px">' + ctx.icon("alert") + "<span>" + ctx.esc(ctx.t("prov.activeLocked")) + "</span></div>"
+          : "") +
+        '<div class="error" id="editErr" hidden style="margin-bottom:10px"></div>' +
         '<button type="button" class="btn btn-primary btn-block" id="saveEdit">' + ctx.icon("check") + ctx.esc(ctx.t("action.save")) + "</button>";
       host.appendChild(editCard);
       actions.querySelector("#editBtn").addEventListener("click", function () {
         editCard.hidden = !editCard.hidden;
       });
+      const editUrlInput = editCard.querySelector("#editUrl");
+      const editErrEl = editCard.querySelector("#editUrlErr");
+      function checkEditMismatch() {
+        const mm = mismatchFor(editUrlInput.value, p.adapterType || "openai_compatible");
+        if (mm) {
+          editErrEl.textContent = mm.message;
+          editErrEl.hidden = false;
+          return mm;
+        }
+        editErrEl.hidden = true;
+        return null;
+      }
+      editUrlInput.addEventListener("input", checkEditMismatch);
       editCard.querySelector("#saveEdit").addEventListener("click", async function () {
         const label = editCard.querySelector("#editLabel").value.trim();
-        const url = editCard.querySelector("#editUrl").value.trim();
-        const errEl = editCard.querySelector("#editUrlErr");
+        const url = editUrlInput.value.trim();
+        const errEl = editErrEl;
+        const srvErrEl = editCard.querySelector("#editErr");
+        srvErrEl.hidden = true;
         if (url && !urlOk(url)) {
           errEl.textContent = ctx.t("prov.urlInvalid");
           errEl.hidden = false;
           return;
         }
+        if (checkEditMismatch()) return; // hard warning shown inline, before save
         errEl.hidden = true;
         // Only send fields that are actually set; the backend rejects empty
-        // values with a 400, so don't round-trip a cleared URL.
+        // values with a 400, so don't round-trip a cleared URL. While the
+        // provider is active the URL input is disabled — never send it.
         const patch = { id: p.id };
         if (label) patch.label = label;
-        if (url) patch.baseUrl = url;
+        if (url && !p.isActive) patch.baseUrl = url;
         try {
           await ctx.api("providers.update", patch);
           ctx.toast(ctx.t("toast.saved"), "ok");
         } catch (e) {
+          // Server guard errors (message + suggestion) render inline here,
+          // not just as a toast, and the card stays open for the fix.
+          showServerError(srvErrEl, e);
           ctx.toast((e && e.message) || ctx.t("toast.failed"), "err");
+          return;
         }
         paint();
       });
@@ -714,20 +901,10 @@
                 // Two-stage test: the cheap ping AND a realistic turn.
                 // A green ping with a failed real stage is the apinex
                 // failure mode — show both so it can never hide again.
-                const ms = function (v) {
-                  return v !== undefined && v !== null ? num(v) + " " + ctx.t("prov.ms") : "";
-                };
-                const pingPart = "Ping " + (r.ping.ok ? "✅ " + ms(r.ping.latencyMs) : "❌ " + (r.ping.error || ""));
-                let realPart = "";
-                if (r.real) {
-                  realPart = r.real.ok
-                    ? "Real ✅ " + ms(r.real.latencyMs)
-                    : "Real ⚠️ " + (r.real.detail === "empty response" ? "empty" : r.real.error || "failed");
-                }
+                // (Reachable on failure now that api.js returns domain
+                // ok:false bodies instead of throwing "Server error".)
                 testOut.style.color = r.ok ? "var(--success)" : "var(--danger)";
-                testOut.textContent = [pingPart, realPart, r.quarantined ? "⛔ quarantined" : ""]
-                  .filter(Boolean)
-                  .join(" · ");
+                testOut.textContent = stageBreakdown(r);
               } else if (r && r.ok) {
                 testOut.style.color = "var(--success)";
                 testOut.textContent = "✅ " + (r.latencyMs !== undefined && r.latencyMs !== null ? num(r.latencyMs) + " " + ctx.t("prov.ms") : "");
@@ -768,33 +945,73 @@
       if (tab === "custom") return customForm(body);
       if (tab === "nine") return nineForm(body);
 
-      let presets = FALLBACK_PRESETS;
+      // Gallery = service presets + ALL adapter templates (gemini and
+      // anthropic included), normalized to one shape. Each entry locks its
+      // adapter type and prefills its base URL.
+      let entries = FALLBACK_PRESETS.concat(FALLBACK_TEMPLATES);
       try {
         const r = await ctx.api("providers.presets", {});
-        if (r && r.presets && r.presets.length) presets = r.presets;
+        const norm = [];
+        const seenIds = new Set();
+        const push = function (e) {
+          if (!e) return;
+          const id = String(e.id || e.type || "");
+          if (!id || seenIds.has(id)) return;
+          seenIds.add(id);
+          norm.push(e);
+        };
+        if (r && r.presets) for (const pr of r.presets) push(normalizeEntry(pr, false));
+        if (r && r.templates) for (const tp of r.templates) {
+          // The openai_compatible / nine_router templates duplicate the
+          // dedicated Custom / 9Router forms below — don't render them twice.
+          if (tp.type === "openai_compatible" || tp.type === "nine_router") continue;
+          push(normalizeEntry(tp, true));
+        }
+        if (norm.length) entries = norm;
       } catch (e) { /* fallback stays */ }
 
       const sub = st.view.sub;
       if (sub && sub.indexOf("preset:") === 0) {
-        const pr = presets.find(function (x) { return String(x.id) === sub.slice(7); });
-        if (pr) return presetForm(body, pr);
+        const pr = entries.find(function (x) { return String(x.id) === sub.slice(7); });
+        if (pr) return pr.isTemplate ? templateForm(body, pr) : presetForm(body, pr);
       }
-      return presetGrid(body, presets);
+      return presetGrid(body, entries);
+    }
+
+    function normalizeEntry(e, isTemplate) {
+      const type = e.adapterType || e.type || (isTemplate ? "" : "openai_compatible");
+      return {
+        id: String(e.id || e.type || ""),
+        label: e.label || adapterLabelFor(type),
+        baseUrl: e.baseUrl || e.suggestedBaseUrl || "",
+        suggestedModel: e.suggestedModel,
+        hasPlaceholder: !!e.hasPlaceholder || !!e.requiredPlaceholder,
+        requiredPlaceholder: e.requiredPlaceholder,
+        note: e.note || e.notes,
+        adapterType: type,
+        isTemplate: !!isTemplate,
+      };
+    }
+    function entryType(entry) {
+      return entry.adapterType || entry.type || "openai_compatible";
     }
 
     function presetGrid(body, presets) {
       let h = '<p class="mx-muted" style="margin:0 0 12px">' + ctx.esc(ctx.t("prov.presetNote")) + "</p>";
       h += '<div class="preset-grid">';
       for (const pr of presets) {
+        const type = entryType(pr);
         h +=
           '<button type="button" class="preset-card" data-pid="' + ctx.esc(pr.id) + '">' +
           provTile(pr.label) +
           '<div style="min-width:0"><div class="preset-name">' + ctx.esc(pr.label) + "</div>" +
+          '<div class="preset-sub prov-type-sub" dir="ltr">' + ctx.esc(adapterLabelFor(type) + " · " + type) + "</div>" +
           (pr.suggestedModel ? '<div class="preset-sub mono" dir="ltr">' + ctx.esc(pr.suggestedModel) + "</div>" : "") +
           "</div></button>";
       }
       h += "</div>";
-      h += '<div class="group-label">' + ctx.icon("plus") + ctx.esc(ctx.t("prov.add")) + "</div>";
+      h += '<div class="group-label">' + ctx.icon("plus") + ctx.esc(ctx.t("prov.customEndpoint")) + "</div>";
+      h += '<p class="mx-muted" style="margin:0 0 8px">' + ctx.esc(ctx.t("prov.customTypeNote")) + "</p>";
       h += '<div style="display:flex;gap:8px">' +
         '<button type="button" class="btn btn-ghost" id="goCustom" style="flex:1">' + ctx.icon("cpu") + ctx.esc(ctx.t("prov.addCustom")) + "</button>" +
         '<button type="button" class="btn btn-ghost" id="goNine" style="flex:1">' + ctx.icon("layers") + ctx.esc(ctx.t("prov.addNine")) + "</button></div>";
@@ -805,8 +1022,97 @@
       for (const c of cards) {
         c.addEventListener("click", function () {
           const pr = presets.find(function (x) { return String(x.id) === c.dataset.pid; });
-          if (pr) presetForm(body, pr);
+          if (pr) pr.isTemplate ? templateForm(body, pr) : presetForm(body, pr);
         });
+      }
+    }
+
+    // Post-add guided flow, shared by every add form: auto-run Discover
+    // models (importing what was picked / found), auto-run Test connection,
+    // show both results inline, then a prominent Set active button.
+    // opts: { picker?, autoSelected?, skipDiscover? }
+    async function finishAddFlow(body, providerId, opts) {
+      opts = opts || {};
+      const card = document.createElement("div");
+      card.className = "card prov-add-result";
+      card.innerHTML =
+        '<div class="card-head tight"><div class="card-icon green">' + ctx.icon("checkCircle") + "</div>" +
+        "<div><h2 class=\"card-title\">" + ctx.esc(ctx.t("prov.addResultTitle")) + "</h2>" +
+        '<p class="card-sub">' + ctx.esc(ctx.t("prov.autoChecking")) + "</p></div></div>" +
+        '<div class="prov-check-line" id="faDiscover"></div>' +
+        '<div class="prov-check-line" id="faProbe"></div>' +
+        '<div class="error" id="faErr" hidden style="margin:8px 0"></div>' +
+        '<button type="button" class="btn btn-primary btn-block prov-set-active" id="faActivate">' +
+        ctx.icon("star") + ctx.esc(ctx.t("prov.setActiveProvider")) + "</button>" +
+        '<button type="button" class="btn btn-ghost btn-block" id="faView" style="margin-top:8px">' +
+        ctx.esc(ctx.t("prov.viewProvider")) + "</button>";
+      body.appendChild(card);
+      try { card.scrollIntoView({ block: "nearest" }); } catch (e) { /* older webviews */ }
+
+      const discLine = card.querySelector("#faDiscover");
+      const probeLine = card.querySelector("#faProbe");
+      const errEl = card.querySelector("#faErr");
+      const actBtn = card.querySelector("#faActivate");
+      if (opts.autoSelected) {
+        actBtn.innerHTML = ctx.icon("star") + ctx.esc(ctx.t("prov.activated"));
+        actBtn.disabled = true;
+      }
+      card.querySelector("#faView").addEventListener("click", function () {
+        setView({ name: "detail", id: providerId, justAdded: true });
+      });
+      actBtn.addEventListener("click", async function () {
+        actBtn.disabled = true;
+        errEl.hidden = true;
+        try {
+          const r = await ctx.api("providers.setActive", { id: providerId });
+          if (r.probe && !r.probe.ok) {
+            showServerError(errEl, { message: ctx.t("prov.probeFailLine") + (r.probe.message ? ": " + r.probe.message : "") });
+          }
+          ctx.toast(ctx.t("prov.activated") + (r.label ? ": " + r.label : ""), r.probe && !r.probe.ok ? "err" : "ok");
+          setView({ name: "detail", id: providerId, justAdded: true });
+        } catch (e) {
+          showServerError(errEl, e);
+          actBtn.disabled = false;
+        }
+      });
+
+      // 1) Discover models
+      if (!opts.skipDiscover) {
+        try {
+          const picked = opts.picker ? opts.picker.selectedIds() : [];
+          if (picked.length) {
+            const im = await ctx.api("models.import", { providerId: providerId, modelIds: picked });
+            discLine.textContent = "✅ " + fmt("prov.importedN", (im && im.imported) || picked.length);
+          } else {
+            const r = await ctx.api("models.discover", { providerId: providerId });
+            const found = (r && r.models) || [];
+            const fresh = found.filter(function (m) { return !m.imported; });
+            let line = "✅ " + fmt("prov.discoveredN", found.length);
+            if (fresh.length) {
+              const im = await ctx.api("models.import", {
+                providerId: providerId,
+                modelIds: fresh.map(function (m) { return m.modelId; }),
+              });
+              line += " · " + fmt("prov.importedN", (im && im.imported) || fresh.length);
+            }
+            discLine.textContent = line;
+          }
+        } catch (e) {
+          discLine.textContent = "⚠️ " + ctx.t("prov.discoverFailed") + ": " + ((e && e.message) || "");
+          discLine.style.color = "var(--warning)";
+        }
+      } else {
+        discLine.hidden = true;
+      }
+
+      // 2) Test connection — a domain ok:false comes back, never throws.
+      try {
+        const r = await ctx.api("providers.probe", { id: providerId });
+        probeLine.textContent = (r.ok ? "✅ " : "❌ ") + probeLineText(r);
+        probeLine.style.color = r.ok ? "var(--success)" : "var(--danger)";
+      } catch (e) {
+        probeLine.textContent = "❌ " + ctx.t("prov.probeFailLine") + " · " + ((e && (e.message || e.code)) || "");
+        probeLine.style.color = "var(--danger)";
       }
     }
 
@@ -945,7 +1251,9 @@
       const phKey = needsPlaceholder ? String(pr.requiredPlaceholder) : "";
       body.innerHTML =
         '<div class="card">' +
-        '<div style="font-weight:700;margin-bottom:10px">' + ctx.esc(pr.label) + "</div>" +
+        '<div style="font-weight:700;margin-bottom:6px">' + ctx.esc(pr.label) + "</div>" +
+        '<div style="margin-bottom:10px"><span class="badge badge-info prov-badge" dir="ltr">' +
+        ctx.esc(adapterLabelFor(entryType(pr)) + " · " + entryType(pr)) + "</span></div>" +
         (pr.note ? '<div class="list-sub" style="white-space:normal;margin-bottom:10px">' + ctx.esc(pr.note) + "</div>" : "") +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.label")) + "</label>" +
         '<input id="pfLabel" type="text" value="' + ctx.esc(pr.label) + '" dir="auto"></div>' +
@@ -959,6 +1267,7 @@
         '<input id="pfKey" type="password" autocomplete="new-password" placeholder="' + ctx.esc(ctx.t("prov.keyPlaceholder")) + '" dir="ltr">' +
         '<div class="error" id="pfKeyErr" hidden></div></div>' +
         '<div class="list-sub mono" dir="ltr" style="margin-bottom:8px;white-space:normal;word-break:break-all">' + ctx.esc(pr.baseUrl) + "</div>" +
+        '<div class="error" id="pfErr" hidden style="margin-bottom:10px"></div>' +
         '<button type="button" class="btn btn-primary btn-block" id="pfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
         "</div>";
 
@@ -991,6 +1300,8 @@
         const label = body.querySelector("#pfLabel").value.trim() || pr.label;
         const key = body.querySelector("#pfKey").value;
         const errEl = body.querySelector("#pfKeyErr");
+        const srvErrEl = body.querySelector("#pfErr");
+        srvErrEl.hidden = true;
         if (!key) {
           errEl.textContent = ctx.t("prov.keyRequired");
           errEl.hidden = false;
@@ -1011,24 +1322,93 @@
             }
             payload.baseUrl = pr.baseUrl.replace("{" + phKey + "}", phVal);
           }
-          const r = await ctx.api("providers.add", payload);
-          const ids = picker.selectedIds();
-          let autoSelected = r.autoSelected;
-          if (ids.length) {
-            try {
-              const im = await ctx.api("models.import", { providerId: r.id, modelIds: ids });
-              if (im.autoSelected) autoSelected = im.autoSelected;
-            } catch (e) { /* provider is saved; models can be added later */ }
+          // Mismatch guard on the final URL (type is locked to this preset).
+          const mm = mismatchFor(payload.baseUrl || pr.baseUrl, entryType(pr));
+          if (mm) {
+            srvErrEl.textContent = mm.message;
+            srvErrEl.hidden = false;
+            btn.disabled = false;
+            return;
           }
-          // Auto-select: tell the owner they're live, no extra steps needed.
-          ctx.toast(
-            ctx.t("prov.justAdded") +
-              (autoSelected ? "\n" + ctx.t("prov.autoActive") : ""),
-            "ok"
-          );
-          setView({ name: "detail", id: r.id, justAdded: true });
+          const r = await ctx.api("providers.add", payload);
+          ctx.toast(ctx.t("prov.justAdded") + (r.autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
+          // Guided flow: discover → test → prominent Set active, all inline.
+          await finishAddFlow(body, r.id, { picker: picker, autoSelected: r.autoSelected });
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          showServerError(srvErrEl, e);
+          btn.disabled = false;
+        }
+      });
+    }
+
+    // Add form for a native adapter template (gemini / anthropic): the type
+    // is locked to the template, the base URL is prefilled and editable,
+    // and the save payload carries the adapter type explicitly.
+    function templateForm(body, tp) {
+      st.view.sub = "preset:" + tp.id;
+      const type = entryType(tp);
+      body.innerHTML =
+        '<div class="card">' +
+        '<div style="font-weight:700;margin-bottom:6px">' + ctx.esc(tp.label) + "</div>" +
+        '<div style="margin-bottom:10px"><span class="badge badge-info prov-badge" dir="ltr">' +
+        ctx.esc(adapterLabelFor(type) + " · " + type) + "</span></div>" +
+        '<div class="hint-text" style="margin-bottom:10px">' + ctx.esc(ctx.t("prov.templateFormNote")) + "</div>" +
+        (tp.note ? '<div class="list-sub" style="white-space:normal;margin-bottom:10px">' + ctx.esc(tp.note) + "</div>" : "") +
+        '<div class="field"><label>' + ctx.esc(ctx.t("prov.label")) + "</label>" +
+        '<input id="tfLabel" type="text" value="' + ctx.esc(tp.label) + '" dir="auto"></div>' +
+        '<div class="field"><label>' + ctx.esc(ctx.t("prov.url")) + "</label>" +
+        '<input id="tfUrl" type="url" value="' + ctx.esc(tp.baseUrl || "") + '" dir="ltr">' +
+        '<div class="error" id="tfUrlErr" hidden></div></div>' +
+        '<div class="field"><label>' + ctx.esc(ctx.t("prov.key")) + "</label>" +
+        '<input id="tfKey" type="password" autocomplete="new-password" placeholder="' + ctx.esc(ctx.t("prov.keyPlaceholder")) + '" dir="ltr">' +
+        '<div class="error" id="tfKeyErr" hidden></div></div>' +
+        '<div class="error" id="tfErr" hidden style="margin-bottom:10px"></div>' +
+        '<button type="button" class="btn btn-primary btn-block" id="tfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
+        "</div>";
+      const urlInput = body.querySelector("#tfUrl");
+      const urlErr = body.querySelector("#tfUrlErr");
+      function checkMismatch() {
+        const mm = mismatchFor(urlInput.value, type);
+        if (mm) {
+          urlErr.textContent = mm.message;
+          urlErr.hidden = false;
+          return mm;
+        }
+        urlErr.hidden = true;
+        return null;
+      }
+      urlInput.addEventListener("input", checkMismatch);
+      body.querySelector("#tfSave").addEventListener("click", async function () {
+        const label = body.querySelector("#tfLabel").value.trim() || tp.label;
+        const url = urlInput.value.trim();
+        const key = body.querySelector("#tfKey").value;
+        const keyErr = body.querySelector("#tfKeyErr");
+        const srvErrEl = body.querySelector("#tfErr");
+        srvErrEl.hidden = true;
+        if (!urlOk(url)) {
+          urlErr.textContent = ctx.t("prov.urlInvalid");
+          urlErr.hidden = false;
+          return;
+        }
+        if (checkMismatch()) return;
+        if (!key) {
+          keyErr.textContent = ctx.t("prov.keyRequired");
+          keyErr.hidden = false;
+          return;
+        }
+        keyErr.hidden = true;
+        const btn = body.querySelector("#tfSave");
+        btn.disabled = true;
+        try {
+          const r = await ctx.api("providers.add", {
+            kind: "template", template: type, adapter: type, type: type,
+            label: label, baseUrl: url, key: key,
+            suggestedModel: tp.suggestedModel || undefined,
+          });
+          ctx.toast(ctx.t("prov.justAdded") + (r.autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
+          await finishAddFlow(body, r.id, { autoSelected: r.autoSelected });
+        } catch (e) {
+          showServerError(srvErrEl, e);
           btn.disabled = false;
         }
       });
@@ -1037,6 +1417,8 @@
     function customForm(body) {
       body.innerHTML =
         '<div class="card">' +
+        '<div style="font-weight:700;margin-bottom:6px">' + ctx.esc(ctx.t("prov.customEndpoint")) + "</div>" +
+        '<div class="note note-info" style="margin:0 0 12px">' + ctx.icon("info") + "<span>" + ctx.esc(ctx.t("prov.customTypeNote")) + "</span></div>" +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.label")) + "</label>" +
         '<input id="cfLabel" type="text" dir="auto" placeholder="My Provider"></div>' +
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.url")) + "</label>" +
@@ -1046,23 +1428,29 @@
         '<div class="field"><label>' + ctx.esc(ctx.t("prov.key")) + "</label>" +
         '<input id="cfKey" type="password" autocomplete="new-password" dir="ltr">' +
         '<div class="hint-text">' + ctx.esc(ctx.t("prov.customKeyHint")) + "</div></div>" +
+        '<div class="error" id="cfErr" hidden style="margin-bottom:10px"></div>' +
         '<button type="button" class="btn btn-primary btn-block" id="cfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
         "</div>";
       const urlInput = body.querySelector("#cfUrl");
       const errEl = body.querySelector("#cfUrlErr");
-      try {
-        const remembered = window.localStorage.getItem("bobi_custom_url");
-        if (remembered && !urlInput.value) urlInput.value = remembered;
-      } catch (e) { /* storage unavailable */ }
-      urlInput.addEventListener("input", function () {
+      const srvErrEl = body.querySelector("#cfErr");
+      // L3: no localStorage replay of the last custom URL — a wrong URL
+      // entered once must not silently prefill the next add.
+      function checkCustom() {
         const v = urlInput.value.trim();
-        if (v && !urlOk(v)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; }
-        else errEl.hidden = true;
-      });
+        if (v && !urlOk(v)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; return true; }
+        const mm = mismatchFor(v, "openai_compatible");
+        if (mm) { errEl.textContent = mm.message; errEl.hidden = false; return true; }
+        errEl.hidden = true;
+        return false;
+      }
+      urlInput.addEventListener("input", checkCustom);
       const picker = draftModelsPicker(body, {
         getParams: function () {
           const url = urlInput.value.trim();
           if (!urlOk(url)) throw new Error(ctx.t("prov.urlInvalid"));
+          const mm = mismatchFor(url, "openai_compatible");
+          if (mm) throw new Error(mm.message);
           const key = body.querySelector("#cfKey").value;
           if (!key) throw new Error(ctx.t("prov.keyRequired"));
           return { kind: "custom", baseUrl: url, key: key };
@@ -1072,28 +1460,20 @@
         const label = body.querySelector("#cfLabel").value.trim();
         const url = urlInput.value.trim();
         const key = body.querySelector("#cfKey").value;
-        if (!urlOk(url)) { errEl.textContent = ctx.t("prov.urlInvalid"); errEl.hidden = false; return; }
+        srvErrEl.hidden = true;
+        if (checkCustom()) return;
         errEl.hidden = true;
         const btn = body.querySelector("#cfSave");
         btn.disabled = true;
         try {
-          try { window.localStorage.setItem("bobi_custom_url", url); } catch (e) { /* ignore */ }
           const r = await ctx.api("providers.add", {
             kind: "custom", label: label || url, baseUrl: url,
             key: key || undefined,
           });
-          const ids = picker.selectedIds();
-          let autoSelected = r.autoSelected;
-          if (ids.length) {
-            try {
-              const im = await ctx.api("models.import", { providerId: r.id, modelIds: ids });
-              if (im.autoSelected) autoSelected = im.autoSelected;
-            } catch (e) { /* provider is saved; models can be added later */ }
-          }
-          ctx.toast(ctx.t("prov.justAdded") + (autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
-          setView({ name: "detail", id: r.id, justAdded: true });
+          ctx.toast(ctx.t("prov.justAdded") + (r.autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
+          await finishAddFlow(body, r.id, { picker: picker, autoSelected: r.autoSelected });
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          showServerError(srvErrEl, e);
           btn.disabled = false;
         }
       });
@@ -1118,6 +1498,7 @@
         '<input id="nfModel" type="text" dir="ltr" placeholder="model-name">' +
         '<div class="hint-text">' + ctx.esc(ctx.t("prov.nineModelHint")) + "</div>" +
         '<div class="error" id="nfModelErr" hidden></div></div>' +
+        '<div class="error" id="nfErr" hidden style="margin-bottom:10px"></div>' +
         '<button type="button" class="btn btn-primary btn-block" id="nfSave">' + ctx.esc(ctx.t("action.save")) + "</button>" +
         "</div>";
       const urlInput = body.querySelector("#nfUrl");
@@ -1148,15 +1529,17 @@
         modelErr.hidden = true;
         const btn = body.querySelector("#nfSave");
         btn.disabled = true;
+        const srvErrEl = body.querySelector("#nfErr");
+        srvErrEl.hidden = true;
         try {
           try { window.localStorage.setItem("bobi_nine_url", url); } catch (e) { /* ignore */ }
           const r = await ctx.api("providers.add", {
             kind: "nine_router", label: label, baseUrl: url, key: key, model: modelId,
           });
           ctx.toast(ctx.t("prov.justAdded") + (r.autoSelected ? "\n" + ctx.t("prov.autoActive") : ""), "ok");
-          setView({ name: "detail", id: r.id, justAdded: true });
+          await finishAddFlow(body, r.id, { autoSelected: r.autoSelected, skipDiscover: true });
         } catch (e) {
-          ctx.toast((e && e.message) || ctx.t("toast.failed"));
+          showServerError(srvErrEl, e);
           btn.disabled = false;
         }
       });

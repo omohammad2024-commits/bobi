@@ -334,6 +334,13 @@ export interface AiProviderHealthRow {
   checkedAt: number;
   /** Safe, provider-chosen message. Never a key or a full response. */
   message?: string;
+  /**
+   * HTTP status of the failure, when the adapter reported one. Additive:
+   * records written before this field existed simply lack it.
+   */
+  status?: number;
+  /** Wall-clock ms the probe took. Additive, like `status`. */
+  latencyMs?: number;
 }
 
 /** Failover policy. Disabled by default. */
@@ -697,7 +704,9 @@ CREATE TABLE IF NOT EXISTS ai_provider_health (
   provider_id    INTEGER PRIMARY KEY REFERENCES ai_providers(id) ON DELETE CASCADE,
   ok             INTEGER NOT NULL,
   checked_at     INTEGER NOT NULL,
-  message        TEXT
+  message        TEXT,
+  status         INTEGER,
+  latency_ms     INTEGER
 );
 
 -- Failover settings. Single row: off by default, so nothing ever switches
@@ -922,6 +931,12 @@ export class Storage {
     // fresh databases get both columns from the SCHEMA block above.
     this.addColumnIfMissing("memories", "recall_count", "INTEGER NOT NULL DEFAULT 0");
     this.addColumnIfMissing("memories", "last_recalled_at", "INTEGER");
+    // Provider health detail: the failing HTTP status and the measured
+    // probe latency, so list views can show WHY a provider is red without
+    // re-running the probe. Same idempotent pattern; fresh databases get
+    // both columns from the SCHEMA block above.
+    this.addColumnIfMissing("ai_provider_health", "status", "INTEGER");
+    this.addColumnIfMissing("ai_provider_health", "latency_ms", "INTEGER");
   }
 
   /** Add a column when an older database does not have it yet. */
@@ -2907,8 +2922,10 @@ export class Storage {
       ok: number;
       checked_at: number;
       message: string | null;
+      status: number | null;
+      latency_ms: number | null;
     }>(
-      `SELECT provider_id, ok, checked_at, message FROM ai_provider_health WHERE provider_id=?`,
+      `SELECT provider_id, ok, checked_at, message, status, latency_ms FROM ai_provider_health WHERE provider_id=?`,
       [providerId],
     )[0];
     if (!row) return undefined;
@@ -2917,17 +2934,33 @@ export class Storage {
       ok: row.ok === 1,
       checkedAt: row.checked_at,
       ...(row.message !== null ? { message: row.message } : {}),
+      ...(row.status !== null ? { status: row.status } : {}),
+      ...(row.latency_ms !== null ? { latencyMs: row.latency_ms } : {}),
     };
   }
 
   /** Record a probe result. The message must already be free of secrets. */
-  setProviderHealth(h: { providerId: number; ok: boolean; message?: string }): void {
+  setProviderHealth(h: {
+    providerId: number;
+    ok: boolean;
+    message?: string;
+    status?: number;
+    latencyMs?: number;
+  }): void {
     this.exec(
-      `INSERT INTO ai_provider_health(provider_id, ok, checked_at, message)
-       VALUES(?,?,?,?)
+      `INSERT INTO ai_provider_health(provider_id, ok, checked_at, message, status, latency_ms)
+       VALUES(?,?,?,?,?,?)
        ON CONFLICT(provider_id) DO UPDATE SET
-         ok=excluded.ok, checked_at=excluded.checked_at, message=excluded.message`,
-      [h.providerId, h.ok ? 1 : 0, Date.now(), h.message ?? null],
+         ok=excluded.ok, checked_at=excluded.checked_at, message=excluded.message,
+         status=excluded.status, latency_ms=excluded.latency_ms`,
+      [
+        h.providerId,
+        h.ok ? 1 : 0,
+        Date.now(),
+        h.message ?? null,
+        h.status ?? null,
+        h.latencyMs ?? null,
+      ],
     );
   }
 

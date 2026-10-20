@@ -80,8 +80,14 @@ export function statusToAiError(
     return new AiError("network", `Service is unavailable (HTTP ${status}).`, status, retryAfterMs);
   }
   if (status === 400 || status === 404 || status === 422) {
-    // Request-shaped problems surface as invalid, never as the raw body.
-    return new AiError("invalid_response", "The request to the service was invalid.", status);
+    // Request-shaped problems surface as invalid, never as the raw body —
+    // but the message still names the status, like every other branch: a
+    // 404 (wrong address) and a 400 (bad request) need different fixes.
+    return new AiError(
+      "invalid_response",
+      `The request to the service was invalid (HTTP ${status}).`,
+      status,
+    );
   }
   if (status >= 400 && status < 500) {
     // Any other client error is still request-shaped: the provider refused
