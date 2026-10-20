@@ -56,6 +56,13 @@ export const commandsManifest: ToolManifest = defineManifest({
   title: "Command List",
   description:
     "Show the bot's chat commands from the static catalog, filtered per actor. Instant and I/O-free — the way to answer 'what can you do' and 'list the commands' requests.",
+  purpose: "bot command list",
+  useWhen: "commands asked",
+  doNotUseWhen: "User wants a command executed, not listed — run that command or tool instead; this only lists names and descriptions.",
+  confusableWith: [
+    { tool: "tool_search", difference: "tool_search finds agent tools; commands lists bot chat commands for users." },
+  ],
+  latencyTier: "instant",
   outputSummary: "The visible command names with one-line descriptions and groups.",
   category: "system",
   triggers: {

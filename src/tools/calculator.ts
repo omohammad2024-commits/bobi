@@ -42,6 +42,13 @@ export const calculatorManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Calculator",
   description: "Add, subtract, multiply or divide two numbers.",
+  purpose: "2-number math",
+  useWhen: "basic calc asked",
+  doNotUseWhen: "Unit conversion or multi-step expressions — unit_converter converts units; this does one operation on two numbers.",
+  confusableWith: [
+    { tool: "unit_converter", difference: "unit_converter changes units (km to miles); calculator does arithmetic with no units." },
+  ],
+  latencyTier: "instant",
   outputSummary: "The computed result as a number.",
   category: "utils",
   triggers: {

@@ -103,6 +103,13 @@ export const consultModelsManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Consult Models",
   description: "Consult up to 3 configured models at once and combine their answers into one precise answer. Querying is expensive (one full call per model + one synthesis); use it for important questions worth multiple perspectives.",
+  purpose: "multi-model answer",
+  useWhen: "needs 2+ models",
+  doNotUseWhen: "Simple or quick questions — answer directly with one model; this costs about 4 calls and returns English synthesis only.",
+  confusableWith: [
+    { tool: "delegate", difference: "delegate runs a child agent with tools on a subtask; consult_models asks models a question, no tools." },
+  ],
+  latencyTier: "minutes",
   outputSummary: "Returns the consultation result: models used and the synthesized English answer.",
   category: "agents",
   timeoutMs: 120000,

@@ -3,13 +3,16 @@
  *
  * The router itself (`detectIntents`, see INTEGRATION.md) only SUGGESTS
  * tools; this module applies a suggestion to the tool specs the model
- * sees. It is deliberately narrow:
+ * sees. It is deliberately advisory-only:
  *
- * - Strong intent (any hint ≥ 0.9): narrow the specs to hinted tools +
- *   the always-on core set (memory recall/write + commands). A bare
- *   YouTube link must not ship a 35-tool catalog in the prompt.
- * - Weak hints (0.7–0.89): full catalog, but hinted tools' specs first.
+ * - Any usable hints (weak or strong): the FULL input spec set is
+ *   returned, with hinted tools' specs moved first (stable order
+ *   otherwise), plus a one-line note from the top usable hint.
  * - No hints (or router off): specs returned untouched, same order.
+ *
+ * Routing reorders + advises, NEVER removes. No tool is hidden: a
+ * regex misfire must never make a tool unrecoverable in-turn, so the
+ * model always sees every spec it was offered.
  *
  * SECURITY: this is an ergonomics optimization, never a permission
  * boundary. Hints are intersected with the offered specs — a hint for a
@@ -29,18 +32,7 @@
  */
 import type { ToolSpec } from "../ai/provider";
 import type { ToolManifest } from "../tools/manifest";
-import { detectIntents, hasStrongIntent, type IntentHint } from "./intent";
-
-/**
- * Tools that always stay in the narrowed catalog: memory read/write and
- * the command palette. The model can still recall (and save) while
- * focused on a single task, and `commands` is the catalog of record.
- */
-export const ROUTER_ALWAYS_KEEP: ReadonlySet<string> = new Set([
-  "recall",
-  "remember",
-  "commands",
-]);
+import { detectIntents, type IntentHint } from "./intent";
 
 /** Cap for the rendered router note, so it stays a nudge, not a section. */
 const ROUTER_NOTE_MAX_CHARS = 120;
@@ -73,7 +65,8 @@ function routerNote(hint: IntentHint): string | undefined {
  *
  * Pure: hints are intersected against `specs` (the caller's
  * ToolService.toolSpecsFor output), so only offered tools can be
- * narrowed to or reordered. Router failures can never break the turn —
+ * reordered. The full spec set is always returned — routing never
+ * removes a spec. Router failures can never break the turn —
  * any exception falls back to the untouched specs.
  */
 export function applyIntentRouting(
@@ -101,19 +94,7 @@ export function applyIntentRouting(
   const withNote = (specList: ToolSpec[]): RoutedSpecs =>
     note !== undefined ? { specs: specList, note } : { specs: specList };
 
-  if (hasStrongIntent(usable)) {
-    const keep = new Set<string>();
-    for (const h of usable) keep.add(h.toolId);
-    for (const t of ROUTER_ALWAYS_KEEP) if (offered.has(t)) keep.add(t);
-    const narrowed = base.filter((s) => keep.has(s.name));
-    // Degenerate narrowing (keep-set swallowed the catalog) = no narrowing.
-    if (narrowed.length === 0 || narrowed.length === base.length) {
-      return withNote(base);
-    }
-    return withNote(narrowed);
-  }
-
-  // Weak hints: full catalog, hinted tools first (stable order otherwise).
+  // Advisory only: full catalog, hinted tools first (stable order otherwise).
   const priority = new Map<string, number>();
   usable.forEach((h, i) => {
     if (!priority.has(h.toolId)) priority.set(h.toolId, i);

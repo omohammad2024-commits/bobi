@@ -52,6 +52,13 @@ export const dateTimeManifest: ToolManifest = defineManifest({
   version: "1.0.0",
   title: "Date & Time",
   description: "Current date, time and weekday in a valid IANA timezone.",
+  purpose: "date/time by zone",
+  useWhen: "time/date asked",
+  doNotUseWhen: "Scheduling or past/future dates — this only reports now in a timezone; use remind_at or schedule_task to schedule.",
+  confusableWith: [
+    { tool: "remind_at", difference: "remind_at creates a future reminder; date_time only reports the current time." },
+  ],
+  latencyTier: "instant",
   outputSummary: "ISO instant, date, time and weekday in the requested timezone.",
   category: "utils",
   triggers: {

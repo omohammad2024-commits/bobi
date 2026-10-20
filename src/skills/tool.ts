@@ -9,6 +9,8 @@
  * Like every tool, it declares a permission (`tools:skills`) checked by the
  * Executor; a skill being listed here grants it nothing.
  */
+import { defineManifest } from "../tools/manifest";
+import type { ToolManifest } from "../tools/manifest";
 import type { Tool, ToolContext } from "../tools/types";
 import type { SkillCache } from "./loader";
 
@@ -31,9 +33,34 @@ export interface SkillsDeps {
  * Build the skills-listing tool over a SkillCache. The tool reads through the
  * cache, so a newly added skill file is listed without a restart.
  */
+export const skillsManifest: ToolManifest = defineManifest({
+  id: "skills",
+  version: "1.0.0",
+  title: "Skills",
+  purpose: "loaded skill list",
+  useWhen: "skills asked",
+  doNotUseWhen: "Skill bodies are never returned here; to find a tool instead, use tool_search.",
+  confusableWith: [
+    {
+      tool: "tool_search",
+      difference: "tool_search finds tools by need; skills lists loaded skill names only.",
+    },
+    {
+      tool: "commands",
+      difference: "commands lists bot commands; skills lists loaded skill packs.",
+    },
+  ],
+  latencyTier: "instant",
+  description:
+    "List the names and one-line descriptions of the loaded skills, optionally filtered by a substring. Discovery only — no skill content, no actions.",
+  outputSummary: "Matching skills as name + one-line description pairs.",
+  category: "system",
+});
+
 export function createSkillsTool(deps: SkillsDeps): Tool<SkillsInput, SkillsOutput> {
   return {
     name: "skills",
+    manifest: skillsManifest,
     description: "فهرست مهارت‌های بارگذاری‌شده (فقط نام و توضیح کوتاه).",
     enabled: true,
     permission: { requires: [SKILLS_PERMISSION] },
