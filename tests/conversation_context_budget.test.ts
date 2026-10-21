@@ -14,6 +14,7 @@ import {
   oneLineToolSummary,
   TOOL_RESULT_TOKEN_LIMIT,
 } from "../src/conversation/context_budget";
+import { wrapToolResult } from "../src/agent/transcript";
 
 /** A provider that records the messages of every call and answers "ok". */
 class CapturingProvider implements AiProvider {
@@ -109,6 +110,50 @@ describe("tool-result compaction", () => {
     expect(r.messages[1]!.content).toContain("lines elided");
     expect(r.messages[3]!.content).toBe("small");
     expect(r.messages[0]).toBe(hist[0]);
+  });
+
+  test("§4.7: a wrapped JSON tool result compacts structurally, not by lines", () => {
+    const body = JSON.stringify({
+      items: Array.from({ length: 300 }, (_, i) => ({ i, txt: "w".repeat(120) })),
+    });
+    const wrapped = wrapToolResult("fetch_url", body);
+    expect(estimateTokens(wrapped)).toBeGreaterThan(TOOL_RESULT_TOKEN_LIMIT);
+    const r = compactToolResult(wrapped);
+    expect(r.compacted).toBe(true);
+    // Structural compaction elides structure, not lines.
+    expect(r.elidedLines).toBe(0);
+    expect(r.afterTokens).toBeLessThanOrEqual(TOOL_RESULT_TOKEN_LIMIT);
+    expect(r.afterTokens).toBeLessThan(r.beforeTokens);
+    // The wrapper survives and the inner body is still valid JSON carrying
+    // the §4.7 truncation marker.
+    expect(r.content.startsWith('<tool_result tool="fetch_url">')).toBe(true);
+    expect(r.content.endsWith("</tool_result>")).toBe(true);
+    const inner = r.content
+      .replace(/^<tool_result[^>]*>\n/, "")
+      .replace(/\n<\/tool_result>$/, "");
+    const parsed = JSON.parse(inner) as {
+      items: unknown[];
+      truncated: { fields: string[]; originalChars: number };
+    };
+    expect(parsed.items.length).toBeLessThan(300);
+    expect(parsed.truncated.fields).toContain("items");
+    expect(parsed.truncated.originalChars).toBe(body.length);
+    expect(r.content).not.toContain("lines elided");
+  });
+
+  test("§4.7: a wrapped plain-text tool result still compacts head+tail", () => {
+    const wrapped = wrapToolResult("read_file", bigToolResult(200));
+    const r = compactToolResult(wrapped);
+    expect(r.compacted).toBe(true);
+    expect(r.elidedLines).toBeGreaterThan(0);
+    expect(r.content).toContain("lines elided");
+  });
+
+  test("§4.7: an under-limit wrapped JSON tool result is untouched", () => {
+    const wrapped = wrapToolResult("calc", JSON.stringify({ value: 42 }));
+    const r = compactToolResult(wrapped);
+    expect(r.compacted).toBe(false);
+    expect(r.content).toBe(wrapped);
   });
 
   test("oneLineToolSummary is a single line naming the size", () => {

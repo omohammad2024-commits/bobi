@@ -119,8 +119,8 @@ describe("plugin manifest contract", () => {
     const ids = getPluginManifests().map((m) => m.id);
     expect(new Set(ids).size).toBe(ids.length);
     expect(ids).toContain("download_media");
-    expect(ids).toContain("remind_nl");
-    expect(ids.length).toBe(44);
+    expect(ids).toContain("remind_at");
+    expect(ids.length).toBe(49);
   });
 
   test("static plugin tools carry manifests matching their names", () => {
@@ -212,9 +212,9 @@ describe("intent router", () => {
     expect(hints[0]?.confidence).toBe(0.95);
   });
 
-  test("Persian reminder with a parseable date routes to remind_nl with args", () => {
+  test("Persian reminder with a parseable date routes to remind_at with args", () => {
     const hints = detectIntents("یادم بنداز فردا ساعت ۹ به مامانم زنگ بزنم", catalog, { now });
-    const hint = hints.find((h) => h.toolId === "remind_nl");
+    const hint = hints.find((h) => h.toolId === "remind_at");
     expect(hint).toBeDefined();
     expect(hint?.confidence).toBeGreaterThanOrEqual(0.9);
     expect(typeof hint?.extractedArgs["dueAt"]).toBe("string");
@@ -237,7 +237,7 @@ describe("intent router", () => {
       { now },
     );
     const ids = hints.map((h) => h.toolId);
-    expect(ids).toContain("remind_nl");
+    expect(ids).toContain("remind_at");
     expect(ids).toContain("download_media");
     expect(hints.length).toBeLessThanOrEqual(3);
     for (let i = 1; i < hints.length; i++) {

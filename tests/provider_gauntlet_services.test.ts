@@ -41,7 +41,7 @@ import {
   ProviderService,
   normalizeApiKey,
 } from "../src/ai/provider_service";
-import { ProviderHealthService, type ProbeResult } from "../src/ai/health";
+import { ProviderProbeService, type ProbeResult } from "../src/ai/provider_probe";
 import {
   handleProviderApi,
   ProviderApiError,
@@ -404,7 +404,7 @@ describe("M8 miniapp models.setDefault", () => {
       const second = addModel(models, pid, "model-second");
       models.setDefault(first);
 
-      const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+      const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
       const deps: ProviderApiDeps = {
         storage,
         providerSvc: providers,
@@ -500,7 +500,7 @@ function panelHarness(remote: RemoteModel[]): {
   const adapters = new PanelStubAdapters(remote);
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
   const ai = new AiAdminController({
     auth,
     admin: new AdminBoundary({ auth, audit }),

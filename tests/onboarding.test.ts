@@ -50,10 +50,10 @@ import { AuditLogger } from "../src/auth/audit";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderService, ModelService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiAdminController } from "../src/groups/ai_controller";
 import type { SetupResult } from "../src/ai/setup";
-import type { ProbeResult } from "../src/ai/health";
+import type { ProbeResult } from "../src/ai/provider_probe";
 
 const OWNER = 111_111;
 const NON_OWNER = 222_222;
@@ -621,7 +621,7 @@ describe("hasConfiguredProvider (AiAdminController)", () => {
     const adapters = new AdapterRegistry();
     const providers = new ProviderService(storage, secrets, adapters);
     const models = new ModelService(storage);
-    const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+    const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
     const ai = new AiAdminController({
       auth,
       admin: new AdminBoundary({ auth, audit }),

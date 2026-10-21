@@ -136,8 +136,7 @@ describe("toolset assignment", () => {
     ).toBe("agents");
     expect(
       createConsultModelsTool({
-        provider: STUB,
-        primaryModel: "m",
+        resolveConsult: () => ({ provider: STUB, primaryModel: "m" }),
         listConfiguredModels: () => [],
       }).toolset,
     ).toBe("agents");
@@ -181,8 +180,7 @@ describe("toolset assignment", () => {
       createAddGoalTool({ storage: STUB, isOwner: () => false }),
       createDelegateTool({ tools: STUB, provider: STUB, model: "m" }),
       createConsultModelsTool({
-        provider: STUB,
-        primaryModel: "m",
+        resolveConsult: () => ({ provider: STUB, primaryModel: "m" }),
         listConfiguredModels: () => [],
       }),
       createImageGenTool({ baseUrl: "http://localhost/", model: "m" }),
@@ -281,6 +279,8 @@ describe("setActiveToolsets", () => {
       "date_time",
       "text_utilities",
       "unit_converter",
+      // Phase 9: weather declares the "utils" toolset like the others.
+      "weather",
     ]);
     expect(groups.get("web")).toEqual(["fetch_url"]);
     expect(groups.get("system")).toEqual(["tool_search"]);

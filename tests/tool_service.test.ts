@@ -23,6 +23,9 @@ const DEFAULT_NAMES = [
   "text_utilities",
   "unit_converter",
   "fetch_url",
+  // Phase 9: weather is a static (deps-free) plugin tool, so it is one
+  // of the defaults a bare ToolService registers.
+  "weather",
 ];
 
 // ---------- the service ----------
@@ -92,6 +95,52 @@ describe("ToolService", () => {
     expect(svc.listActiveNames()).toContain("extra_echo");
     // The defaults are all still there.
     for (const name of DEFAULT_NAMES) expect(svc.listActiveNames()).toContain(name);
+  });
+
+  test("offDesk tools stay registered and executable but are never offered to the model", async () => {
+    const offDesk: Tool<{ q: string }, string> = {
+      name: "off_desk_probe",
+      description: "admin-only probe",
+      enabled: true,
+      offDesk: true,
+      permission: { requires: ["tools:off_desk_probe"] },
+      input: { fields: { q: { type: "string", required: true } } },
+      async run(i): Promise<string> {
+        return i.q;
+      },
+    };
+    const onDesk: Tool<{ q: string }, string> = {
+      name: "on_desk_probe",
+      description: "model-facing probe",
+      enabled: true,
+      permission: { requires: ["tools:on_desk_probe"] },
+      input: { fields: { q: { type: "string", required: true } } },
+      async run(i): Promise<string> {
+        return i.q;
+      },
+    };
+    const svc = new ToolService({
+      extraTools: [offDesk, onDesk] as Tool<unknown, unknown>[],
+    });
+    const actor = {
+      userId: "user-1",
+      permissions: ["tools:off_desk_probe", "tools:on_desk_probe"],
+    };
+    // Model-facing paths exclude the offDesk tool, include the normal one.
+    expect(svc.toolSpecsFor(actor).map((s) => s.name)).toContain("on_desk_probe");
+    expect(svc.toolSpecsFor(actor).map((s) => s.name)).not.toContain("off_desk_probe");
+    expect(svc.searchableTools(actor).map((t) => t.name)).toContain("on_desk_probe");
+    expect(svc.searchableTools(actor).map((t) => t.name)).not.toContain("off_desk_probe");
+    // Admin listing and the registry still see it, and the Executor still runs it.
+    expect(svc.listActive().map((d) => d.name)).toContain("off_desk_probe");
+    expect(svc.registry.find("off_desk_probe")).toBeDefined();
+    const r = await svc.runTool({
+      tool: "off_desk_probe",
+      input: { q: "hi" },
+      actor,
+    });
+    expect(r.status).toBe("ok");
+    expect(r.data).toBe("hi");
   });
 
   test("a duplicate extra tool name is rejected", () => {

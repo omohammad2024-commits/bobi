@@ -142,8 +142,8 @@ describe("generate_video registration", () => {
     expect(() => createVideoGenTool({ baseUrl: "", model: "vid-model" })).toThrow();
   });
 
-  test("index.ts registers it only when an endpoint is configured", () => {
-    const src = readFileSync("src/index.ts", "utf8");
+  test("bootstrap.ts (the composition root) registers it only when an endpoint is configured", () => {
+    const src = readFileSync("src/bootstrap.ts", "utf8");
     expect(src).toContain("videoGenConfigured(videoDeps.baseUrl)");
     expect(src).toContain("createVideoGenTool(");
   });

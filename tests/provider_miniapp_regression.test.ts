@@ -24,7 +24,7 @@ import { Storage } from "../src/storage/storage";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry, type AdapterConfig } from "../src/ai/adapter_registry";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService, type ProbeResult } from "../src/ai/health";
+import { ProviderProbeService, type ProbeResult } from "../src/ai/provider_probe";
 import {
   handleProviderApi,
   ProviderApiError,
@@ -207,7 +207,7 @@ describe("local-target exception threading", () => {
     const storage = Storage.open(":memory:");
     const secrets = new ProviderSecretStore("test-master-key");
     const providerSvc = new ProviderService(storage, secrets, new AdapterRegistry());
-    const health = new ProviderHealthService(storage, providerSvc, secrets, recording);
+    const health = new ProviderProbeService(storage, providerSvc, secrets, recording);
 
     const mk = (label: string, allowLocal: boolean): number => {
       const created = providerSvc.create({

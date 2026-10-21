@@ -118,8 +118,7 @@ const CONFIGURED = ["model-a", "model-b", "model-c", "model-d"];
 
 function makeTool(provider: AiProvider, configured: string[] = CONFIGURED) {
   return createConsultModelsTool({
-    provider,
-    primaryModel: "model-a",
+    resolveConsult: () => ({ provider, primaryModel: "model-a" }),
     listConfiguredModels: () => [...configured],
   });
 }
@@ -132,8 +131,7 @@ describe("consult_models tool", () => {
       "model-synth": "ترکیب نهایی",
     });
     const tool = createConsultModelsTool({
-      provider,
-      primaryModel: "model-synth",
+      resolveConsult: () => ({ provider, primaryModel: "model-synth" }),
       listConfiguredModels: () => ["model-a", "model-b", "model-synth"],
     });
 
@@ -165,8 +163,7 @@ describe("consult_models tool", () => {
       "model-synth": "ترکیب",
     });
     const tool = createConsultModelsTool({
-      provider,
-      primaryModel: "model-synth",
+      resolveConsult: () => ({ provider, primaryModel: "model-synth" }),
       listConfiguredModels: () => ["model-a", "model-b", "model-c", "model-d"],
     });
 
@@ -217,8 +214,7 @@ describe("consult_models tool", () => {
     const service = new ToolService();
     service.registry.register(
       createConsultModelsTool({
-        provider,
-        primaryModel: "model-a",
+        resolveConsult: () => ({ provider, primaryModel: "model-a" }),
         listConfiguredModels: () => ["m1", "m2", "m3", "m4"],
       }) as Tool<unknown, unknown>,
     );
@@ -261,8 +257,7 @@ describe("consult_models tool", () => {
     const service = new ToolService();
     service.registry.register(
       createConsultModelsTool({
-        provider,
-        primaryModel: "model-synth",
+        resolveConsult: () => ({ provider, primaryModel: "model-synth" }),
         listConfiguredModels: () => ["model-a", "model-synth"],
       }) as Tool<unknown, unknown>,
     );

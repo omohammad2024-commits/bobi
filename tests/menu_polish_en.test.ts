@@ -18,13 +18,13 @@ import {
   BUILTIN_COMMAND_DEFS,
 } from "../src/bot/menu";
 import { buildCategoriesKeyboard } from "../src/bot/palette";
-import { tr as menuTr } from "../src/bot/menu_strings";
-import { tr as autoTr } from "../src/bot/cmd_auto_strings";
-import { tr as sessionTr } from "../src/bot/cmd_session_strings";
-import { tr as systemTr } from "../src/bot/cmd_system_strings";
-import { tr as benchTr } from "../src/bot/cmd_phase3_bench_strings";
-import { tr as skillsTr } from "../src/bot/cmd_phase3_skills_strings";
-import { tr as memTr } from "../src/bot/cmd_phase5_memory_strings";
+import { tr as menuTr } from "../src/i18n/strings/menu_strings";
+import { tr as autoTr } from "../src/i18n/strings/cmd_auto_strings";
+import { tr as sessionTr } from "../src/i18n/strings/cmd_session_strings";
+import { tr as systemTr } from "../src/i18n/strings/cmd_system_strings";
+import { tr as benchTr } from "../src/i18n/strings/cmd_phase3_bench_strings";
+import { tr as skillsTr } from "../src/i18n/strings/cmd_phase3_skills_strings";
+import { tr as memTr } from "../src/i18n/strings/cmd_phase5_memory_strings";
 import { PUBLIC_COMMANDS } from "../src/bot/access";
 import { COMMAND_DEFS as SESSION_DEFS } from "../src/bot/cmd_session";
 import { COMMAND_DEFS as SYSTEM_DEFS } from "../src/bot/cmd_system";

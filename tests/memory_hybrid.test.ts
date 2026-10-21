@@ -14,7 +14,8 @@
  *   dimensions match; the bounded backfill re-embeds stale rows; legacy
  *   rows without a model keep the phase-4 dimension-only rule.
  * - indexState(): the owner-visible index health (fresh/stale/missing) —
- *   the dashboard memory endpoint exposes it as `embedding`.
+ *   the Mini App's memory endpoint exposes it as `embedding` (the field
+ *   the retired web dashboard had; platform Phase 10).
  * - Kill switch: BOBI_SEMANTIC_MEMORY=0 disables everything and recall
  *   degrades to text.
  *
@@ -58,8 +59,8 @@ import type { MemoryProvider, StoredMemory } from "../src/memory/provider";
 import { createMemoryTools } from "../src/tools/memory";
 import { ToolService } from "../src/tools/service";
 import type { ToolActor } from "../src/tools/types";
-import { handleDashboardRequest } from "../src/http/dashboard";
-import type { DashboardDeps } from "../src/http/dashboard";
+import { createHmac } from "node:crypto";
+import { handleManageApi, type ManageApiDeps } from "../src/miniapp/api_manage";
 
 const savedEnv = { ...process.env };
 afterEach(() => {
@@ -545,25 +546,40 @@ describe("kill switch", () => {
 const TOKEN = "test-token";
 const OWNER_ID = "12345";
 
-function dashReq(path: string, token: string | undefined): Request {
-  const headers: Record<string, string> = {};
-  if (token !== undefined) headers["authorization"] = `Bearer ${token}`;
-  return new Request(`http://localhost${path}`, { headers });
+// ------------------------------------------------------ miniapp memory ---
+//
+// Platform Phase 10: the dashboard memory endpoint is retired; the Mini
+// App's memory.list carries the same `embedding` index-health field.
+
+const MINIAPP_BOT_TOKEN = "test-bot-token-123456";
+
+function makeInitData(userId: number): string {
+  const params = new URLSearchParams();
+  params.set("auth_date", String(Math.floor(Date.now() / 1000)));
+  params.set("query_id", "AAE-test");
+  params.set("user", JSON.stringify({ id: userId, first_name: "Owner" }));
+  const dataCheckString = [...params.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : 1))
+    .map(([k, v]) => `${k}=${v}`)
+    .join("\n");
+  const secret = createHmac("sha256", "WebAppData").update(MINIAPP_BOT_TOKEN).digest();
+  params.set("hash", createHmac("sha256", secret).update(dataCheckString).digest("hex"));
+  return params.toString();
 }
 
-function dashDeps(storage: Storage, semantic: SemanticMemorySearch): DashboardDeps {
-  return { storage, token: TOKEN, semantic };
+async function memoryList(
+  deps: ManageApiDeps,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  const res = await handleManageApi(
+    "/miniapp/api/memory.list",
+    { initData: makeInitData(Number(OWNER_ID)) },
+    { ...deps, ownerId: OWNER_ID, botToken: MINIAPP_BOT_TOKEN },
+  );
+  return { status: res!.status, body: (await res!.json()) as Record<string, unknown> };
 }
 
-describe("dashboard memory endpoint (phase 5)", () => {
-  const savedOwner = process.env.OWNER_TELEGRAM_ID;
-  afterEach(() => {
-    if (savedOwner === undefined) delete process.env.OWNER_TELEGRAM_ID;
-    else process.env.OWNER_TELEGRAM_ID = savedOwner;
-  });
-
+describe("miniapp memory endpoint — embedding state (phase 5, moved in phase 10)", () => {
   test("includes the embedding index state, read-only", async () => {
-    process.env.OWNER_TELEGRAM_ID = OWNER_ID;
     const storage = Storage.open(":memory:");
     storage.upsertMemory({ userId: OWNER_ID, key: "cat", content: "a fluffy cat" });
     const provider = new MapMemoryProvider();
@@ -574,12 +590,8 @@ describe("dashboard memory endpoint (phase 5)", () => {
       vectors,
       embedder: new CannedEmbedder({}),
     });
-    const res = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/memory", TOKEN),
-      dashDeps(storage, search),
-    );
-    expect(res!.status).toBe(200);
-    const body = (await res!.json()) as Record<string, unknown>;
+    const { status, body } = await memoryList({ storage, semantic: search });
+    expect(status).toBe(200);
     expect(body["total"]).toBe(1);
     const embedding = body["embedding"] as Record<string, unknown>;
     expect(embedding["enabled"]).toBe(true);
@@ -588,10 +600,10 @@ describe("dashboard memory endpoint (phase 5)", () => {
     expect(embedding["missing"]).toBe(1);
     // No memory content inside the embedding block.
     expect(JSON.stringify(embedding)).not.toContain("fluffy");
+    storage.close();
   });
 
   test("memory listing still works when the semantic index throws", async () => {
-    process.env.OWNER_TELEGRAM_ID = OWNER_ID;
     const storage = Storage.open(":memory:");
     storage.upsertMemory({ userId: OWNER_ID, key: "cat", content: "a fluffy cat" });
     const broken = {
@@ -599,13 +611,10 @@ describe("dashboard memory endpoint (phase 5)", () => {
         throw new Error("boom");
       },
     } as unknown as SemanticMemorySearch;
-    const res = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/memory", TOKEN),
-      dashDeps(storage, broken),
-    );
-    expect(res!.status).toBe(200);
-    const body = (await res!.json()) as Record<string, unknown>;
+    const { status, body } = await memoryList({ storage, semantic: broken });
+    expect(status).toBe(200);
     expect(body["total"]).toBe(1);
     expect(body["embedding"]).toBeUndefined();
+    storage.close();
   });
 });

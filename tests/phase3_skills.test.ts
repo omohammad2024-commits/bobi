@@ -40,7 +40,7 @@ import {
   renderReviewCard,
   isSkillInstallCaption,
 } from "../src/bot/cmd_phase3_skills";
-import { tr, stringKeys } from "../src/bot/cmd_phase3_skills_strings";
+import { tr, stringKeys } from "../src/i18n/strings/cmd_phase3_skills_strings";
 
 const GOOD_SKILL = `---
 name: memory-coach

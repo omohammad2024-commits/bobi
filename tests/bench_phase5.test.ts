@@ -32,10 +32,7 @@ import {
   type WorkerSnapshot,
 } from "../src/bench/worker";
 import type { BenchReport, BenchStack, TaskResult } from "../bench/run";
-import {
-  handleDashboardRequest,
-  resetDashboardRateLimitsForTests,
-} from "../src/http/dashboard";
+import { handleDashboardRequest } from "../src/http/dashboard";
 import { Storage } from "../src/storage/storage";
 import {
   handleBenchHistory,
@@ -467,158 +464,21 @@ function fakeProgressWorker() {
   };
 }
 
-function streamReq(token?: string): Request {
-  const headers: Record<string, string> = {};
-  if (token !== undefined) headers["authorization"] = `Bearer ${token}`;
-  return new Request("http://localhost/api/v1/dashboard/benchmarks/live/stream", {
-    headers,
-  });
-}
-
-/** Read SSE event chunks until `want` arrive (or timeout); always cancels. */
-async function readChunks(res: Response, want: number): Promise<string[]> {
-  const reader = res.body!.getReader();
-  const dec = new TextDecoder();
-  let buf = "";
-  const chunks: string[] = [];
-  const deadline = Date.now() + 3000;
-  try {
-    while (chunks.length < want && Date.now() < deadline) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      // Bun yields the enqueued strings directly; over the network they
-      // arrive as bytes. Accept both.
-      buf += typeof value === "string" ? value : dec.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buf.indexOf("\n\n")) >= 0) {
-        chunks.push(buf.slice(0, idx));
-        buf = buf.slice(idx + 2);
-        if (chunks.length >= want) break;
-      }
-    }
-  } finally {
-    await reader.cancel();
-  }
-  return chunks;
-}
-
-describe("dashboard live stream", () => {
-  let storage: Storage;
-
-  beforeEach(() => {
-    resetDashboardRateLimitsForTests();
-    storage = Storage.open(":memory:");
-  });
-
-  test("rejects without a token, like every other dashboard route", async () => {
-    const w = fakeProgressWorker();
-    const res = await handleDashboardRequest(streamReq(), {
-      storage,
-      token: STREAM_TOKEN,
-      benchWorker: w,
-    });
-    expect(res?.status).toBe(401);
-  });
-
-  test("wrong token is rejected", async () => {
-    const w = fakeProgressWorker();
-    const res = await handleDashboardRequest(streamReq("wrong"), {
-      storage,
-      token: STREAM_TOKEN,
-      benchWorker: w,
-    });
-    expect(res?.status).toBe(401);
-  });
-
-  test("503 when no worker is wired", async () => {
-    const res = await handleDashboardRequest(streamReq(STREAM_TOKEN), {
-      storage,
-      token: STREAM_TOKEN,
-    });
-    expect(res?.status).toBe(503);
-  });
-
-  test("only GET is allowed", async () => {
-    const w = fakeProgressWorker();
-    const res = await handleDashboardRequest(
+describe("dashboard live stream — retired (phase 10)", () => {
+  // The SSE endpoint died with the dashboard; live bench progress is a
+  // Mini App polling snapshot now (`bench.live`, covered in
+  // tests/miniapp_desk.test.ts). The old URL must answer 410, not stream.
+  test("the old stream URL answers 410 Gone", async () => {
+    const res = handleDashboardRequest(
       new Request("http://localhost/api/v1/dashboard/benchmarks/live/stream", {
-        method: "POST",
         headers: { authorization: `Bearer ${STREAM_TOKEN}` },
       }),
-      { storage, token: STREAM_TOKEN, benchWorker: w },
     );
-    expect(res?.status).toBe(405);
-  });
-
-  test("snapshot first, then ordered progress and terminal events", async () => {
-    const w = fakeProgressWorker();
-    w.setSnapshot({
-      state: "running",
-      current: {
-        jobId: "bench-9",
-        mode: "live",
-        source: "schedule",
-        startedAtMs: 1_000_000,
-      },
-      pending: 1,
-      progress: {
-        jobId: "bench-9",
-        mode: "live",
-        source: "schedule",
-        startedAtMs: 1_000_000,
-        done: 5,
-        total: 24,
-        currentTaskId: "calc_01",
-        currentTitleFa: "جمع ساده",
-        elapsedMs: 12_000,
-      },
-    });
-    const res = await handleDashboardRequest(streamReq(STREAM_TOKEN), {
-      storage,
-      token: STREAM_TOKEN,
-      benchWorker: w,
-    });
-    expect(res?.status).toBe(200);
-    expect(res?.headers.get("content-type")).toContain("text/event-stream");
-    expect(w.listenerCount()).toBe(1);
-
-    const progress: BenchProgress = {
-      jobId: "bench-9",
-      mode: "live",
-      source: "schedule",
-      startedAtMs: 1_000_000,
-      done: 6,
-      total: 24,
-      currentTaskId: "calc_02",
-      currentTitleFa: "تفریق ساده",
-      elapsedMs: 15_000,
-    };
-    w.emit({ type: "progress", progress });
-    w.emit({ type: "terminal", jobId: "bench-9", outcome: "ok", runId: 7 });
-
-    const chunks = await readChunks(res!, 3);
-    expect(chunks).toHaveLength(3);
-    // 1. the connecting client gets the current snapshot first…
-    expect(chunks[0]).toMatch(/^event: snapshot\n/);
-    expect(chunks[0]).toContain('"state":"running"');
-    expect(chunks[0]).toContain('"done":5');
-    // 2. …then progress events in emission order…
-    expect(chunks[1]).toMatch(/^event: progress\n/);
-    expect(chunks[1]).toContain('"done":6');
-    expect(chunks[1]).toContain('"total":24');
-    expect(chunks[1]).toContain("تفریق ساده");
-    // 3. …then the terminal event that closes the run.
-    expect(chunks[2]).toMatch(/^event: terminal\n/);
-    expect(chunks[2]).toContain('"outcome":"ok"');
-    expect(chunks[2]).toContain('"runId":7');
-    // Disconnecting the reader cleans up the subscription.
-    expect(w.listenerCount()).toBe(0);
+    expect(res?.status).toBe(410);
+    const body = (await res!.json()) as Record<string, unknown>;
+    expect(String(body["error"])).toContain("retired");
   });
 });
-
-// ---------------------------------------------------------------------------
-// /bench status renders live progress
-// ---------------------------------------------------------------------------
 
 describe("/bench status live progress", () => {
   const sender: SenderRef = { userId: "1001", telegramId: 1001, chatId: "1001" };

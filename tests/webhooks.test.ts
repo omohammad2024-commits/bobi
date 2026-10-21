@@ -25,6 +25,7 @@ import {
   initWebhooks,
   webhooksEnabled,
   emitWebhookEvent,
+  webhookEventSink,
   setWebhookDeliverForTests,
 } from "../src/webhooks";
 import { ConversationEngine } from "../src/conversation/engine";
@@ -329,6 +330,9 @@ describe("engine webhook emission", () => {
       model: "fake-echo",
       timeoutMs: 5_000,
       maxConcurrent: 4,
+      // Phase 5: engine events leave through the injected sink (production
+      // wiring); delivery still flows via initWebhooks + the test transport.
+      onEvent: webhookEventSink(),
     });
     const secretText = "متن محرمانه کاربر ۱۲۳۴۵";
     await engine.respond({ conversationId: "c1", userText: secretText });
@@ -390,6 +394,7 @@ describe("engine webhook emission", () => {
       timeoutMs: 5_000,
       maxConcurrent: 4,
       tools,
+      onEvent: webhookEventSink(),
     });
     await engine.respond({ conversationId: "chat-1", userText: "دو به علاوه سه؟", actor });
 
@@ -418,6 +423,7 @@ describe("engine webhook emission", () => {
       model: "fake-echo",
       timeoutMs: 5_000,
       maxConcurrent: 4,
+      onEvent: webhookEventSink(),
     });
     await engine.respond({ conversationId: "c1", userText: "سلام" });
     // Give the (non-existent) worker a chance to misbehave.

@@ -255,10 +255,7 @@ const ALL_KNOWN_TOOLS = [
   "list_reminders",
   "cancel_reminder",
   "search_history",
-  "note_followup",
-  "list_nudges",
-  "ack_nudge",
-  "snooze_nudge",
+  "snooze_reminder",
   "add_goal",
   "list_goals",
   "complete_goal",
@@ -420,7 +417,7 @@ describe("keyboard builders", () => {
 // ---------------------------------------------------------------------------
 
 function sessionStorage(convs: string[]): Storage {
-  return {
+  const conversations = {
     listUserConversations: (_userId: string) =>
       convs.map((c) => ({
         conversationId: c,
@@ -431,6 +428,12 @@ function sessionStorage(convs: string[]): Storage {
     history: () => [],
     countMessages: () => 0,
     getConversationSummary: () => undefined,
+  };
+  // Phase 6: handlers reach conversations through the repo accessor; the
+  // flat members stay so facade-shaped uses keep working.
+  return {
+    ...conversations,
+    conversations,
   } as unknown as Storage;
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { tr } from "../src/bot/menu_strings";
+import { tr } from "../src/i18n/strings/menu_strings";
 
 // Every key in the local menu table. The UI is English-only (owner
 // direction, Oct 2026): tr() accepts the lang argument for signature

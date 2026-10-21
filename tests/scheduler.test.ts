@@ -519,6 +519,79 @@ describe("concurrency", () => {
   });
 });
 
+describe("follow-up reminders (phase 8 unified store)", () => {
+  test("a due follow-up is delivered with the follow-up wording and stays pending", async () => {
+    const h = harness();
+    const id = h.storage.createReminder({
+      userId: "u1",
+      chatId: "u1",
+      text: "قسط رو بده",
+      dueAt: h.now(),
+      repeat: "none",
+      followup: true,
+    });
+
+    const r = await h.scheduler.tick();
+    expect(r.delivered).toBe(1);
+    expect(h.sent).toHaveLength(1);
+    expect(h.sent[0]!.text).toContain("🔔 Follow-up reminder:");
+    expect(h.sent[0]!.text).toContain("قسط رو بده");
+
+    // Not retired: still pending, with the resurface stamped.
+    const rec = h.storage.scheduling.getReminder("u1", id);
+    expect(rec?.state).toBe("pending");
+    expect(rec?.remindedAt).toBe(h.now());
+
+    // A second pass does not resend it — it fires once per due time.
+    const r2 = await h.scheduler.tick();
+    expect(r2.delivered).toBe(0);
+    expect(h.sent).toHaveLength(1);
+    h.storage.close();
+  });
+
+  test("a follow-up far past its time still resurfaces (lateness rule exempt)", async () => {
+    const h = harness();
+    h.storage.createReminder({
+      userId: "u1",
+      chatId: "u1",
+      text: "old follow-up",
+      dueAt: h.now() - 30 * DAY, // a one-off this stale would be retired
+      repeat: "none",
+      followup: true,
+    });
+    const r = await h.scheduler.tick();
+    expect(r.delivered).toBe(1);
+    expect(r.missed).toBe(0);
+    h.storage.close();
+  });
+
+  test("a snoozed follow-up fires again when the snooze expires", async () => {
+    const h = harness();
+    const id = h.storage.createReminder({
+      userId: "u1",
+      chatId: "u1",
+      text: "پیگیری کن",
+      dueAt: h.now(),
+      repeat: "none",
+      followup: true,
+    });
+    await h.scheduler.tick();
+    expect(h.sent).toHaveLength(1);
+
+    expect(
+      h.storage.scheduling.snoozeReminder("u1", id, h.now() + 60_000, h.now()),
+    ).toBe(true);
+    const r = await h.scheduler.tick();
+    expect(r.delivered).toBe(0);
+
+    h.advance(61_000);
+    const r2 = await h.scheduler.tick();
+    expect(r2.delivered).toBe(1);
+    expect(h.sent).toHaveLength(2);
+    h.storage.close();
+  });
+});
+
 describe("loop lifecycle", () => {
   test("start is idempotent and stop is safe when not started", () => {
     const h = harness();

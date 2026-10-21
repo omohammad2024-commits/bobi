@@ -9,7 +9,10 @@ import { Database } from "bun:sqlite";
 import { ToolError } from "../src/tools/errors";
 import type { ToolContext } from "../src/tools/types";
 import { createRunBenchTool, RUN_BENCH_PERMISSION } from "../src/bench/tool";
+import type { RunBenchOutput } from "../src/bench/tool";
 import { BenchHistory } from "../src/bench/history";
+import { ToolService } from "../src/tools/service";
+import type { Tool } from "../src/tools/types";
 import type { BenchReport, BenchStack } from "../bench/run";
 
 const OWNER = "1001";
@@ -198,6 +201,40 @@ describe("run_bench", () => {
     });
     await h.run({ tasks: ["calc_01", "mem_food"] });
     expect(seen).toEqual(["calc_01", "mem_food"]);
+  });
+
+  test("offDesk: hidden from model specs/search but registered and executable via runTool", async () => {
+    const history = new BenchHistory(new Database(":memory:"));
+    const tool = createRunBenchTool({
+      isOwner: (id) => id === OWNER,
+      history,
+      notifyOwner: async () => {},
+      executeSuite: async () => cannedReport(),
+    });
+    expect(tool.offDesk).toBe(true);
+    expect(tool.manifest?.useWhen).toBe("admin surface only");
+    const svc = new ToolService({
+      extraTools: [tool as unknown as Tool<unknown, unknown>],
+    });
+    const ownerActor = { userId: OWNER, permissions: [RUN_BENCH_PERMISSION] };
+    // Model-facing visibility is gone for the owner too.
+    expect(svc.toolSpecsFor(ownerActor).map((s) => s.name)).not.toContain("run_bench");
+    expect(svc.searchableTools(ownerActor).map((t) => t.name)).not.toContain(
+      "run_bench",
+    );
+    // Registration and admin listing are untouched.
+    expect(svc.registry.find("run_bench")).toBeDefined();
+    expect(svc.registry.has("run_bench")).toBe(true);
+    expect(svc.listActive().map((d) => d.name)).toContain("run_bench");
+    // The executor path (what the TaskScheduler dispatches through) still runs it.
+    const r = await svc.runTool({
+      tool: "run_bench",
+      input: { mode: "offline" },
+      actor: ownerActor,
+    });
+    expect(r.status).toBe("ok");
+    expect((r.data as RunBenchOutput).status).toBe("ok");
+    expect(history.listRuns()).toHaveLength(1);
   });
 
   test("a notify failure never fails the run", async () => {

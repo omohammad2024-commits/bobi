@@ -2,7 +2,7 @@
  * Tool desk — Phase-1 contract tests.
  *
  * Pins the desk-card contracts end to end:
- * 1. Catalog completeness: exactly the 44 built-in ids, validateCatalog
+ * 1. Catalog completeness: exactly the 39 built-in ids, validateCatalog
  *    clean, every card fully filled in.
  * 2. Desk block: buildSystemPrompt renders one exact card line per tool
  *    under the desk header, with nothing counted away, within budget.
@@ -31,7 +31,6 @@ import { buildSystemPrompt, estimatePromptTokens } from "../src/agent/prompt";
 
 /** The exact built-in catalog, in catalog order — no more, no fewer. */
 const EXPECTED_IDS = [
-  "ack_nudge",
   "add_goal",
   "build_digest",
   "calculator",
@@ -42,24 +41,26 @@ const EXPECTED_IDS = [
   "consult_models",
   "curate_memories",
   "curator_decide",
+  "currency_rates",
   "date_time",
   "delegate",
   "download_media",
+  "extract_document",
   "fetch_url",
+  "files",
   "forget",
   "generate_image",
   "generate_video",
   "group_digest",
   "list_events",
   "list_goals",
-  "list_nudges",
   "list_reminders",
   "list_tasks",
+  "moderate_member",
   "note_event",
-  "note_followup",
+  "read_calendar",
   "recall",
   "remind_at",
-  "remind_nl",
   "remember",
   "run_bench",
   "schedule_task",
@@ -68,23 +69,27 @@ const EXPECTED_IDS = [
   "shortcut_delete",
   "shortcut_list",
   "skills",
-  "snooze_nudge",
-  "summarize_memories",
+  "snooze_reminder",
+  "telegram_action",
+  "text_to_speech",
   "text_utilities",
+  "todo_list",
   "tool_search",
+  "transcribe_audio",
   "unit_converter",
   "usage_report",
+  "weather",
   "web_search",
 ] as const;
 
 const LATENCY_TIERS = new Set(["instant", "seconds", "minutes"]);
 
 describe("desk catalog completeness", () => {
-  test("catalog is exactly the 44 expected ids and validates clean", () => {
+  test("catalog is exactly the 49 expected ids and validates clean", () => {
     const manifests = getPluginManifests();
-    expect(manifests.length).toBe(44);
+    expect(manifests.length).toBe(49);
     expect(manifests.map((m) => m.id)).toEqual([...EXPECTED_IDS]);
-    expect(new Set(manifests.map((m) => m.id)).size).toBe(44);
+    expect(new Set(manifests.map((m) => m.id)).size).toBe(49);
     expect(validateCatalog(manifests)).toEqual([]);
   });
 
@@ -102,7 +107,7 @@ describe("desk catalog completeness", () => {
 // ---------- desk block in the prompt ----------
 
 const DESK_HEADER =
-  "Tool desk (44) — every tool you may use; each line: what — when to pick it up:";
+  "Tool desk (49) — every tool you may use; each line: what — when to pick it up:";
 
 describe("desk block", () => {
   const manifests = getPluginManifests();
@@ -141,10 +146,15 @@ describe("desk block", () => {
     expect(prompt).not.toContain("Plus ");
   });
 
-  test("desk block stays within the token budget (measured: 570)", () => {
+  test("desk block stays within the token budget", () => {
     const tokens = estimatePromptTokens(deskBlock);
     expect(tokens).toBeGreaterThan(0);
-    expect(tokens).toBeLessThanOrEqual(600);
+    // Budget raised 600 → 650 → 720 across Phase 9: the ten new
+    // action-layer cards (Wave A: currency_rates, files, read_calendar,
+    // todo_list, weather; Wave B: extract_document, moderate_member,
+    // telegram_action, text_to_speech, transcribe_audio) brought the
+    // measured block to 698 tokens at 49 tools.
+    expect(tokens).toBeLessThanOrEqual(720);
   });
 });
 

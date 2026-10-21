@@ -36,7 +36,7 @@ import type {
 import { Storage } from "../src/storage/storage";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { setupFromPreset } from "../src/ai/setup";
 import type { AIProviderAdapter } from "../src/ai/adapter";
 
@@ -532,7 +532,7 @@ describe("OpenAI gauntlet — Cloudflare Workers AI end-to-end", () => {
       expect(row.baseUrl).not.toContain("{ACCOUNT_ID}");
 
       // Probe (two-stage: ping completion + realistic stream).
-      const health = new ProviderHealthService(storage, providers, secrets, registry);
+      const health = new ProviderProbeService(storage, providers, secrets, registry);
       const probe = await health.probe(providerId);
       expect(probe.ok).toBe(true);
 

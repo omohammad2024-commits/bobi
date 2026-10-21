@@ -25,7 +25,7 @@ import { Storage } from "../src/storage/storage";
 import { AdapterRegistry, type AdapterConfig } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import type { AIProviderAdapter } from "../src/ai/adapter";
 import type { CompletionResponse } from "../src/ai/provider";
 import { EngineError } from "../src/conversation/engine";
@@ -368,7 +368,7 @@ class ThrowingAdapters extends AdapterRegistry {
 }
 
 function probeHarness(failWith: unknown): {
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   providerId: number;
   close: () => void;
 } {
@@ -378,7 +378,7 @@ function probeHarness(failWith: unknown): {
   adapters.failWith = failWith;
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters);
   const created = providers.create({
     label: "Test provider",
     adapter: "openai_compatible",

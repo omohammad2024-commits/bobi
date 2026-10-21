@@ -26,7 +26,7 @@ import { AiAdminController } from "../src/groups/ai_controller";
 import { UserPanelController } from "../src/auth/user_controller";
 import { UserAccessService } from "../src/auth/user_service";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { encode, decode } from "../src/groups/callbacks";
@@ -72,7 +72,7 @@ function harness() {
     storage,
     providers,
     models: new ModelService(storage),
-    health: new ProviderHealthService(storage, providers, secrets, adapters),
+    health: new ProviderProbeService(storage, providers, secrets, adapters),
     secrets,
     adapters,
   });

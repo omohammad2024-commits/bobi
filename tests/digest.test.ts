@@ -11,8 +11,15 @@ import { Database } from "bun:sqlite";
 import { Storage } from "../src/storage/storage";
 import { ProposalStore } from "../src/curator/proposals";
 import { UsageTracker } from "../src/ai/usage";
-import { buildDigest, formatDigest, MAX_DIGEST_CHARS } from "../src/digest/builder";
-import type { DigestDeps, DigestHeadline } from "../src/digest/builder";
+import {
+  buildDigest,
+  buildDigestData,
+  DIGEST_INTERESTS_PREF_KEY,
+  formatDigest,
+  MAX_DIGEST_CHARS,
+  renderDigestText,
+} from "../src/digest/builder";
+import type { DigestDeps, DigestHeadline, SearchHeadlinesFn } from "../src/digest/builder";
 import { BUILD_DIGEST_PERMISSION, createDigestTool } from "../src/tools/digest_tool";
 import { ToolError } from "../src/tools/errors";
 import type { ToolContext } from "../src/tools/types";
@@ -22,6 +29,7 @@ const STRANGER = "99999";
 
 /** 2026-10-18T04:30:00Z == 08:00 Asia/Tehran (a Sunday). */
 const NOW_MS = Date.parse("2026-10-18T04:30:00Z");
+const DAY_MS = 24 * 60 * 60 * 1000;
 const TEN_AM_TEHRAN = Date.parse("2026-10-18T06:30:00Z");
 const NINE_AM_TEHRAN = Date.parse("2026-10-18T05:30:00Z");
 
@@ -248,6 +256,240 @@ describe("createDigestTool", () => {
     const err = await tool
       .run({}, { ...ctx(""), actor: { userId: "", permissions: [] } })
       .catch((e) => e);
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).kind).toBe("not_allowed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase-8: topic / date-range parameters
+// ---------------------------------------------------------------------------
+
+/** Fake search that records every (query, limit) it was asked for. */
+function recordingSearch(seen: Array<{ q: string; limit: number }>): SearchHeadlinesFn {
+  return async (q, limit) => {
+    seen.push({ q, limit });
+    return [{ title: `hit for ${q}`, url: "https://example.com/x", snippet: "" }];
+  };
+}
+
+describe("buildDigestData Phase-8 window (builder)", () => {
+  test("default call keeps the exact legacy date section shape", async () => {
+    const sections = await buildDigestData(deps());
+    expect(sections[0]).toEqual({ kind: "date", nowMs: NOW_MS });
+  });
+
+  test("topic override reaches searchHeadlines as one topic query, beating saved interests", async () => {
+    const seen: Array<{ q: string; limit: number }> = [];
+    const d = deps({ searchHeadlines: recordingSearch(seen), topic: "AI chips" });
+    d.storage.setUserPref(OWNER, DIGEST_INTERESTS_PREF_KEY, JSON.stringify(["meme page"]));
+    await buildDigestData(d);
+    expect(seen).toEqual([{ q: "AI chips news", limit: 3 }]);
+  });
+
+  test("anchored 2 days ahead includes that day's task and excludes today's", async () => {
+    const d = deps({ anchorMs: NOW_MS + 2 * DAY_MS, rangeDays: 1 });
+    d.storage.createTask({
+      name: "today task",
+      cronExpr: "0 10 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: "{}",
+      createdByUserId: OWNER,
+      nextRunAtMs: TEN_AM_TEHRAN,
+    });
+    d.storage.createTask({
+      name: "future task",
+      cronExpr: "0 10 * * *",
+      timezone: "Asia/Tehran",
+      actionJson: "{}",
+      createdByUserId: OWNER,
+      nextRunAtMs: NOW_MS + 2 * DAY_MS + 2 * 3_600_000,
+    });
+    const sections = await buildDigestData(d);
+    const tasks = sections.find((s) => s.kind === "tasks");
+    if (tasks?.kind !== "tasks") throw new Error("expected a tasks section");
+    expect(tasks.items.map((i) => i.name)).toEqual(["future task"]);
+    const text = renderDigestText(sections, "en");
+    expect(text).toContain("October 20");
+    expect(text).toContain("future task");
+    expect(text).not.toContain("today task");
+  });
+
+  test("days=3 range includes a reminder due on day 3; the default digest excludes it", async () => {
+    const d = deps();
+    d.storage.createReminder({
+      userId: OWNER,
+      chatId: "1",
+      text: "day three reminder",
+      dueAt: NOW_MS + 2 * DAY_MS + 3_600_000,
+      repeat: "none",
+    });
+    const plain = await buildDigestData(d);
+    expect(plain.some((s) => s.kind === "reminders")).toBe(false);
+
+    const ranged = await buildDigestData({ ...d, rangeDays: 3 });
+    const reminders = ranged.find((s) => s.kind === "reminders");
+    if (reminders?.kind !== "reminders") throw new Error("expected a reminders section");
+    expect(reminders.items.map((i) => i.text)).toEqual(["day three reminder"]);
+    // The header must not claim a 3-day digest is one day.
+    expect(renderDigestText(ranged, "en")).toContain("Covering 3 days");
+  });
+
+  test("explicit range bounds events to the window; default keeps the 7-day horizon", async () => {
+    const d = deps();
+    d.storage.upsertMemory({
+      userId: OWNER,
+      key: "event:birthday:plus3",
+      content: JSON.stringify({
+        v: 1,
+        name: "Plus Three",
+        kind: "birthday",
+        jMonth: 7,
+        jDay: 29, // Mehr 29 == 3 days after Mehr 26 (NOW)
+        labelFa: "۲۹ مهر",
+      }),
+    });
+    const plain = await buildDigestData(d);
+    expect(plain.some((s) => s.kind === "events")).toBe(true);
+    const ranged = await buildDigestData({ ...d, rangeDays: 1 });
+    expect(ranged.some((s) => s.kind === "events")).toBe(false);
+  });
+
+  test("ranged usage counts from the range start, not the rolling 24h", async () => {
+    const d = deps();
+    new UsageTracker(d.storage).record({
+      userId: OWNER,
+      conversationId: 1,
+      providerId: 1,
+      modelId: "claude-sonnet",
+      usage: { inputTokens: 100, outputTokens: 50 },
+      at: NOW_MS - 36 * 3_600_000, // 36h ago: outside last-24h, inside a 3-day range anchored 2 days back
+    });
+    const plain = await buildDigestData(d);
+    expect(plain.some((s) => s.kind === "usage")).toBe(false);
+
+    const ranged = await buildDigestData({ ...d, anchorMs: NOW_MS - 2 * DAY_MS, rangeDays: 3 });
+    const usage = ranged.find((s) => s.kind === "usage");
+    if (usage?.kind !== "usage") throw new Error("expected a usage section");
+    expect(usage.runs).toBe(1);
+  });
+});
+
+describe("createDigestTool Phase-8 params", () => {
+  function makeTool(seen?: Array<{ q: string; limit: number }>) {
+    const d = deps(seen !== undefined ? { searchHeadlines: recordingSearch(seen) } : {});
+    const tool = createDigestTool({
+      storage: d.storage,
+      proposalStore: d.proposalStore,
+      isOwner: (id) => id === OWNER,
+      now: () => NOW_MS,
+      ...(d.searchHeadlines !== undefined ? { searchHeadlines: d.searchHeadlines } : {}),
+    });
+    return { tool, d };
+  }
+
+  test("no params: output is exactly { text }, as before", async () => {
+    const { tool } = makeTool();
+    const out = await tool.run({}, ctx(OWNER));
+    expect(Object.keys(out)).toEqual(["text"]);
+  });
+
+  test("topic is echoed trimmed and drives the headline query", async () => {
+    const seen: Array<{ q: string; limit: number }> = [];
+    const { tool } = makeTool(seen);
+    const out = await tool.run({ topic: "  space exploration " }, ctx(OWNER));
+    expect(out.topic).toBe("space exploration");
+    expect(out.date).toBeUndefined();
+    expect(out.days).toBeUndefined();
+    expect(seen).toEqual([{ q: "space exploration news", limit: 3 }]);
+  });
+
+  test("empty topic counts as absent: no echo, generic headlines", async () => {
+    const seen: Array<{ q: string; limit: number }> = [];
+    const { tool } = makeTool(seen);
+    const out = await tool.run({ topic: "   " }, ctx(OWNER));
+    expect(out.topic).toBeUndefined();
+    expect(seen).toEqual([{ q: "today's top headlines", limit: 3 }]);
+  });
+
+  test("date + days are echoed; the header reflects the anchor and the range", async () => {
+    const { tool } = makeTool();
+    const out = await tool.run({ date: "2026-10-20", days: 3 }, ctx(OWNER));
+    expect(out.date).toBe("2026-10-20");
+    expect(out.days).toBe(3);
+    expect(out.text).toContain("October 20");
+    expect(out.text).toContain("Covering 3 days");
+  });
+
+  test("date alone echoes days=1, the effective range", async () => {
+    const { tool } = makeTool();
+    const out = await tool.run({ date: "2026-10-20" }, ctx(OWNER));
+    expect(out.date).toBe("2026-10-20");
+    expect(out.days).toBe(1);
+    expect(out.text).toContain("October 20");
+  });
+
+  test("a full ISO instant is accepted as the anchor", async () => {
+    const { tool } = makeTool();
+    const out = await tool.run({ date: "2026-10-20T06:30:00Z" }, ctx(OWNER));
+    expect(out.date).toBe("2026-10-20T06:30:00Z");
+    expect(out.days).toBe(1);
+    expect(out.text).toContain("October 20");
+  });
+
+  test("days alone echoes days and starts the range today", async () => {
+    const { tool, d } = makeTool();
+    d.storage.createReminder({
+      userId: OWNER,
+      chatId: "1",
+      text: "day three reminder",
+      dueAt: NOW_MS + 2 * DAY_MS + 3_600_000,
+      repeat: "none",
+    });
+    const ranged = await tool.run({ days: 3 }, ctx(OWNER));
+    expect(ranged.days).toBe(3);
+    expect(ranged.date).toBeUndefined();
+    expect(ranged.text).toContain("day three reminder");
+    const plain = await tool.run({}, ctx(OWNER));
+    expect(plain.text).not.toContain("day three reminder");
+  });
+
+  test("invalid dates are rejected as invalid_input naming the expected format", async () => {
+    const { tool } = makeTool();
+    for (const bad of [
+      "not-a-date",
+      "2026-02-30", // Date.parse would silently roll this to March 2
+      "2026-13-01",
+      "20/10/2026",
+      "2026-10-20T25:00:00Z",
+      "",
+    ]) {
+      const err = await tool.run({ date: bad }, ctx(OWNER)).catch((e) => e);
+      expect(err, bad).toBeInstanceOf(ToolError);
+      expect((err as ToolError).kind, bad).toBe("invalid_input");
+      expect((err as ToolError).message, bad).toContain("YYYY-MM-DD");
+    }
+  });
+
+  test("out-of-range days are rejected as invalid_input", async () => {
+    const { tool } = makeTool();
+    for (const bad of [0, 8, 1.5, -1]) {
+      const err = await tool.run({ days: bad }, ctx(OWNER)).catch((e) => e);
+      expect(err, String(bad)).toBeInstanceOf(ToolError);
+      expect((err as ToolError).kind, String(bad)).toBe("invalid_input");
+    }
+  });
+
+  test("an over-long topic is rejected as invalid_input", async () => {
+    const { tool } = makeTool();
+    const err = await tool.run({ topic: "x".repeat(81) }, ctx(OWNER)).catch((e) => e);
+    expect(err).toBeInstanceOf(ToolError);
+    expect((err as ToolError).kind).toBe("invalid_input");
+  });
+
+  test("non-owner with params is still refused as not_allowed", async () => {
+    const { tool } = makeTool();
+    const err = await tool.run({ topic: "space", days: 3 }, ctx(STRANGER)).catch((e) => e);
     expect(err).toBeInstanceOf(ToolError);
     expect((err as ToolError).kind).toBe("not_allowed");
   });

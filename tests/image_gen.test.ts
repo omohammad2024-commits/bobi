@@ -101,8 +101,8 @@ describe("generate_image registration", () => {
     expect(() => createImageGenTool({ baseUrl: "", model: "dall-e-3" })).toThrow();
   });
 
-  test("index.ts registers it only when an endpoint is configured", () => {
-    const src = readFileSync("src/index.ts", "utf8");
+  test("bootstrap.ts (the composition root) registers it only when an endpoint is configured", () => {
+    const src = readFileSync("src/bootstrap.ts", "utf8");
     expect(src).toContain("imageGenConfigured(config.imageBaseUrl)");
     expect(src).toContain("createImageGenTool(");
   });

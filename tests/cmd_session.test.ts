@@ -27,7 +27,7 @@ import {
   splitLastTurns,
   type SessionCtx,
 } from "../src/bot/cmd_session";
-import { tr } from "../src/bot/cmd_session_strings";
+import { tr } from "../src/i18n/strings/cmd_session_strings";
 
 // ---------- helpers ----------
 

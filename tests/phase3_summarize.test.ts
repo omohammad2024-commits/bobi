@@ -5,7 +5,8 @@
  * memories), deterministic archive keys (+ collision suffix), the heuristic
  * archive body, the LLM-injection opt-in, the "archive" proposal shape
  * (deletion proposed, never performed), and the owner-only tool surfaces
- * (summarize_memories, note_event, list_events).
+ * (note_event, list_events — and, since the Phase-8 merge folded the old
+ * summarize_memories tool into it, curate_memories' archive pass).
  */
 import { describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
@@ -17,9 +18,9 @@ import {
 } from "../src/curator/summarize";
 import { kindLabelFa } from "../src/curator/curator";
 import {
+  CURATE_MEMORIES_PERMISSION,
   LIST_EVENTS_PERMISSION,
   NOTE_EVENT_PERMISSION,
-  SUMMARIZE_MEMORIES_PERMISSION,
   createCuratorTools,
 } from "../src/curator/tools";
 import { ProposalStore } from "../src/curator/proposals";
@@ -207,7 +208,7 @@ const STRANGER = "u9";
 function ownerActor(): ToolActor {
   return {
     userId: OWNER,
-    permissions: [SUMMARIZE_MEMORIES_PERMISSION, NOTE_EVENT_PERMISSION, LIST_EVENTS_PERMISSION],
+    permissions: [CURATE_MEMORIES_PERMISSION, NOTE_EVENT_PERMISSION, LIST_EVENTS_PERMISSION],
   };
 }
 
@@ -233,20 +234,28 @@ function ctx(userId: string) {
   };
 }
 
-describe("summarize_memories tool", () => {
+describe("curate_memories archive pass (Phase 8: absorbed summarize_memories)", () => {
   test("archives and stores the deletion proposal for the owner", async () => {
     const { provider, store, svc } = setup();
     provider.seed("k1", "خاطرهٔ قدیمی طولانی برای بایگانی شدن", NOW_MS - 100 * DAY_MS);
     const r = await svc.runTool({
-      tool: "summarize_memories",
+      tool: "curate_memories",
       input: { olderThanDays: 90 },
       actor: ownerActor(),
     });
     expect(r.status).toBe("ok");
-    const out = r.data as { archived: boolean; proposalId: string; summaryFa: string };
+    const out = r.data as {
+      archived: boolean;
+      archiveKey: string;
+      archivedCount: number;
+      proposals: Array<{ id: string; kind: string }>;
+    };
     expect(out.archived).toBe(true);
-    expect(out.proposalId).toBeDefined();
-    const pending = store.getPending(OWNER, out.proposalId);
+    expect(out.archiveKey).toBe("archive:2026-10-18");
+    expect(out.archivedCount).toBe(1);
+    const archiveProposal = out.proposals.find((p) => p.kind === "archive");
+    expect(archiveProposal).toBeDefined();
+    const pending = store.getPending(OWNER, archiveProposal!.id);
     expect(pending?.kind).toBe("archive");
     // The archive exists; the original still exists (no silent deletion).
     expect(provider.keys()).toContain("archive:2026-10-18");
@@ -256,7 +265,7 @@ describe("summarize_memories tool", () => {
   test("rejects non-owners", async () => {
     const { svc } = setup();
     const r = await svc.runTool({
-      tool: "summarize_memories",
+      tool: "curate_memories",
       input: {},
       actor: { userId: STRANGER, permissions: [] },
     });
@@ -266,7 +275,7 @@ describe("summarize_memories tool", () => {
   test("reports cleanly when nothing is archivable", async () => {
     const { svc } = setup();
     const r = await svc.runTool({
-      tool: "summarize_memories",
+      tool: "curate_memories",
       input: {},
       actor: ownerActor(),
     });

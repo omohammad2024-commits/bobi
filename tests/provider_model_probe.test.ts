@@ -1,5 +1,5 @@
 /**
- * Per-model probe (ProviderHealthService.probeModel).
+ * Per-model probe (ProviderProbeService.probeModel).
  *
  * The panel's model-row "Test" button must verify ONE specific model with a
  * real completion — the one in the row, not the provider's default — and a
@@ -14,7 +14,7 @@ import {
 } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiError } from "../src/ai/provider";
 import { handleProviderApi, type ProviderApiDeps } from "../src/miniapp/api_providers";
 import type {
@@ -51,7 +51,7 @@ interface Harness {
   storage: Storage;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   adapters: RecordingAdapters;
 }
 
@@ -61,7 +61,7 @@ function harness(): Harness {
   const adapters = new RecordingAdapters();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters);
   return { storage, providers, models, health, adapters };
 }
 
@@ -97,7 +97,7 @@ function providerWithTwoModels(
   return { providerId };
 }
 
-describe("ProviderHealthService.probeModel", () => {
+describe("ProviderProbeService.probeModel", () => {
   test("probes the requested model, not the provider default", async () => {
     const h = harness();
     const { providerId } = providerWithTwoModels(h);

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { ToolService } from "../src/tools/service";
+import { jalaliPartsOf, jalaliToGregorianMs } from "../src/tools/jalali_calendar";
 import type { ToolActor, ToolContext } from "../src/tools/types";
 import type { ToolErrorKind } from "../src/tools/errors";
 
@@ -137,6 +138,282 @@ describe("calculator", () => {
   });
 });
 
+// ---------- calculator expressions ----------
+
+describe("calculator expressions", () => {
+  /** Direct-run error message (bypasses the Executor, like toolErrorKind). */
+  async function exprErrorMessage(
+    service: ToolService,
+    input: unknown,
+  ): Promise<string> {
+    const t = service.registry.find("calculator");
+    if (!t) throw new Error("tool missing");
+    const ctx: ToolContext = {
+      clock: () => new Date(0),
+      actor: fullActor(),
+      signal: new AbortController().signal,
+    };
+    try {
+      await t.run(input as Record<string, unknown>, ctx);
+      return "";
+    } catch (err) {
+      return (err as Error).message;
+    }
+  }
+
+  async function exprResult(
+    svc: ToolService,
+    expression: string,
+  ): Promise<number | undefined> {
+    const r = await run<{ result: number }>(
+      svc,
+      "calculator",
+      { expression },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    return r.data?.result;
+  }
+
+  test("expression form returns { expression, result }", async () => {
+    const svc = makeService();
+    const r = await run<{ expression: string; result: number }>(
+      svc,
+      "calculator",
+      { expression: "2+3*4" },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data).toEqual({ expression: "2+3*4", result: 14 });
+  });
+
+  test("precedence: multiplication and division bind tighter than + and -", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "2+3*4")).toBe(14);
+    expect(await exprResult(svc, "2*3+4")).toBe(10);
+    expect(await exprResult(svc, "10-2*3")).toBe(4);
+    expect(await exprResult(svc, "2+10/4")).toBe(4.5);
+    expect(await exprResult(svc, "10/2/5")).toBe(1);
+    expect(await exprResult(svc, "1.5*2+0.5")).toBe(3.5);
+    expect(await exprResult(svc, ".5+.5")).toBe(1);
+  });
+
+  test("parentheses override precedence", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "(2+3)*4")).toBe(20);
+    expect(await exprResult(svc, "2*(3+4)")).toBe(14);
+    expect(await exprResult(svc, "((2+3))*((4))")).toBe(20);
+    expect(await exprResult(svc, "10-(2+3)")).toBe(5);
+  });
+
+  test("multiplication and division glyphs × and ÷ work", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "3×4")).toBe(12);
+    expect(await exprResult(svc, "12÷4")).toBe(3);
+    expect(await exprResult(svc, "2×3+8÷2")).toBe(10);
+  });
+
+  test("power: ^ is right-associative and binds tighter than * and unary minus", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "2^10")).toBe(1024);
+    expect(await exprResult(svc, "2^3^2")).toBe(512); // 2^(3^2), not (2^3)^2
+    expect(await exprResult(svc, "2*3^2")).toBe(18);
+    // Standard convention pinned: -2^2 = -(2^2) = -4, (-2)^2 = 4.
+    expect(await exprResult(svc, "-2^2")).toBe(-4);
+    expect(await exprResult(svc, "(-2)^2")).toBe(4);
+    expect(await exprResult(svc, "2^-2")).toBe(0.25);
+    expect(await exprResult(svc, "9^0.5")).toBe(3);
+  });
+
+  test("unary minus and plus", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "-3+5")).toBe(2);
+    expect(await exprResult(svc, "+5")).toBe(5);
+    expect(await exprResult(svc, "-(2+3)")).toBe(-5);
+    expect(await exprResult(svc, "3*-2")).toBe(-6);
+    expect(await exprResult(svc, "--5")).toBe(5);
+    expect(await exprResult(svc, "5--3")).toBe(8);
+  });
+
+  test("postfix percent divides the preceding factor by 100", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "50%")).toBe(0.5);
+    expect(await exprResult(svc, "100%")).toBe(1);
+    expect(await exprResult(svc, "200*10%")).toBe(20);
+    expect(await exprResult(svc, "50%+1")).toBe(1.5);
+    expect(await exprResult(svc, "(50+50)%")).toBe(1);
+    expect(await exprResult(svc, "200-10%")).toBeCloseTo(199.9, 12);
+  });
+
+  test("sqrt, √ and abs functions", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "sqrt(16)")).toBe(4);
+    expect(await exprResult(svc, "sqrt(9+16)")).toBe(5);
+    expect(await exprResult(svc, "sqrt(2)")).toBeCloseTo(Math.SQRT2, 12);
+    expect(await exprResult(svc, "√(25)")).toBe(5);
+    expect(await exprResult(svc, "√9")).toBe(3);
+    expect(await exprResult(svc, "sqrt(16)+√(9)")).toBe(7);
+    expect(await exprResult(svc, "abs(-7)")).toBe(7);
+    expect(await exprResult(svc, "abs(3-10)")).toBe(7);
+    expect(await exprResult(svc, "abs(-2^2)")).toBe(4); // abs(-(2^2))
+  });
+
+  test("constants pi and e", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "pi")).toBeCloseTo(Math.PI, 12);
+    expect(await exprResult(svc, "e")).toBeCloseTo(Math.E, 12);
+    expect(await exprResult(svc, "2*pi")).toBeCloseTo(2 * Math.PI, 12);
+    expect(await exprResult(svc, "π")).toBeCloseTo(Math.PI, 12);
+  });
+
+  test("Persian and Arabic digits are normalized", async () => {
+    const svc = makeService();
+    expect(await exprResult(svc, "۲+۳")).toBe(5);
+    expect(await exprResult(svc, "۲×(۳+۴)")).toBe(14);
+    expect(await exprResult(svc, "١٢÷٣")).toBe(4);
+    expect(await exprResult(svc, "۲^۳")).toBe(8);
+    expect(await exprResult(svc, "۵۰%")).toBe(0.5);
+    expect(await exprResult(svc, "۵۰٪")).toBe(0.5);
+    expect(await exprResult(svc, "√(۱۶)")).toBe(4);
+  });
+
+  test("malformed expressions are rejected with invalid_input", async () => {
+    const svc = makeService();
+    const a = fullActor();
+    for (const bad of [
+      "(1+2", // unbalanced parens
+      "1+2)", // extra closing paren
+      "1+", // trailing operator
+      "2**3", // doubled operator
+      "()", // empty parens
+      "foo(1)", // unknown function
+      "bar+1", // unknown identifier
+      "sqrt(1", // unbalanced function call
+      "sqrt 16", // function without parens
+      "1 2", // two numbers, no operator
+      ".", // lone decimal point
+      "1/ ", // trailing operator after spaces
+      "process.exit(1)", // code-shaped input is never evaluated
+      "globalThis", // unknown identifier, not a global lookup
+    ]) {
+      const r = await run(svc, "calculator", { expression: bad }, a);
+      expect(r.status).toBe("invalid_input");
+      expect(await toolErrorKind(svc, "calculator", { expression: bad })).toBe(
+        "invalid_input",
+      );
+    }
+  });
+
+  test("parse errors name the problem", async () => {
+    const svc = makeService();
+    expect(await exprErrorMessage(svc, { expression: "(1+2" })).toContain(")");
+    expect(await exprErrorMessage(svc, { expression: "bar+1" })).toContain("bar");
+    expect(await exprErrorMessage(svc, { expression: "1+" })).toContain(
+      "end of expression",
+    );
+  });
+
+  test("empty expression is rejected", async () => {
+    const svc = makeService();
+    const a = fullActor();
+    for (const bad of [{ expression: "" }, { expression: "   " }]) {
+      const r = await run(svc, "calculator", bad, a);
+      expect(r.status).toBe("invalid_input");
+      expect(await toolErrorKind(svc, "calculator", bad)).toBe("invalid_input");
+    }
+  });
+
+  test("divide by zero via expression is rejected", async () => {
+    const svc = makeService();
+    const a = fullActor();
+    for (const bad of ["1/0", "1/(2-2)", "0/0"]) {
+      const r = await run(svc, "calculator", { expression: bad }, a);
+      expect(r.status).toBe("invalid_input");
+      expect(await toolErrorKind(svc, "calculator", { expression: bad })).toBe(
+        "invalid_input",
+      );
+    }
+    expect(await exprErrorMessage(svc, { expression: "1/0" })).toBe(
+      "Division by zero is not allowed.",
+    );
+  });
+
+  test("non-finite expression results are rejected", async () => {
+    const svc = makeService();
+    const a = fullActor();
+    for (const bad of ["10^1000", "sqrt(-1)", "(-2)^0.5", "10^308*10"]) {
+      const r = await run(svc, "calculator", { expression: bad }, a);
+      expect(r.status).toBe("invalid_input");
+    }
+  });
+
+  test("length cap: expressions over 200 characters are rejected", async () => {
+    const svc = makeService();
+    const tooLong = "1" + "+1".repeat(100); // 201 characters
+    expect(tooLong.length).toBe(201);
+    const r = await run(svc, "calculator", { expression: tooLong }, fullActor());
+    expect(r.status).toBe("invalid_input");
+    // The tool body itself enforces the cap for direct callers too.
+    expect(await toolErrorKind(svc, "calculator", { expression: tooLong })).toBe(
+      "invalid_input",
+    );
+    expect(await exprErrorMessage(svc, { expression: tooLong })).toContain("too long");
+    // Exactly at the cap is still accepted when it parses.
+    const atCap = "11" + "+1".repeat(99); // 200 characters, = 110
+    expect(atCap.length).toBe(200);
+    expect(await exprResult(svc, atCap)).toBe(110);
+  });
+
+  test("depth cap: pathologically nested expressions are rejected", async () => {
+    const svc = makeService();
+    const deep = "(".repeat(40) + "1" + ")".repeat(40);
+    const r = await run(svc, "calculator", { expression: deep }, fullActor());
+    expect(r.status).toBe("invalid_input");
+    expect(await toolErrorKind(svc, "calculator", { expression: deep })).toBe(
+      "invalid_input",
+    );
+    expect(await exprErrorMessage(svc, { expression: deep })).toContain("too deeply");
+    // Reasonable nesting still works.
+    expect(await exprResult(svc, "((((1+2))))*3")).toBe(9);
+  });
+
+  test("legacy { op, a, b } form still works and keeps its output shape", async () => {
+    const svc = makeService();
+    const r = await run<{ op: string; a: number; b: number; result: number }>(
+      svc,
+      "calculator",
+      { op: "multiply", a: 6, b: 7 },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data).toEqual({ op: "multiply", a: 6, b: 7, result: 42 });
+  });
+
+  test("supplying both forms is an invalid_input error explaining the two forms", async () => {
+    const svc = makeService();
+    const both = { expression: "1+1", op: "add", a: 1, b: 2 };
+    const r = await run(svc, "calculator", both, fullActor());
+    expect(r.status).toBe("invalid_input");
+    expect(await toolErrorKind(svc, "calculator", both)).toBe("invalid_input");
+    const message = await exprErrorMessage(svc, both);
+    expect(message).toContain("expression");
+    expect(message).toContain("not both");
+  });
+
+  test("supplying neither form (or a partial legacy form) is invalid_input", async () => {
+    const svc = makeService();
+    const a = fullActor();
+    for (const bad of [{}, { op: "add", a: 1 }, { a: 1, b: 2 }, { op: "add" }]) {
+      const r = await run(svc, "calculator", bad, a);
+      expect(r.status).toBe("invalid_input");
+      expect(await toolErrorKind(svc, "calculator", bad)).toBe("invalid_input");
+    }
+    const message = await exprErrorMessage(svc, {});
+    expect(message).toContain("expression");
+    expect(message).toContain("'op'");
+  });
+});
+
 // ---------- date_time ----------
 
 describe("date_time", () => {
@@ -224,6 +501,235 @@ describe("date_time", () => {
       fullActor(),
     );
     expect(r.status).toBe("invalid_input");
+  });
+
+  // ---------- date_time: Jalali + arbitrary dates + differences ----------
+  // Hard-coded Gregorian↔Jalali pairs below were verified against Intl
+  // (en-u-ca-persian, Asia/Tehran) in a scratch `bun` run before being
+  // written here:
+  //   2026-10-20T12:00+03:30 → ۲۸ مهر ۱۴۰۵ (سه‌شنبه)
+  //   2026-03-21T12:00+03:30 → ۱ فروردین ۱۴۰۵ (شنبه) — Nowruz
+  //   2025-03-20T12:00+03:30 → ۳۰ اسفند ۱۴۰۳ (پنجشنبه) — leap-year Esfand 30
+
+  type JalaliBlock = {
+    year: number; month: number; day: number;
+    monthName: string; weekday: string; formatted: string;
+  };
+  type DiffBlock = {
+    milliseconds: number; days: number; hours: number;
+    minutes: number; seconds: number; direction: string; human: string;
+  };
+
+  test("always includes Jalali parts for the reported instant", async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 9, 20, 8, 30, 0)));
+    const r = await run<{ jalali: JalaliBlock }>(
+      svc,
+      "date_time",
+      { timezone: "Asia/Tehran", locale: "en-US" },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data?.jalali).toEqual({
+      year: 1405,
+      month: 7,
+      day: 28,
+      monthName: "مهر",
+      weekday: "سه‌شنبه",
+      formatted: "۲۸ مهر ۱۴۰۵",
+    });
+  });
+
+  test("Jalali conversion matches hard-coded known pairs", async () => {
+    const svc = makeService(() => new Date(0));
+    const cases: Array<{ date: string; jalali: JalaliBlock }> = [
+      {
+        date: "2026-10-20T12:00:00+03:30",
+        jalali: { year: 1405, month: 7, day: 28, monthName: "مهر", weekday: "سه‌شنبه", formatted: "۲۸ مهر ۱۴۰۵" },
+      },
+      {
+        // Nowruz 1405
+        date: "2026-03-21T12:00:00+03:30",
+        jalali: { year: 1405, month: 1, day: 1, monthName: "فروردین", weekday: "شنبه", formatted: "۱ فروردین ۱۴۰۵" },
+      },
+      {
+        // 1403 is a leap year: Esfand has 30 days.
+        date: "2025-03-20T12:00:00+03:30",
+        jalali: { year: 1403, month: 12, day: 30, monthName: "اسفند", weekday: "پنجشنبه", formatted: "۳۰ اسفند ۱۴۰۳" },
+      },
+    ];
+    for (const c of cases) {
+      const r = await run<{ jalali: JalaliBlock }>(
+        svc,
+        "date_time",
+        { timezone: "Asia/Tehran", locale: "en-US", date: c.date },
+        fullActor(),
+      );
+      expect(r.status).toBe("ok");
+      expect(r.data?.jalali).toEqual(c.jalali);
+    }
+  });
+
+  test("jalaliPartsOf / jalaliToGregorianMs round-trip on the same Jalali day", () => {
+    for (const iso of [
+      "2026-10-20T12:00:00+03:30",
+      "2026-03-21T00:30:00+03:30",
+      "2025-03-20T23:59:00+03:30",
+      "2026-01-15T10:30:00+03:30",
+    ]) {
+      const ms = Date.parse(iso);
+      const p = jalaliPartsOf(ms, "Asia/Tehran");
+      const back = jalaliToGregorianMs(p.jy, p.jm, p.jd, "Asia/Tehran");
+      expect(back).not.toBeNull();
+      // The inverse lands on zone midnight of the same Jalali day.
+      const p2 = jalaliPartsOf(back!, "Asia/Tehran");
+      expect([p2.jy, p2.jm, p2.jd]).toEqual([p.jy, p.jm, p.jd]);
+      expect(back!).toBeLessThanOrEqual(ms);
+      expect(ms - back!).toBeLessThan(24 * 60 * 60 * 1000);
+    }
+  });
+
+  test("impossible Jalali dates are rejected by the helper", () => {
+    // مهر has 30 days — day 31 never exists.
+    expect(jalaliToGregorianMs(1405, 7, 31, "Asia/Tehran")).toBeNull();
+    // 1404 is not a leap year — no 30 اسفند.
+    expect(jalaliToGregorianMs(1404, 12, 30, "Asia/Tehran")).toBeNull();
+    // …but 1403 IS a leap year, so 30 اسفند ۱۴۰۳ resolves.
+    expect(jalaliToGregorianMs(1403, 12, 30, "Asia/Tehran")).not.toBeNull();
+    // Out-of-range fields.
+    expect(jalaliToGregorianMs(1405, 13, 1, "Asia/Tehran")).toBeNull();
+    expect(jalaliToGregorianMs(1405, 1, 32, "Asia/Tehran")).toBeNull();
+  });
+
+  test("reports an arbitrary `date` instant instead of the clock", async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 0, 15, 10, 30, 0)));
+    const r = await run<{ iso: string; date: string; time: string }>(
+      svc,
+      "date_time",
+      { timezone: "Asia/Tehran", locale: "en-US", date: "2026-10-20T12:00:00+03:30" },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data?.iso).toBe("2026-10-20T08:30:00.000Z");
+    expect(r.data?.date).toBe("2026-10-20");
+    expect(r.data?.time).toBe("12:00:00");
+  });
+
+  test('date: "now" falls back to the injected clock', async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 0, 15, 10, 30, 0)));
+    const r = await run<{ iso: string }>(
+      svc,
+      "date_time",
+      { timezone: "UTC", locale: "en-US", date: "now" },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data?.iso).toBe("2026-01-15T10:30:00.000Z");
+  });
+
+  test("difference: exact breakdown and 'later' direction", async () => {
+    const svc = makeService(() => new Date(0));
+    const r = await run<{ difference: DiffBlock }>(
+      svc,
+      "date_time",
+      {
+        timezone: "UTC",
+        locale: "en-US",
+        date: "2026-01-18T14:05:06Z",
+        compareTo: "2026-01-15T10:00:00Z",
+      },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    const expectedMs = (3 * 86_400 + 4 * 3_600 + 5 * 60 + 6) * 1000;
+    expect(r.data?.difference).toEqual({
+      milliseconds: expectedMs,
+      days: 3,
+      hours: 4,
+      minutes: 5,
+      seconds: 6,
+      direction: "later",
+      human: "3 days, 4 hours later",
+    });
+  });
+
+  test("difference: 'earlier' direction keeps an absolute breakdown", async () => {
+    const svc = makeService(() => new Date(0));
+    const r = await run<{ difference: DiffBlock }>(
+      svc,
+      "date_time",
+      {
+        timezone: "UTC",
+        locale: "en-US",
+        date: "2026-01-15T10:00:00Z",
+        compareTo: "2026-01-18T14:05:06Z",
+      },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data?.difference.milliseconds).toBe((3 * 86_400 + 4 * 3_600 + 5 * 60 + 6) * 1000);
+    expect(r.data?.difference.direction).toBe("earlier");
+    expect(r.data?.difference.human).toBe("3 days, 4 hours earlier");
+  });
+
+  test("difference: same instant, and difference against the clock when date is omitted", async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 0, 15, 10, 30, 0)));
+    const same = await run<{ difference: DiffBlock }>(
+      svc,
+      "date_time",
+      {
+        timezone: "UTC",
+        locale: "en-US",
+        date: "2026-01-15T10:30:00Z",
+        compareTo: "2026-01-15T10:30:00Z",
+      },
+      fullActor(),
+    );
+    expect(same.data?.difference).toEqual({
+      milliseconds: 0,
+      days: 0,
+      hours: 0,
+      minutes: 0,
+      seconds: 0,
+      direction: "same",
+      human: "same instant",
+    });
+
+    const vsClock = await run<{ difference: DiffBlock }>(
+      svc,
+      "date_time",
+      { timezone: "UTC", locale: "en-US", compareTo: "2026-01-14T10:30:00Z" },
+      fullActor(),
+    );
+    expect(vsClock.data?.difference.days).toBe(1);
+    expect(vsClock.data?.difference.direction).toBe("later");
+    expect(vsClock.data?.difference.human).toBe("1 day later");
+  });
+
+  test("no difference block when compareTo is omitted", async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 0, 15, 10, 30, 0)));
+    const r = await run<Record<string, unknown>>(
+      svc,
+      "date_time",
+      { timezone: "UTC", locale: "en-US" },
+      fullActor(),
+    );
+    expect(r.status).toBe("ok");
+    expect(r.data && "difference" in r.data).toBe(false);
+  });
+
+  test("rejects invalid date and compareTo inputs", async () => {
+    const svc = makeService(() => new Date(Date.UTC(2026, 0, 15, 10, 30, 0)));
+    for (const bad of [
+      { date: "not-a-date" },
+      { date: "" },
+      { date: "2026-13-01T00:00:00Z" },
+      { compareTo: "tomorrow-ish" },
+      { date: "2026-01-15T10:30:00Z", compareTo: "2026-02-30T99:99:99Z" },
+    ]) {
+      const r = await run(svc, "date_time", { timezone: "UTC", ...bad }, fullActor());
+      expect(r.status).toBe("invalid_input");
+      expect(await toolErrorKind(svc, "date_time", { timezone: "UTC", ...bad })).toBe("invalid_input");
+    }
   });
 });
 

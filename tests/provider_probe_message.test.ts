@@ -19,7 +19,7 @@ import {
 } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { statusToAiError } from "../src/ai/http_status";
 import { checkProviderUrl } from "../src/ai/provider_url_guard";
 import type { AIProviderAdapter } from "../src/ai/adapter";
@@ -57,7 +57,7 @@ interface Harness {
   storage: Storage;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   adapters: RecordingAdapters;
 }
 
@@ -67,7 +67,7 @@ function harness(): Harness {
   const adapters = new RecordingAdapters();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters);
   return { storage, providers, models, health, adapters };
 }
 

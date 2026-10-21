@@ -10,7 +10,7 @@ import { Storage } from "../src/storage/storage";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 import { SmartRouter } from "../src/ai/smart_router";
 import {
@@ -526,7 +526,7 @@ describe("health probe surface", () => {
     if (!m.ok) throw new Error("model failed");
     models.setDefault(m.data);
 
-    const withCircuit = new ProviderHealthService(
+    const withCircuit = new ProviderProbeService(
       storage, providers, secrets, okAdapters, 300, source,
     );
     const probed = await withCircuit.probe(p.data);
@@ -536,7 +536,7 @@ describe("health probe surface", () => {
     const modelTest = await withCircuit.probeModel(p.data, "model-p");
     expect(modelTest.circuit?.state).toBe("open");
 
-    const without = new ProviderHealthService(storage, providers, secrets, okAdapters, 300);
+    const without = new ProviderProbeService(storage, providers, secrets, okAdapters, 300);
     const plain = await without.probe(p.data);
     expect(plain.circuit).toBeUndefined();
     storage.close();

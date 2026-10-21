@@ -20,12 +20,12 @@ import { AuditLogger } from "../src/auth/audit";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiAdminController } from "../src/groups/ai_controller";
 import { SearchProviderSecretStore } from "../src/search/secret_store";
 import { SearchSettingsService } from "../src/search/service";
 import { encode, decode } from "../src/groups/callbacks";
-import { PANEL_STRINGS, tr, formatNum } from "../src/groups/panel_strings";
+import { PANEL_STRINGS, tr, formatNum } from "../src/i18n/strings/panel_strings";
 import {
   failoverText,
   modelsKeyboard,
@@ -100,7 +100,7 @@ function harness(): Harness {
   const adapters = new AdapterRegistry();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
   const searchSecrets = new SearchProviderSecretStore("search-test-master-key");
   const search = new SearchSettingsService(storage, searchSecrets);
   const ai = new AiAdminController({

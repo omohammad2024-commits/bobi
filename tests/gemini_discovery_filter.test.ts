@@ -28,7 +28,7 @@ import { Storage } from "../src/storage/storage";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry, type AdapterConfig } from "../src/ai/adapter_registry";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import type { ProbeResult } from "../src/ai/health";
+import type { ProbeResult } from "../src/ai/provider_probe";
 import type { CompletionRequest, CompletionResponse } from "../src/ai/provider";
 import type { AIProviderAdapter } from "../src/ai/adapter";
 import { handleProviderApi, type ProviderApiDeps } from "../src/miniapp/api_providers";

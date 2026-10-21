@@ -1,5 +1,5 @@
 /**
- * H1: the provider-level Test (ProviderHealthService.probe) is the honest
+ * H1: the provider-level Test (ProviderProbeService.probe) is the honest
  * two-stage probe — ping + realistic turn against the provider's DEFAULT
  * model, with the combined outcome recorded as provider health. Before
  * this, probe() was ping-only, so a provider that answered a 16-token
@@ -20,7 +20,7 @@ import {
 } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService, type ProbeResult } from "../src/ai/health";
+import { ProviderProbeService, type ProbeResult } from "../src/ai/provider_probe";
 import { statusToAiError } from "../src/ai/http_status";
 import { handleProviderApi, type ProviderApiDeps } from "../src/miniapp/api_providers";
 import type { AIProviderAdapter } from "../src/ai/adapter";
@@ -80,7 +80,7 @@ interface Harness {
   storage: Storage;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   adapters: ScriptedAdapters;
 }
 
@@ -90,7 +90,7 @@ function harness(): Harness {
   const adapters = new ScriptedAdapters();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters);
   return { storage, providers, models, health, adapters };
 }
 

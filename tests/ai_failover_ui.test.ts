@@ -10,7 +10,7 @@ import { AuditLogger } from "../src/auth/audit";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiAdminController } from "../src/groups/ai_controller";
 import { encode, decode } from "../src/groups/callbacks";
 import { OpenAICompatibleAdapter } from "../src/ai/openai_compatible";
@@ -94,7 +94,7 @@ function panel(): Harness {
   const adapters = new AdapterRegistry();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 250);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 250);
   const ai = new AiAdminController({
     auth,
     admin: new AdminBoundary({ auth, audit }),
@@ -386,7 +386,7 @@ describe("failover administration", () => {
       const adapters = new AdapterRegistry();
       const providers = new ProviderService(first, secrets, adapters);
       const models = new ModelService(first);
-      const health = new ProviderHealthService(first, providers, secrets, adapters, 250);
+      const health = new ProviderProbeService(first, providers, secrets, adapters, 250);
       const ai = new AiAdminController({
         auth,
         admin: new AdminBoundary({ auth, audit: new AuditLogger({ storage: first }) }),

@@ -46,7 +46,7 @@ import {
   buildDebugMarkdown,
   tailLines,
 } from "../src/bot/cmd_system";
-import { tr } from "../src/bot/cmd_system_strings";
+import { tr } from "../src/i18n/strings/cmd_system_strings";
 
 const EN = "en" as const; // English-only UI
 

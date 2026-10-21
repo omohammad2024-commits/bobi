@@ -15,7 +15,7 @@ import { Storage } from "../src/storage/storage";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import type { ProbeResult } from "../src/ai/health";
+import type { ProbeResult } from "../src/ai/provider_probe";
 
 const BOT_TOKEN = "fixed-test-bot-token-123";
 const OWNER_ID = "777000";
@@ -67,7 +67,7 @@ function makeDeps(): { deps: MiniAppDeps; turns: CapturedTurn[] } {
   const modelSvc = new ModelService(storage);
   const health = {
     probe: async (id: number): Promise<ProbeResult> => {
-      // Mirrors the real ProviderHealthService: the outcome is recorded via
+      // Mirrors the real ProviderProbeService: the outcome is recorded via
       // storage so providers.list shows it in lastProbe.
       const result: ProbeResult = {
         ok: true,
@@ -82,7 +82,7 @@ function makeDeps(): { deps: MiniAppDeps; turns: CapturedTurn[] } {
       return result;
     },
     probeModel: async (_id: number, _modelId: string): Promise<ProbeResult> => {
-      // Mirrors the real ProviderHealthService.probeModel: a model test is
+      // Mirrors the real ProviderProbeService.probeModel: a model test is
       // NOT recorded to provider health, so no storage write happens here.
       return { ok: true, checkedAt: Date.now() };
     },

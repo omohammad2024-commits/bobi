@@ -38,7 +38,7 @@ import { Storage } from "../src/storage/storage";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 
 // ---------------------------------------------------------------------------
@@ -181,7 +181,7 @@ describe("openai adapter status path", () => {
       if (!created.ok) throw new Error("provider create failed");
       const added = models.add({ providerId: created.data, modelId: "probe-model", label: "p" });
       if (!added.ok) throw new Error("model add failed");
-      const health = new ProviderHealthService(storage, providers, secrets, adapters, 5000);
+      const health = new ProviderProbeService(storage, providers, secrets, adapters, 5000);
 
       const result = await health.probe(created.data);
       expect(result.ok).toBe(true);
@@ -231,7 +231,7 @@ describe("probe surfaces the real cause", () => {
           },
         }) as never,
     } as unknown as AdapterRegistry;
-    const health = new ProviderHealthService(storage, providers, secrets, failing, 5000);
+    const health = new ProviderProbeService(storage, providers, secrets, failing, 5000);
     return { health, providerId: created.data, storage };
   }
 

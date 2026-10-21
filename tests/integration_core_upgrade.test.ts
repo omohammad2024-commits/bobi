@@ -25,7 +25,7 @@ import { SCHEMA_VERSION, Storage } from "../src/storage/storage";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 import { CircuitBreakerRegistry } from "../src/ai/circuit_breaker";
 import { AiError } from "../src/ai/provider";
@@ -141,7 +141,7 @@ describe("wire 1: one breaker registry shared by gateway + health", () => {
           sleep: async () => {},
           random: () => 0.5,
         });
-        const health = new ProviderHealthService(
+        const health = new ProviderProbeService(
           storage,
           providers,
           secrets,
@@ -177,7 +177,7 @@ describe("wire 1: one breaker registry shared by gateway + health", () => {
 
         // Contrast: a health service built WITHOUT the shared registry
         // (the pre-wiring construction) has no circuit field at all.
-        const blind = new ProviderHealthService(storage, providers, secrets, realAdapters);
+        const blind = new ProviderProbeService(storage, providers, secrets, realAdapters);
         expect(blind.last(providerId)!.circuit).toBeUndefined();
 
         storage.close();
@@ -302,9 +302,9 @@ describe("router invariant: no spec is ever removed", () => {
     "https://www.instagram.com/reel/ABC123/ فقط صدا",
   ];
 
-  test("every battery message keeps the full 44-spec set, tool_search included", async () => {
+  test("every battery message keeps the full 49-spec set, tool_search included", async () => {
     await withEnv({ BOBI_INTENT_ROUTER: undefined }, async () => {
-      expect(fullSpecs.length).toBe(44);
+      expect(fullSpecs.length).toBe(49);
       for (const message of messages) {
         const routed = applyIntentRouting(fullSpecs, message, MANIFESTS);
         expect(routed.specs.map((s) => s.name).sort()).toEqual(inputNames);
@@ -322,10 +322,10 @@ describe("router invariant: no spec is ever removed", () => {
       );
       const names = routed.specs.map((s) => s.name);
       expect(names).toContain("download_media");
-      expect(names).toContain("remind_nl");
+      expect(names).toContain("remind_at");
       // URL hint is 0.95, the reminder hint is ≤0.9, so download_media
-      // is ordered ahead of remind_nl.
-      expect(names.indexOf("download_media")).toBeLessThan(names.indexOf("remind_nl"));
+      // is ordered ahead of remind_at.
+      expect(names.indexOf("download_media")).toBeLessThan(names.indexOf("remind_at"));
     });
   });
 });
@@ -333,7 +333,7 @@ describe("router invariant: no spec is ever removed", () => {
 // ---------- 3. schema v22 ----------
 
 describe("wire 4: schema v22 recall telemetry", () => {
-  test("a v21-shaped database migrates: columns appear, rows survive, version stamps 22", () => {
+  test("a v21-shaped database migrates: columns appear, rows survive, version stamps 24", () => {
     const path = tempDb("v21");
     try {
       const db = new Database(path);
@@ -355,7 +355,7 @@ describe("wire 4: schema v22 recall telemetry", () => {
       db.close();
 
       const storage = Storage.open(path);
-      expect(SCHEMA_VERSION).toBe(22);
+      expect(SCHEMA_VERSION).toBe(24);
       const rec = storage.getMemory("u1", "fact:name");
       expect(rec).toBeDefined();
       expect(rec!.content).toBe("محمد");
@@ -368,7 +368,7 @@ describe("wire 4: schema v22 recall telemetry", () => {
       const version = raw
         .query<{ v: string }, []>("SELECT v FROM _meta WHERE k='schema_version'")
         .get();
-      expect(version?.v).toBe("22");
+      expect(version?.v).toBe("24");
       const cols = raw
         .query<{ name: string }, []>("PRAGMA table_info(memories)")
         .all()

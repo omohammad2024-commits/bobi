@@ -85,6 +85,13 @@ function setup(opts: { isOwner?: (id: string) => boolean; now?: () => number } =
       provider,
       store,
       isOwner: opts.isOwner ?? (() => true),
+      // Deterministic tool clock. Default: a fixed early instant, so the
+      // tiny seed timestamps in these tests (1000/2000/3000) are minutes
+      // old — fresh enough that curate_memories' archive pass (Phase 8:
+      // the old summarize_memories, folded in) stays silent and only the
+      // cleanup proposals under test are produced. Tests that exercise
+      // the archive pass pass a realistic `now` of their own.
+      now: opts.now ?? (() => 10_000_000),
     }),
   });
   return { provider, store, svc };
@@ -233,6 +240,33 @@ describe("curate_memories tool", () => {
     await run(svc, "curate_memories", {});
     await run(svc, "curate_memories", {});
     expect(store.countPending("u1")).toBe(1);
+  });
+
+  test("archive pass archives old memories once — re-running does not pile up archives", async () => {
+    const nowMs = Date.parse("2026-10-18T00:00:00Z");
+    const { provider, svc, store } = setup({ now: () => nowMs });
+    provider.seed("old1", "خاطرهٔ قدیمی و طولانی که باید بایگانی شود و جزئیات زیادی دارد", nowMs - 100 * 24 * 60 * 60 * 1000);
+
+    const first = await run(svc, "curate_memories", {});
+    expect(first.status).toBe("ok");
+    const firstData = first.data as { archived: boolean; archiveKey?: string };
+    expect(firstData.archived).toBe(true);
+    const archiveKeys = () =>
+      provider.list("u1", 200).map((m) => m.key).filter((k) => k.startsWith("archive:"));
+    expect(archiveKeys()).toHaveLength(1);
+    const archiveProposals = () =>
+      store.listPending("u1").filter((p) => p.kind === "archive");
+    expect(archiveProposals()).toHaveLength(1);
+
+    // Second run: the pending archive proposal already covers old1, so
+    // the pass is silent — no second archive memory, no second proposal.
+    const second = await run(svc, "curate_memories", {});
+    expect(second.status).toBe("ok");
+    expect((second.data as { archived: boolean }).archived).toBe(false);
+    expect(archiveKeys()).toHaveLength(1);
+    expect(archiveProposals()).toHaveLength(1);
+    // The original is untouched until the owner approves the proposal.
+    expect(provider.get("u1", "old1")).toBeDefined();
   });
 
   test("empty memory store yields no proposals and no crash", async () => {

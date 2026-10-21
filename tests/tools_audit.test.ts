@@ -13,8 +13,9 @@
  *      callers that bypass validation.
  *    - recall falls back to text ranking when the semantic index THROWS
  *      (the "silent fallback" contract used to assume search() never rejects).
- *    - note_followup validates text itself and never passes the tracker's
- *      internal messages through to the caller.
+ *    - remind_at (which absorbed note_followup in the Phase-8 merge)
+ *      validates text itself and never passes storage internals through
+ *      to the caller.
  *    - assertTimezoneOrThrow checks empty before Intl (the empty branch was
  *      unreachable before).
  *    - list_reminders rejects the undeclared `includeFired` field instead of
@@ -26,7 +27,6 @@ import { SearchError } from "../src/search/provider";
 import type { AiProvider } from "../src/ai/provider";
 import { Storage } from "../src/storage/storage";
 import { ProposalStore } from "../src/curator/proposals";
-import { NudgeTracker } from "../src/nudges/tracker";
 import { ToolService } from "../src/tools/service";
 import { ToolRegistry } from "../src/tools/registry";
 import { ToolExecutor } from "../src/tools/executor";
@@ -52,10 +52,6 @@ import {
 } from "../src/tools/memory";
 import type { MemoryProvider, StoredMemory } from "../src/memory/provider";
 import type { SemanticMemoryIndex } from "../src/memory/semantic";
-import {
-  createNoteFollowupTool,
-  NOTE_FOLLOWUP_PERMISSION,
-} from "../src/tools/nudge_tool";
 import { createReminderTools, LIST_REMINDERS_PERMISSION, REMIND_AT_PERMISSION } from "../src/tools/reminders";
 import {
   createGoalTools,
@@ -273,8 +269,7 @@ describe("consult_models", () => {
 
   test("more than 3 unique models are capped even past validation", async () => {
     const tool = createConsultModelsTool({
-      provider: stubProvider(),
-      primaryModel: "m1",
+      resolveConsult: () => ({ provider: stubProvider(), primaryModel: "m1" }),
       listConfiguredModels: () => ["m1", "m2", "m3", "m4"],
     });
     // Direct run: bypasses the validator's maxItems cap on purpose.
@@ -319,48 +314,47 @@ describe("recall semantic fallback", () => {
   });
 });
 
-// ---------- 8. nudge_tool owns its validation ----------
+// ---------- 8. remind_at owns its validation (Phase 8: absorbed note_followup) ----------
 
-describe("note_followup", () => {
-  function service() {
-    const tracker = new NudgeTracker(new Database(":memory:"), {
-      now: () => new Date("2026-10-19T08:00:00Z").getTime(),
-    });
-    const svc = new ToolService({
-      extraTools: [
-        createNoteFollowupTool({ tracker }) as unknown as Tool<unknown, unknown>,
-      ],
+describe("remind_at merged follow-ups", () => {
+  function service(storage: Storage) {
+    return new ToolService({
+      extraTools: [...createReminderTools({ storage })],
       clock: () => new Date("2026-10-19T08:00:00Z"),
     });
-    return svc;
   }
 
   test("whitespace-only text is rejected in English", async () => {
-    const svc = service();
+    const svc = service(Storage.open(":memory:"));
     const r = await svc.runTool({
-      tool: "note_followup",
-      input: { text: "   ", when: "2026-10-20T09:30:00+03:30" },
-      actor: actor("u1", [NOTE_FOLLOWUP_PERMISSION]),
+      tool: "remind_at",
+      input: { text: "   ", when: "فردا ساعت ۹", followUp: true },
+      actor: actor("u1", [REMIND_AT_PERMISSION]),
     });
     expect(r.status).toBe("invalid_input");
     expect(r.message).toBe("Invalid input.");
   });
 
-  test("a throwing tracker never leaks its internal message", async () => {
-    const badTracker = {
-      note: () => {
-        throw new Error("پیگیری داخلی خراب شد");
+  test("a throwing storage never leaks its internal message", async () => {
+    const storage = Storage.open(":memory:");
+    const broken = {
+      ...storage,
+      scheduling: {
+        countPendingReminders: () => 0,
+        createReminder: () => {
+          throw new Error("ذخیره داخلی خراب شد");
+        },
       },
-      countOpen: () => 0,
-    } as unknown as NudgeTracker;
-    const tool = createNoteFollowupTool({ tracker: badTracker });
+    } as unknown as Storage;
+    const tools = createReminderTools({ storage: broken });
+    const tool = tools[0]!;
     const err = await runError(
       tool,
-      { text: "call mom", when: "2026-10-20T09:30:00+03:30" },
+      { text: "call mom", when: "فردا ساعت ۹", followUp: true },
       ctx(),
     );
     expect(err.kind).toBe("internal");
-    expect(err.message).toBe("Could not record the follow-up.");
+    expect(err.message).toBe("Could not save the reminder.");
     expect(ARABIC.test(err.message)).toBe(false);
   });
 });
@@ -512,15 +506,13 @@ describe("English-only tool surfaces", () => {
         }),
       }),
       createConsultModelsTool({
-        provider: stubProvider,
-        primaryModel: "m",
+        resolveConsult: () => ({ provider: stubProvider, primaryModel: "m" }),
         listConfiguredModels: () => [],
       }),
       createDelegateTool({ tools: svc, provider: stubProvider, model: "m" }),
       createRememberTool({ provider: memoryProvider() }),
       createRecallTool({ provider: memoryProvider() }),
       createForgetTool({ provider: memoryProvider() }),
-      createNoteFollowupTool({ tracker: new NudgeTracker(db) }),
       ...createReminderTools({ storage }),
       ...createGoalTools({ storage, isOwner: () => true }),
       ...createScheduledTaskTools({

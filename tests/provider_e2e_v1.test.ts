@@ -20,7 +20,7 @@ import { Storage } from "../src/storage/storage";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 import { setupFromPreset } from "../src/ai/setup";
 import { providerPreset } from "../src/ai/adapter";
@@ -57,7 +57,7 @@ function harness(adapterOpts: { failWith?: AiError; text?: string } = {}) {
   } as unknown as AdapterRegistry;
   const providers = new ProviderService(storage, secrets, new AdapterRegistry());
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 5_000);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 5_000);
   const gateway = new AiGateway({ storage, adapters, secrets });
   const deps = { storage, secrets, providers, models };
   return { storage, secrets, providers, models, health, gateway, deps, log };

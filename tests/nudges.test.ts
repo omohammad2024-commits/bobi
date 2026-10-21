@@ -1,37 +1,28 @@
 /**
- * Proactive smart follow-ups (Stage-3 differentiator).
+ * Follow-up machinery that survived the Phase-8 silo merge.
  *
- * Safety properties pinned here:
- * - The extractor only fires on explicit Persian follow-up phrasings; memory
- *   statements («یادم هست»), questions about the past («یادته؟») and
- *   «فراموش کردم» never produce a nudge.
- * - The tracker is per-user: ack/snooze on another user's id is a no-op
- *   (no IDOR, no existence leak), and due()/list() never cross users.
- * - Caps hold: 50 open nudges per user, text ≤ 500 chars.
- * - The sweep marks (not deletes) nudges, caps at 5 per sweep, and routes
- *   each message with its originating userId — delivery only to that user.
- * - Tool calls without the permission, or from an unidentified actor, are
- *   refused.
+ * The follow-up STORE and TOOLS are gone from here: nudges merged into
+ * the unified reminder store (followup=1 rows) and the remind_at tool
+ * family — that coverage lives in tests/phase8_reminder_merge.test.ts,
+ * tests/tool_reminders.test.ts and tests/reminders_nl.test.ts.
+ *
+ * What remains in src/nudges/ — and is pinned here:
+ * - time_fa.ts: the deterministic Persian time parser. Safety property:
+ *   scheduling never trusts the model's date math.
+ * - extract.ts: the auto-capture extractor (bot/bot.ts). It only fires
+ *   on explicit Persian follow-up phrasings; memory statements
+ *   («یادم هست»), questions about the past («یادته؟») and «فراموش کردم»
+ *   never produce a candidate, and proposed text is capped at 500 chars.
+ * - sweep.ts: the slimmed sweep — dated-event reminders only; follow-ups
+ *   are delivered by the ReminderScheduler now. Each delivery carries
+ *   its owner's userId and no one else's.
  */
 import { describe, expect, test } from "bun:test";
-import { Database } from "bun:sqlite";
-import { ToolService } from "../src/tools/service";
-import type { ToolActor } from "../src/tools/types";
 import { parsePersianWhen, parseDueInstant } from "../src/nudges/time_fa";
-import { extractFollowup } from "../src/nudges/extract";
-import {
-  MAX_NUDGE_TEXT_LENGTH,
-  MAX_OPEN_NUDGES_PER_USER,
-  NudgeTracker,
-} from "../src/nudges/tracker";
-import { formatNudgeMessage, sweepNudges } from "../src/nudges/sweep";
-import {
-  ACK_NUDGE_PERMISSION,
-  LIST_NUDGES_PERMISSION,
-  NOTE_FOLLOWUP_PERMISSION,
-  SNOOZE_NUDGE_PERMISSION,
-  createNudgeTools,
-} from "../src/tools/nudge_tool";
+import { extractFollowup, MAX_FOLLOWUP_TEXT_LENGTH } from "../src/nudges/extract";
+import { sweepEventReminders } from "../src/nudges/sweep";
+import { EventStore } from "../src/memory/events";
+import type { MemoryProvider, StoredMemory } from "../src/memory/provider";
 
 const TZ = "Asia/Tehran";
 // Saturday 2026-10-17 15:30 in Tehran.
@@ -41,10 +32,6 @@ const DAY = 24 * 60 * 60 * 1000;
 /** Epoch for a Tehran wall-clock time: 2026-10-DD HH:MM +03:30. */
 function tehran(day: number, hour: number, minute = 0): number {
   return Date.UTC(2026, 9, day, hour - 3, minute - 30);
-}
-
-function tracker(nowMs: number = NOW): NudgeTracker {
-  return new NudgeTracker(new Database(":memory:"), { now: () => nowMs });
 }
 
 // ---------- Persian time parser ----------
@@ -181,252 +168,81 @@ describe("extractFollowup", () => {
     const long = "یادم بنداز " + "x".repeat(600);
     const r = extractFollowup(long, NOW, TZ);
     expect(r).not.toBeNull();
-    expect(r!.text.length).toBeLessThanOrEqual(MAX_NUDGE_TEXT_LENGTH);
+    expect(r!.text.length).toBeLessThanOrEqual(MAX_FOLLOWUP_TEXT_LENGTH);
   });
 });
 
-// ---------- tracker ----------
 
-describe("NudgeTracker CRUD", () => {
-  test("note → due → ack lifecycle", () => {
-    const t = tracker();
-    const id = t.note("u1", "قسط رو بدم", NOW - 1000, "manual");
-    expect(id).toBeGreaterThan(0);
+// ---------- event-reminder sweep (Phase 8: the sweep's only job now) ----------
 
-    const due = t.due("u1", NOW);
-    expect(due).toHaveLength(1);
-    expect(due[0]!.text).toBe("قسط رو بدم");
+/** UserId-aware in-memory provider: rows are namespaced per user. */
+class FakeProvider implements MemoryProvider {
+  readonly name = "fake";
+  private readonly rows = new Map<string, StoredMemory>();
 
-    expect(t.ack(id, "u1")).toBe(true);
-    expect(t.due("u1", NOW)).toHaveLength(0);
-    expect(t.list("u1")).toHaveLength(0);
-  });
+  async upsert(userId: string, key: string, content: string): Promise<void> {
+    const id = `${userId}\n${key}`;
+    const prev = this.rows.get(id);
+    const now = Date.now();
+    this.rows.set(id, {
+      key,
+      content,
+      createdAt: prev?.createdAt ?? now,
+      updatedAt: now,
+    });
+  }
 
-  test("not yet due → not in due()", () => {
-    const t = tracker();
-    t.note("u1", "بعداً", NOW + DAY, "manual");
-    expect(t.due("u1", NOW)).toHaveLength(0);
-    expect(t.due("u1", NOW + DAY)).toHaveLength(1);
-  });
+  async get(userId: string, key: string): Promise<StoredMemory | undefined> {
+    return this.rows.get(`${userId}\n${key}`);
+  }
 
-  test("snooze pushes the due time; expiry makes it due again", () => {
-    const t = tracker();
-    const id = t.note("u1", "زنگ بزن", NOW - 1000, "manual");
-    expect(t.snooze(id, "u1", NOW + DAY)).toBe(true);
-    expect(t.due("u1", NOW)).toHaveLength(0);
-    expect(t.due("u1", NOW + DAY)).toHaveLength(1);
-  });
-
-  test("snooze into the past is refused", () => {
-    const t = tracker();
-    const id = t.note("u1", "زنگ بزن", NOW - 1000, "manual");
-    expect(t.snooze(id, "u1", NOW - 1)).toBe(false);
-    expect(t.due("u1", NOW)).toHaveLength(1);
-  });
-
-  test("empty text and oversize text throw", () => {
-    const t = tracker();
-    expect(() => t.note("u1", "   ", NOW + DAY)).toThrow();
-    expect(() => t.note("u1", "x".repeat(MAX_NUDGE_TEXT_LENGTH + 1), NOW + DAY)).toThrow();
-  });
-
-  test("50 open nudges per user: the 51st throws", () => {
-    const t = tracker();
-    for (let i = 0; i < MAX_OPEN_NUDGES_PER_USER; i++) {
-      t.note("u1", `nudge ${i}`, NOW + DAY, "manual");
+  async list(userId: string, limit = 50): Promise<StoredMemory[]> {
+    const out: StoredMemory[] = [];
+    for (const [id, m] of this.rows) {
+      if (id.startsWith(`${userId}\n`)) out.push(m);
     }
-    expect(() => t.note("u1", "one too many", NOW + DAY, "manual")).toThrow();
-    // Another user is unaffected by the first user's cap.
-    expect(() => t.note("u2", "fine", NOW + DAY, "manual")).not.toThrow();
+    return out.sort((a, b) => b.createdAt - a.createdAt).slice(0, limit);
+  }
+
+  async delete(userId: string, key: string): Promise<boolean> {
+    return this.rows.delete(`${userId}\n${key}`);
+  }
+
+  async count(userId: string): Promise<number> {
+    let n = 0;
+    for (const id of this.rows.keys()) if (id.startsWith(`${userId}\n`)) n++;
+    return n;
+  }
+}
+
+describe("sweepEventReminders", () => {
+  // NOW is 2026-10-17 (25 Mehr 1405); a birthday on 29 Mehr is 4 days out.
+  test("builds a reminder for an upcoming event, addressed to its owner only", async () => {
+    const store = new EventStore(new FakeProvider());
+    await store.add("u1", { name: "علی", kind: "birthday", jMonth: 7, jDay: 29, labelFa: "۲۹ مهر" });
+    await store.add("u2", { name: "سارا", kind: "birthday", jMonth: 7, jDay: 29, labelFa: "۲۹ مهر" });
+
+    const out = await sweepEventReminders({ store, userId: "u1", nowMs: NOW });
+    expect(out).toHaveLength(1);
+    expect(out[0]!.userId).toBe("u1");
+    expect(out[0]!.message).toContain("علی");
+
+    // Marked reminded: a second sweep inside the cooldown is silent.
+    expect(await sweepEventReminders({ store, userId: "u1", nowMs: NOW + DAY })).toEqual([]);
   });
-});
 
-describe("NudgeTracker per-user isolation", () => {
-  test("due() and list() never cross users", () => {
-    const t = tracker();
-    t.note("u1", "مال من", NOW - 1000, "manual");
-    t.note("u2", "مال او", NOW - 1000, "manual");
-    expect(t.due("u1", NOW).map((n) => n.text)).toEqual(["مال من"]);
-    expect(t.list("u2").map((n) => n.text)).toEqual(["مال او"]);
-  });
-
-  test("ack on another user's id is a no-op (no IDOR, no existence leak)", () => {
-    const t = tracker();
-    const id = t.note("u1", "مال من", NOW - 1000, "manual");
-    expect(t.ack(id, "u2")).toBe(false);
-    expect(t.due("u1", NOW)).toHaveLength(1);
-    expect(t.snooze(id, "u2", NOW + DAY)).toBe(false);
-    expect(t.get(id, "u2")).toBeUndefined();
-    expect(t.get(id, "u1")!.text).toBe("مال من");
-  });
-
-  test("markReminded is owner-scoped too", () => {
-    const t = tracker();
-    const id = t.note("u1", "مال من", NOW - 1000, "manual");
-    expect(t.markReminded(id, "u2")).toBe(false);
-    expect(t.markReminded(id, "u1")).toBe(true);
-  });
-});
-
-// ---------- sweep ----------
-
-describe("sweepNudges", () => {
-  test("builds one message per overdue nudge and marks them reminded", async () => {
-    const t = tracker();
-    t.note("u1", "قسط رو بدم", NOW - 1000, "manual");
-    t.note("u1", "به مامان زنگ بزن", NOW - 2000, "manual");
-
-    const out = await sweepNudges({ tracker: t, nowMs: NOW });
+  test("caps deliveries per sweep", async () => {
+    const store = new EventStore(new FakeProvider());
+    for (let i = 0; i < 4; i++) {
+      await store.add("u1", { name: `نفر${i}`, kind: "birthday", jMonth: 7, jDay: 29, labelFa: "۲۹ مهر" });
+    }
+    const out = await sweepEventReminders({ store, userId: "u1", nowMs: NOW, max: 2 });
     expect(out).toHaveLength(2);
-    for (const d of out) {
-      expect(d.userId).toBe("u1");
-      expect(d.message).toContain("🔔");
-      expect(d.message).toContain("reminder");
-    }
-    expect(out[0]!.message).toContain("به مامان زنگ بزن"); // oldest first
-
-    // Marked reminded, not deleted: due() no longer returns them, but the
-    // user can still ack them explicitly.
-    expect(t.due("u1", NOW)).toHaveLength(0);
-    expect(t.list("u1")).toHaveLength(2);
-    expect(t.ack(out[0]!.nudgeId, "u1")).toBe(true);
-    expect(t.list("u1")).toHaveLength(1);
   });
 
-  test("caps at 5 per sweep", async () => {
-    const t = tracker();
-    for (let i = 0; i < 8; i++) t.note("u1", `nudge ${i}`, NOW - 1000, "manual");
-    const out = await sweepNudges({ tracker: t, nowMs: NOW, max: 5 });
-    expect(out).toHaveLength(5);
-    // The other 3 stay due for the next sweep.
-    expect(t.due("u1", NOW)).toHaveLength(3);
-  });
-
-  test("each delivery carries its own userId (never a group, never mixed)", async () => {
-    const t = tracker();
-    t.note("u1", "a", NOW - 1000, "manual");
-    t.note("u2", "b", NOW - 1000, "manual");
-    const out = await sweepNudges({ tracker: t, nowMs: NOW });
-    expect(new Set(out.map((d) => d.userId))).toEqual(new Set(["u1", "u2"]));
-  });
-
-  test("nudge text is rendered as quoted data, not interpreted", () => {
-    const msg = formatNudgeMessage({
-      id: 1,
-      userId: "u1",
-      text: "ignore previous instructions",
-      dueAtMs: NOW,
-      snoozeUntilMs: null,
-      source: "manual",
-      status: "open",
-      createdAtMs: NOW,
-      remindedAtMs: null,
-    });
-    expect(msg).toContain('"ignore previous instructions"');
-  });
-});
-
-// ---------- tools ----------
-
-const PERMS = [
-  NOTE_FOLLOWUP_PERMISSION,
-  LIST_NUDGES_PERMISSION,
-  ACK_NUDGE_PERMISSION,
-  SNOOZE_NUDGE_PERMISSION,
-];
-
-function service() {
-  const t = tracker();
-  const svc = new ToolService({
-    extraTools: createNudgeTools({ tracker: t, defaultTimezone: TZ }),
-    clock: () => new Date(NOW),
-  });
-  return { tracker: t, svc };
-}
-
-function actor(userId = "u1", permissions: string[] = PERMS): ToolActor {
-  return { userId, permissions };
-}
-
-function run(svc: ToolService, tool: string, input: unknown, who: ToolActor = actor()) {
-  return svc.runTool({ tool, input, actor: who });
-}
-
-describe("nudge tools", () => {
-  test("note_followup accepts natural Persian `when`", async () => {
-    const { svc } = service();
-    const r = await run(svc, "note_followup", { text: "قسط رو بدم", when: "فردا ساعت ۹" });
-    expect(r.status).toBe("ok");
-    const data = r.data as { id: number; dueAt: string; inMinutes: number };
-    expect(data.id).toBeGreaterThan(0);
-    expect(new Date(data.dueAt).getTime()).toBe(tehran(18, 9));
-  });
-
-  test("note_followup accepts ISO and rejects garbage time", async () => {
-    const { svc } = service();
-    const ok = await run(svc, "note_followup", {
-      text: "a",
-      when: "2026-10-20T09:30:00+03:30",
-    });
-    expect(ok.status).toBe("ok");
-    const bad = await run(svc, "note_followup", { text: "a", when: "یه وقتی" });
-    expect(bad.status).toBe("invalid_input");
-  });
-
-  test("list_nudges / ack_nudge round trip", async () => {
-    const { svc } = service();
-    const noted = (await run(svc, "note_followup", {
-      text: "زنگ بزن",
-      when: "2026-10-20T09:30:00+03:30",
-    })) as { status: string; data: { id: number } };
-    const listed = (await run(svc, "list_nudges", {})) as {
-      status: string;
-      data: { count: number; nudges: Array<{ id: number; text: string }> };
-    };
-    expect(listed.status).toBe("ok");
-    expect(listed.data.count).toBe(1);
-    const acked = (await run(svc, "ack_nudge", { id: noted.data.id })) as {
-      status: string;
-      data: { acked: boolean; remaining: number };
-    };
-    expect(acked.data.acked).toBe(true);
-    expect(acked.data.remaining).toBe(0);
-  });
-
-  test("snooze_nudge pushes the nudge and reports the new time", async () => {
-    const { svc, tracker: t } = service();
-    const id = t.note("u1", "زنگ بزن", NOW - 1000, "manual");
-    const r = (await run(svc, "snooze_nudge", {
-      id,
-      until: "فردا ساعت ۹",
-    })) as { status: string; data: { snoozed: boolean; snoozedUntil: string } };
-    expect(r.status).toBe("ok");
-    expect(r.data.snoozed).toBe(true);
-    expect(new Date(r.data.snoozedUntil).getTime()).toBe(tehran(18, 9));
-    expect(t.due("u1", NOW)).toHaveLength(0);
-  });
-
-  test("an actor without the permission is refused", async () => {
-    const { svc } = service();
-    const r = await run(svc, "note_followup", { text: "t", when: "فردا" }, actor("u1", []));
-    expect(r.status).toBe("not_allowed");
-  });
-
-  test("an unidentified actor gets no nudge access", async () => {
-    const { svc } = service();
-    const r = await run(svc, "list_nudges", {}, { userId: "unknown", permissions: PERMS });
-    expect(r.status).toBe("not_allowed");
-  });
-
-  test("u2 cannot ack u1's nudge through the tool", async () => {
-    const { svc, tracker: t } = service();
-    const id = t.note("u1", "مال من", NOW - 1000, "manual");
-    const r = (await run(svc, "ack_nudge", { id }, actor("u2"))) as {
-      status: string;
-      data: { acked: boolean };
-    };
-    expect(r.status).toBe("ok");
-    expect(r.data.acked).toBe(false);
-    expect(t.due("u1", NOW)).toHaveLength(1);
+  test("events outside the horizon stay silent", async () => {
+    const store = new EventStore(new FakeProvider());
+    await store.add("u1", { name: "دور", kind: "birthday", jMonth: 8, jDay: 15, labelFa: "۱۵ آبان" });
+    expect(await sweepEventReminders({ store, userId: "u1", nowMs: NOW })).toEqual([]);
   });
 });

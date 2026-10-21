@@ -4,10 +4,8 @@
  * Covers the fixes from the audit pass:
  *  - server.ts: case-insensitive Bearer scheme (RFC 6750), /health uptimeMs,
  *    English-only JSON errors, x-content-type-options: nosniff on JSON.
- *  - dashboard.ts: re-enabling a bench schedule without a cadence keeps its
- *    cron (was a 400), English-only API errors, CSP on the HTML shells.
- *  - dashboard_pages.ts: the SPA and login shell are English-only
- *    (no Persian strings, lang="en", no language toggle).
+ *  - dashboard.ts: RETIRED in platform Phase 10 — /dashboard redirects
+ *    to the Mini App, the old API namespace answers 410 (English-only).
  *
  * Everything runs through the fetch handler / handleDashboardRequest with
  * listen:false — no socket is ever bound.
@@ -18,11 +16,7 @@ import {
   createApiServer,
   type ApiServerDeps,
 } from "../src/http/server";
-import {
-  handleDashboardRequest,
-  resetDashboardRateLimitsForTests,
-  type DashboardDeps,
-} from "../src/http/dashboard";
+import { handleDashboardRequest } from "../src/http/dashboard";
 import { ConversationEngine, type ConversationInput } from "../src/conversation/engine";
 import { FakeProvider } from "../src/ai/fake";
 import type { ToolActor } from "../src/tools/types";
@@ -134,6 +128,10 @@ describe("http audit: server.ts", () => {
 });
 
 // ------------------------------------------------------- dashboard.ts ----
+//
+// Platform Phase 10: the dashboard is retired. These tests pin the
+// old-URL behavior of the small retirement handler that remains:
+// /dashboard redirects to the Mini App, /api/v1/dashboard/* is 410.
 
 function dashReq(
   path: string,
@@ -149,195 +147,57 @@ function dashReq(
   });
 }
 
-function dashDeps(storage: Storage): DashboardDeps {
-  return { storage, token: TOKEN };
-}
-
-async function dashJson(res: Response): Promise<Record<string, unknown>> {
-  return (await res.json()) as Record<string, unknown>;
-}
-
-let savedOwnerId: string | undefined;
-
-beforeEach(() => {
-  savedOwnerId = process.env.OWNER_TELEGRAM_ID;
-  process.env.OWNER_TELEGRAM_ID = OWNER_ID;
-  resetDashboardRateLimitsForTests();
-});
-
-afterEach(() => {
-  if (savedOwnerId === undefined) delete process.env.OWNER_TELEGRAM_ID;
-  else process.env.OWNER_TELEGRAM_ID = savedOwnerId;
-  resetDashboardRateLimitsForTests();
-});
-
-describe("http audit: dashboard.ts", () => {
-  test("re-enabling a bench schedule without cadence keeps its cron", async () => {
-    const storage = Storage.open(":memory:");
-    const deps = dashDeps(storage);
-    const auth = { token: TOKEN };
-
-    // Create: weekly bench schedule.
-    const created = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/schedulers/bench", {
-        method: "POST",
-        ...auth,
-        body: { enabled: true, cadence: "weekly" },
-      }),
-      deps,
-    );
-    expect(created!.status).toBe(200);
-
-    const schedulersOf = async (): Promise<Array<Record<string, unknown>>> => {
-      const r = await handleDashboardRequest(
-        dashReq("/api/v1/dashboard/schedulers", auth),
-        deps,
-      );
-      return ((await dashJson(r!))["schedulers"] as Array<Record<string, unknown>>);
-    };
-    const benchOf = async (): Promise<Record<string, unknown>> =>
-      (await schedulersOf()).find((s) => s["key"] === "bench")!;
-
-    expect((await benchOf())["cron"]).toBe("0 3 * * 0");
-
-    // Disable it.
-    const disabled = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/schedulers/bench", {
-        method: "POST",
-        ...auth,
-        body: { enabled: false },
-      }),
-      deps,
-    );
-    expect(disabled!.status).toBe(200);
-    expect((await benchOf())["enabled"]).toBe(false);
-
-    // Re-enable WITHOUT cadence/cron: must succeed (was a 400) and keep the cron.
-    const reenabled = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/schedulers/bench", {
-        method: "POST",
-        ...auth,
-        body: { enabled: true },
-      }),
-      deps,
-    );
-    expect(reenabled!.status).toBe(200);
-    const bench = await benchOf();
-    expect(bench["enabled"]).toBe(true);
-    expect(bench["cron"]).toBe("0 3 * * 0");
-    expect(bench["cadence"]).toBe("weekly");
-    storage.close();
+describe("http audit: dashboard retirement (phase 10)", () => {
+  test("GET /dashboard redirects to the Mini App, no auth involved", () => {
+    const res = handleDashboardRequest(dashReq("/dashboard"));
+    expect(res?.status).toBe(301);
+    expect(res?.headers.get("location")).toBe("/miniapp/");
+    const slash = handleDashboardRequest(dashReq("/dashboard/"));
+    expect(slash?.status).toBe(301);
   });
 
-  test("dashboard API errors are English-only", async () => {
-    const storage = Storage.open(":memory:");
-    const deps = dashDeps(storage);
-    const auth = { token: TOKEN };
-
-    const unauth = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/ping"),
-      deps,
-    );
-    expect(unauth!.status).toBe(401);
-    expect((await dashJson(unauth!))["error"]).toBe("Invalid credentials.");
-
-    const unknown = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/nope", auth),
-      deps,
-    );
-    expect(unknown!.status).toBe(404);
-    expect((await dashJson(unknown!))["error"]).toBe("Not found.");
-
-    const badInput = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/schedulers/bench", {
-        method: "POST",
-        ...auth,
-        body: { enabled: "yes" },
-      }),
-      deps,
-    );
-    expect(badInput!.status).toBe(400);
-    const badBody = (await dashJson(badInput!))["error"] as string;
-    expect(badBody).toBe("Invalid input.");
-    expect(hasFa(badBody)).toBe(false);
-
-    const badCron = await handleDashboardRequest(
-      dashReq("/api/v1/dashboard/schedulers/bench", {
-        method: "POST",
-        ...auth,
-        body: { enabled: true, cadence: "yearly" },
-      }),
-      deps,
-    );
-    expect(badCron!.status).toBe(400);
-    expect((await dashJson(badCron!))["error"]).toBe("Invalid cadence.");
-
-    // Non-POST on the page path is still a clean 405.
-    const pagePost = await handleDashboardRequest(
-      dashReq("/dashboard", { method: "POST", ...auth }),
-      deps,
-    );
-    expect(pagePost!.status).toBe(405);
-    storage.close();
+  test("non-GET on /dashboard is a 405, English-only", async () => {
+    const res = handleDashboardRequest(dashReq("/dashboard", { method: "POST" }));
+    expect(res?.status).toBe(405);
+    const body = (await res!.json()) as Record<string, unknown>;
+    expect(hasFa(String(body["error"]))).toBe(false);
   });
 
-  test("HTML shells carry CSP and nosniff headers", async () => {
-    const storage = Storage.open(":memory:");
-    const deps = dashDeps(storage);
-
-    const login = await handleDashboardRequest(dashReq("/dashboard"), deps);
-    expect(login!.status).toBe(200);
-    const csp = login!.headers.get("content-security-policy") ?? "";
-    expect(csp).toContain("frame-ancestors 'deny'");
-    expect(csp).toContain("object-src 'none'");
-    expect(login!.headers.get("x-content-type-options")).toBe("nosniff");
-
-    const app = await handleDashboardRequest(
-      dashReq("/dashboard", { token: TOKEN }),
-      deps,
-    );
-    expect(app!.status).toBe(200);
-    expect(app!.headers.get("content-security-policy")).toContain("frame-ancestors 'deny'");
-    storage.close();
-  });
-});
-
-// --------------------------------------------------- dashboard_pages.ts ----
-
-describe("http audit: dashboard_pages.ts", () => {
-  test("login shell is English-only with zero Persian strings", async () => {
-    const storage = Storage.open(":memory:");
-    const res = await handleDashboardRequest(dashReq("/dashboard"), dashDeps(storage));
-    const page = await res!.text();
-    expect(page).toContain('lang="en"');
-    expect(page).not.toContain('lang="fa"');
-    expect(page).toContain("Sign in");
-    expect(hasFa(page)).toBe(false);
-    // Still the credential-entry shell, not data.
-    expect(page).toContain("bobi_dash_token");
-    expect(page).not.toContain("/api/v1/dashboard/providers");
-    storage.close();
-  });
-
-  test("app shell is English-only and has no language toggle", async () => {
-    const storage = Storage.open(":memory:");
-    const res = await handleDashboardRequest(
-      dashReq("/dashboard", { token: TOKEN }),
-      dashDeps(storage),
-    );
-    const page = await res!.text();
-    expect(page).toContain('lang="en"');
-    expect(hasFa(page)).toBe(false);
-    expect(page).toContain("Schedulers");
-    // The fa/en toggle is gone in the English-only UI.
-    expect(page).not.toContain('data-action="lang"');
-    expect(page).not.toContain("bobi_dash_lang");
-    // The embedded SPA script still parses (regression: the STR surgery).
-    const scripts = [...page.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-    expect(scripts.length).toBeGreaterThan(0);
-    for (const script of scripts) {
-      expect(() => new Function(script as string)).not.toThrow();
+  test("the old API namespace answers 410 Gone — token or not, no data", async () => {
+    for (const path of [
+      "/api/v1/dashboard",
+      "/api/v1/dashboard/ping",
+      "/api/v1/dashboard/providers",
+      "/api/v1/dashboard/benchmarks/live/stream",
+    ]) {
+      const res = handleDashboardRequest(dashReq(path, { token: TOKEN }));
+      expect(res?.status).toBe(410);
+      const body = (await res!.json()) as Record<string, unknown>;
+      expect(typeof body["error"]).toBe("string");
+      expect(hasFa(String(body["error"]))).toBe(false);
+      expect(res?.headers.get("x-content-type-options")).toBe("nosniff");
     }
-    storage.close();
+    const post = handleDashboardRequest(
+      dashReq("/api/v1/dashboard/schedulers/bench", { method: "POST", token: TOKEN, body: {} }),
+    );
+    expect(post?.status).toBe(410);
+  });
+
+  test("non-dashboard paths fall through (undefined)", () => {
+    expect(handleDashboardRequest(dashReq("/miniapp/"))).toBeUndefined();
+    expect(handleDashboardRequest(dashReq("/health"))).toBeUndefined();
+    expect(handleDashboardRequest(dashReq("/api/v1/turn"))).toBeUndefined();
+    expect(handleDashboardRequest(dashReq("/dashboards"))).toBeUndefined();
+  });
+
+  test("through the API server: redirect + 410, and /health is unaffected", async () => {
+    const server = createApiServer(makeServerDeps(), { listen: false });
+    const redir = await server.fetch(new Request("http://localhost/dashboard"));
+    expect(redir.status).toBe(301);
+    expect(redir.headers.get("location")).toBe("/miniapp/");
+    const gone = await server.fetch(new Request("http://localhost/api/v1/dashboard/ping"));
+    expect(gone.status).toBe(410);
+    const health = await server.fetch(new Request("http://localhost/health"));
+    expect(health.status).toBe(200);
   });
 });

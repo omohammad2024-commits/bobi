@@ -29,7 +29,16 @@ import {
   handlePaletteCallback,
   type PaletteEnv,
 } from "../src/bot/palette";
-import { COMMAND_HELP, visibleCommandHelp, type CommandHelpEntry } from "../src/bot/bot";
+import {
+  COMMAND_HELP,
+  visibleCommandHelp,
+  handleVoiceCommand,
+  handleResetCommand,
+  handleStopCommand,
+  handlePersonalityCommand,
+  handleCompressCommand,
+  type CommandHelpEntry,
+} from "../src/bot/bot";
 import { Storage } from "../src/storage/storage";
 import { AuthorizationService } from "../src/auth/service";
 import { OwnerIdentity } from "../src/auth/identity";
@@ -66,7 +75,19 @@ function envFor(fromId: number, storage?: Storage): PaletteEnv {
   }
   if (storage !== undefined) deps.storage = storage;
   deps.engine = {};
-  return { deps: deps as never, sysOpts: {} };
+  return {
+    deps: deps as never,
+    sysOpts: {},
+    // PaletteEnv.handlers (Phase 5 B2): the real bot.ts handlers, injected
+    // exactly as createBot injects them.
+    handlers: {
+      voice: handleVoiceCommand,
+      reset: handleResetCommand,
+      stop: handleStopCommand,
+      personality: handlePersonalityCommand,
+      compress: handleCompressCommand,
+    },
+  };
 }
 
 function callbackData(kb: unknown): string[] {

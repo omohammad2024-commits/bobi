@@ -24,10 +24,10 @@ import {
 } from "../src/ai/adapter";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiAdminController } from "../src/groups/ai_controller";
 import { encode, decode } from "../src/groups/callbacks";
-import { AUDIT_STRING_KEYS, atr } from "../src/groups/ai_panel_audit_strings";
+import { AUDIT_STRING_KEYS, atr } from "../src/i18n/strings/ai_panel_audit_strings";
 
 const OWNER_ID = 111111;
 
@@ -117,7 +117,7 @@ interface Harness {
   ai: AiAdminController;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
 }
 
 function harness(
@@ -134,7 +134,7 @@ function harness(
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
   // Short probe timeout: no test waits on a real connection deadline.
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
   const ai = new AiAdminController({
     auth,
     admin: new AdminBoundary({ auth, audit }),

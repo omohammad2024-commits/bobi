@@ -44,7 +44,7 @@ import {
   type GroupAssistantEnv,
   type GroupChatMessage,
 } from "../src/groups/assistant";
-import { tr } from "../src/groups/assistant_strings";
+import { tr } from "../src/i18n/strings/assistant_strings";
 import {
   createGroupDigestTool,
   type GroupDigestToolDeps,

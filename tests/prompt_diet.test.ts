@@ -43,7 +43,6 @@ async function realToolDescriptors(): Promise<ToolDescriptor[]> {
   const mem = await import(`${R}/tools/memory`);
   const hist = await import(`${R}/tools/history`);
   const rem = await import(`${R}/tools/reminders`);
-  const nudge = await import(`${R}/tools/nudge_tool`);
   const goals = await import(`${R}/tools/goals`);
   const sched = await import(`${R}/tools/scheduled_tasks`);
   const usage = await import(`${R}/tools/usage_report`);
@@ -65,10 +64,7 @@ async function realToolDescriptors(): Promise<ToolDescriptor[]> {
     rem.createRemindAtTool({ storage: S }),
     rem.createListRemindersTool({ storage: S }),
     rem.createCancelReminderTool({ storage: S }),
-    nudge.createNoteFollowupTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createListNudgesTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createAckNudgeTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createSnoozeNudgeTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
+    rem.createSnoozeReminderTool({ storage: S }),
     goals.createAddGoalTool({ storage: S, isOwner: () => true }),
     goals.createListGoalsTool({ storage: S, isOwner: () => true }),
     goals.createCompleteGoalTool({ storage: S, isOwner: () => true }),
@@ -94,7 +90,6 @@ async function realToolDescriptors(): Promise<ToolDescriptor[]> {
     digest.createDigestTool({ storage: S, proposalStore: S, isOwner: () => true }),
     curator.createCurateMemoriesTool({ provider: S, store: S, isOwner: () => true }),
     curator.createCuratorDecideTool({ provider: S, store: S, isOwner: () => true }),
-    curator.createSummarizeMemoriesTool({ provider: S, store: S, isOwner: () => true }),
     websearch.createWebSearchTool({ resolve: () => S }),
     imggen.createImageGenTool({ baseUrl: "https://x", model: "m" }),
     vidgen.createVideoGenTool({ baseUrl: "https://x", model: "m" }),
@@ -116,7 +111,6 @@ async function buildConstructedTools(): Promise<any[]> {
   const mem = await import(`${R}/tools/memory`);
   const hist = await import(`${R}/tools/history`);
   const rem = await import(`${R}/tools/reminders`);
-  const nudge = await import(`${R}/tools/nudge_tool`);
   const goals = await import(`${R}/tools/goals`);
   const sched = await import(`${R}/tools/scheduled_tasks`);
   const usage = await import(`${R}/tools/usage_report`);
@@ -138,10 +132,7 @@ async function buildConstructedTools(): Promise<any[]> {
     rem.createRemindAtTool({ storage: S }),
     rem.createListRemindersTool({ storage: S }),
     rem.createCancelReminderTool({ storage: S }),
-    nudge.createNoteFollowupTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createListNudgesTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createAckNudgeTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
-    nudge.createSnoozeNudgeTool({ tracker: S, defaultTimezone: "Asia/Tehran" }),
+    rem.createSnoozeReminderTool({ storage: S }),
     goals.createAddGoalTool({ storage: S, isOwner: () => true }),
     goals.createListGoalsTool({ storage: S, isOwner: () => true }),
     goals.createCompleteGoalTool({ storage: S, isOwner: () => true }),
@@ -167,7 +158,6 @@ async function buildConstructedTools(): Promise<any[]> {
     digest.createDigestTool({ storage: S, proposalStore: S, isOwner: () => true }),
     curator.createCurateMemoriesTool({ provider: S, store: S, isOwner: () => true }),
     curator.createCuratorDecideTool({ provider: S, store: S, isOwner: () => true }),
-    curator.createSummarizeMemoriesTool({ provider: S, store: S, isOwner: () => true }),
     websearch.createWebSearchTool({ resolve: () => S }),
     imggen.createImageGenTool({ baseUrl: "https://x", model: "m" }),
     vidgen.createVideoGenTool({ baseUrl: "https://x", model: "m" }),
