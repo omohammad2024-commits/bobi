@@ -312,6 +312,17 @@ export class BenchHistory {
     return row === null ? null : row.last_sent_ms;
   }
 
+  /** Recent alert keys with their last-sent stamps, newest first. */
+  recentAlerts(limit = 20): Array<{ key: string; lastSentMs: number }> {
+    this.init();
+    const rows = this.db
+      .query<{ key: string; last_sent_ms: number }, [number]>(
+        `SELECT key, last_sent_ms FROM bench_alerts ORDER BY last_sent_ms DESC LIMIT ?`,
+      )
+      .all(limit);
+    return rows.map((r) => ({ key: r.key, lastSentMs: r.last_sent_ms }));
+  }
+
   /** Record that an alert with this key was sent now. */
   markAlertSent(key: string, nowMs: number): void {
     this.init();

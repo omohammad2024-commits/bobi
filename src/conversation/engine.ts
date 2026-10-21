@@ -7,6 +7,10 @@ import type { AgentBudgets, AgentRunInput } from "../agent/loop";
 import { raceDeadline, withDeadline } from "../core/deadline";
 import type { AgentRunResult, AgentStep } from "../agent/transcript";
 import { buildSystemPrompt } from "../agent/prompt";
+import {
+  OwnerProfileService,
+  renderOwnerProfileBlock,
+} from "../profile/owner_profile";
 import { ContextFileCache } from "../context/loader";
 import { MIN_COMPACT_MESSAGES, summariseHistory, summaryMessage, SUMMARY_MESSAGE_HEADER } from "./summary";
 import { Logger } from "../core/logger";
@@ -31,12 +35,12 @@ import { buildSkillsContext } from "../skills/context";
 import type { HookRunnerLike } from "../hooks/runner";
 import type { HookEvent, HookPayload } from "../hooks/events";
 import {
-  webhooksEnabled,
-  emitWebhookEvent,
   agentStartEvent,
   agentEndEvent,
   toolEndEvent,
-} from "../webhooks";
+  type WebhookEvent,
+} from "../webhooks/events";
+import { splitTextIntoChunks } from "../core/chunking";
 
 /** What the agent loop and the plain path both produce. */
 interface RunOutcome {
@@ -275,6 +279,22 @@ export interface EngineOptions {  provider: AiProvider;
    * caller decides what the budget is.
    */
   allowToolCall?: (userId: string) => boolean;
+  /**
+   * Outbound event sink (platform Phase 5): the engine builds webhook event
+   * envelopes with the pure builders in src/webhooks/events.ts (metadata
+   * only) and hands them here. The enabled check and delivery live in the
+   * surface that wires the sink (src/webhooks' `webhookEventSink`); the
+   * engine itself carries no delivery machinery. Absent means events are
+   * dropped. A throwing sink can never break a turn — the engine guards
+   * every call.
+   */
+  onEvent?: (event: WebhookEvent) => void;
+  /**
+   * Reply splitter for `ConversationOutput.chunks`. Absent means the core
+   * splitter (src/core/chunking.ts) at TELEGRAM_MAX_LENGTH; a surface with
+   * a different limit injects its own.
+   */
+  splitReply?: (text: string) => string[];
 }
 
 /** Token totals for one settled turn, handed to `onRunUsage`. */
@@ -305,9 +325,10 @@ export interface ContextStats {
   compactedResults: number;
 }
 
+import { processEnv, readNamed } from "../config/env";
 /** env flag helper: "0" disables, anything else keeps the default. */
 function envFlag(name: string, fallback: boolean): boolean {
-  const v = process.env[name];
+  const v = readNamed(processEnv(), name);
   if (v === undefined) return fallback;
   return v.trim() !== "0";
 }
@@ -315,7 +336,7 @@ function envFlag(name: string, fallback: boolean): boolean {
 /** The configured context budget: option → env → default. */
 function resolveContextBudget(option: number | undefined): number {
   if (option !== undefined && option > 0) return Math.floor(option);
-  const raw = Number(process.env["BOBI_CONTEXT_TOKEN_BUDGET"]);
+  const raw = Number(readNamed(processEnv(), "BOBI_CONTEXT_TOKEN_BUDGET"));
   if (Number.isFinite(raw) && raw > 0) return Math.floor(raw);
   return DEFAULT_CONTEXT_TOKEN_BUDGET;
 }
@@ -413,6 +434,8 @@ export class ConversationEngine {
   private readonly skills: SkillCache | undefined;
   private readonly contextFiles: ContextFileCache | undefined;
   private readonly hooks: HookRunnerLike | undefined;
+  private readonly onEvent: ((event: WebhookEvent) => void) | undefined;
+  private readonly splitReply: (text: string) => string[];
   private readonly personalityFor: ((userId: string) => string | undefined) | undefined;
   private readonly contextTokenBudget: number;
   private readonly contextBudgetEnabled: boolean;
@@ -420,6 +443,11 @@ export class ConversationEngine {
   private readonly clog: Pick<Logger, "info">;
   // conversationId -> last measured context, for contextStats()
   private readonly contextStatsMap = new Map<string, ContextStats>();
+  // Owner profile (Phase 4): the service is built lazily on the first
+  // owner turn (it needs storage), and seeding happens once per engine
+  // instance — in production one engine serves the process.
+  private ownerProfileService: OwnerProfileService | undefined;
+  private ownerProfileSeeded = false;
 
   // in-memory fallback (conversationId -> turns)
   private readonly histories = new Map<string, ChatMessage[]>();
@@ -450,6 +478,9 @@ export class ConversationEngine {
     this.skills = opts.skills;
     this.contextFiles = opts.contextFiles;
     this.hooks = opts.hooks;
+    this.onEvent = opts.onEvent;
+    this.splitReply =
+      opts.splitReply ?? ((t: string) => splitTextIntoChunks(t, TELEGRAM_MAX_LENGTH));
     this.personalityFor = opts.personalityFor;
     this.contextTokenBudget = resolveContextBudget(opts.contextTokenBudget);
     this.contextBudgetEnabled =
@@ -687,6 +718,59 @@ export class ConversationEngine {
     return "en";
   }
 
+  /**
+   * Owner profile (Phase 4): the rendered profile block for this turn,
+   * or undefined when there is nothing to paste.
+   *
+   * Owner turns only, and only when storage is present: a non-owner
+   * turn returns undefined WITHOUT touching the profile service at all
+   * — no seeding, no load, no render — and buildSystemPrompt
+   * independently drops any block on a non-owner turn, so the profile
+   * cannot leak even if this seam is ever mis-wired.
+   *
+   * The storage user id is `ownerOf(input).userId` — the identity every
+   * Storage read/write in this engine is keyed by (history, summaries,
+   * commits), i.e. the same id the memory layer is keyed by. In
+   * production it equals `actor.userId` (both are String(from.id));
+   * unlike the actor it is also defined on turns with no tool actor.
+   *
+   * Seeding is lazy and once per engine instance: the first owner turn
+   * calls ensureSeeded, later turns load() the stored profile (so edits
+   * between turns are picked up). The seeded flag is set only on
+   * success, so a failed seed is retried on the next owner turn.
+   *
+   * Enhancement only — exactly like the memoryPrompt wiring in
+   * runAgent: any failure (service construction, seed, load, render)
+   * degrades to "no block" and never breaks the turn.
+   */
+  private async ownerProfileBlockForTurn(
+    input: ConversationInput,
+  ): Promise<string | undefined> {
+    if (input.isOwner !== true || this.storage === undefined) {
+      return undefined;
+    }
+    try {
+      const service = (this.ownerProfileService ??= new OwnerProfileService(
+        this.storage,
+      ));
+      const ownerUserId = this.ownerOf(input).userId;
+      let profile;
+      if (!this.ownerProfileSeeded) {
+        const seeded = await service.ensureSeeded(ownerUserId);
+        this.ownerProfileSeeded = true;
+        profile = seeded.profile;
+      } else {
+        profile = await service.load();
+      }
+      // load() reports "no stored profile" as undefined — nothing to paste.
+      if (profile === undefined) return undefined;
+      const block = renderOwnerProfileBlock(profile);
+      return block.trim().length > 0 ? block : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   private async runOnce(
     input: ConversationInput,
     userText: string,
@@ -761,23 +845,21 @@ export class ConversationEngine {
         signal,
       );
 
-      // Outbound webhooks (additive): one cached boolean on the hot path; the
-      // payload carries metadata only (see src/webhooks/events.ts) and
-      // emission never throws, so an unconfigured or failing endpoint cannot
-      // affect the turn.
-      const whOn = webhooksEnabled();
-      if (whOn) {
-        emitWebhookEvent(
-          agentStartEvent({
-            conversationId: input.conversationId,
-            userId: actor.userId,
-            model: this.model,
-            hasAttachments,
-            userTextLength: userText.length,
-            at: this.now().toISOString(),
-          }),
-        );
-      }
+      // Outbound webhooks (additive): the envelope is built here and handed
+      // to the injected event sink; the payload carries metadata only (see
+      // src/webhooks/events.ts). The sink owns the enabled check and
+      // delivery, and emitEvent guards the call, so an unconfigured or
+      // failing endpoint cannot affect the turn.
+      this.emitEvent(
+        agentStartEvent({
+          conversationId: input.conversationId,
+          userId: actor.userId,
+          model: this.model,
+          hasAttachments,
+          userTextLength: userText.length,
+          at: this.now().toISOString(),
+        }),
+      );
 
       let ok = true;
       let toolCalls = 0;
@@ -793,7 +875,7 @@ export class ConversationEngine {
         this.commitTurn(input, userText, result.text);
 
         return {
-          chunks: splitForTelegram(result.text),
+          chunks: this.splitReply(result.text),
           model: result.model,
           isFake: this.provider.name === "fake",
           steps: result.steps,
@@ -821,25 +903,38 @@ export class ConversationEngine {
           actor,
           signal,
         );
-        if (whOn) {
-          emitWebhookEvent(
-            agentEndEvent({
-              conversationId: input.conversationId,
-              userId: actor.userId,
-              durationMs: Date.now() - startedMs,
-              toolCalls,
-              ok,
-              // exactOptionalPropertyTypes: omit rather than pass undefined.
-              ...(stopReason !== undefined ? { stopReason } : {}),
-              ...(usage !== undefined
-                ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
-                : {}),
-              at: this.now().toISOString(),
-            }),
-          );
-        }
+        this.emitEvent(
+          agentEndEvent({
+            conversationId: input.conversationId,
+            userId: actor.userId,
+            durationMs: Date.now() - startedMs,
+            toolCalls,
+            ok,
+            // exactOptionalPropertyTypes: omit rather than pass undefined.
+            ...(stopReason !== undefined ? { stopReason } : {}),
+            ...(usage !== undefined
+              ? { inputTokens: usage.inputTokens, outputTokens: usage.outputTokens }
+              : {}),
+            at: this.now().toISOString(),
+          }),
+        );
       }
     });
+  }
+
+  /**
+   * Hand a built webhook event envelope to the injected sink, if one is set.
+   * Never throws: event observation must not break the turn it observes —
+   * the same contract the engine's old direct delivery calls carried.
+   */
+  private emitEvent(event: WebhookEvent): void {
+    const sink = this.onEvent;
+    if (sink === undefined) return;
+    try {
+      sink(event);
+    } catch {
+      // Observation is not load-bearing — swallow sink failures.
+    }
   }
 
   /**
@@ -914,10 +1009,9 @@ export class ConversationEngine {
 
     // Outbound webhooks (additive): the loop must observe tool steps even when
     // no progress sink is configured, so the condition below includes the
-    // webhook flag. The emission is metadata-only (tool name, status,
-    // duration — never arguments or results) and fire-and-forget.
-    const whOn = webhooksEnabled();
-
+    // event sink's presence. The emission is metadata-only (tool name,
+    // status, duration — never arguments or results) and fire-and-forget
+    // through the guarded emitEvent.
     const loop = new AgentLoop({
       provider: this.provider,
       model: this.model,
@@ -925,13 +1019,13 @@ export class ConversationEngine {
       callTimeoutMs: input.timeoutMs ?? this.defaultTimeoutMs,
       ...(this.budgets !== undefined ? { budgets: this.budgets } : {}),
       now: () => this.now().getTime(),
-      ...(this.onStep !== undefined || input.onProgress !== undefined || whOn
+      ...(this.onStep !== undefined || input.onProgress !== undefined || this.onEvent !== undefined
         ? {
             onStep: (step: AgentStep) => {
               this.onStep?.(input.conversationId, step);
               input.onProgress?.(step);
-              if (whOn && step.kind === "tool") {
-                emitWebhookEvent(
+              if (step.kind === "tool") {
+                this.emitEvent(
                   toolEndEvent({
                     conversationId: input.conversationId,
                     userId: actor.userId,
@@ -1003,6 +1097,12 @@ export class ConversationEngine {
       }
     }
 
+    // Owner profile (Phase 4): owner turns only — the seam itself gates
+    // on input.isOwner and storage, lazy-seeds once, and degrades
+    // silently to "no block" on any failure (see ownerProfileBlockForTurn).
+    // Non-owner turns never touch the profile service.
+    const ownerProfileBlock = await this.ownerProfileBlockForTurn(input);
+
     // Skills are matched against the user's latest text and pasted into the
     // prompt as owner-authored guidance — never as permissions or code.
     const skillContext =
@@ -1049,6 +1149,9 @@ export class ConversationEngine {
           ...(this.extraPrompt !== undefined ? { extra: this.extraPrompt } : {}),
           // Owner recognition: the bot verified this user from the Telegram ID.
           ...(input.isOwner === true ? { isOwner: true as const } : {}),
+          // Owner profile (Phase 4): prebuilt block, owner turns only —
+          // buildSystemPrompt pastes it only when isOwner is also set.
+          ...(ownerProfileBlock !== undefined ? { ownerProfileBlock } : {}),
           // Group role clarity.
           ...(input.isGroup === true ? { isGroup: true as const } : {}),
         }) + (routed.note !== undefined ? `\n\n${routed.note}` : ""),
@@ -1212,7 +1315,7 @@ export class ConversationEngine {
       }));
     }
     const { userId, chatId } = this.ownerOf(input);
-    const rows = this.storage.history(userId, chatId, this.historyLimit);
+    const rows = this.storage.conversations.history(userId, chatId, this.historyLimit);
     return rows.map((r) => ({ id: r.id, role: r.role, content: r.content }));
   }
 
@@ -1248,7 +1351,7 @@ export class ConversationEngine {
     const { userId, chatId } = this.ownerOf(input);
     let stored;
     try {
-      stored = this.storage.getConversationSummary(userId, chatId);
+      stored = this.storage.conversations.getConversationSummary(userId, chatId);
     } catch {
       // A failed read is not a reason to fail the turn.
       stored = undefined;
@@ -1273,7 +1376,7 @@ export class ConversationEngine {
     // those past the watermark.
     let overflow;
     try {
-      overflow = this.storage.unsummarisedMessages(
+      overflow = this.storage.conversations.unsummarisedMessages(
         userId,
         chatId,
         stored?.summarisedUntil ?? 0,
@@ -1301,7 +1404,7 @@ export class ConversationEngine {
         // on the next turn instead of silently skipping those messages.
         const lastId = overflow[overflow.length - 1]!.id;
         try {
-          this.storage.setConversationSummary({
+          this.storage.conversations.setConversationSummary({
             userId,
             chatId,
             summary,
@@ -1340,7 +1443,7 @@ export class ConversationEngine {
             summaryText = folded;
             const lastId = folding[folding.length - 1]!.id!;
             try {
-              this.storage.setConversationSummary({
+              this.storage.conversations.setConversationSummary({
                 userId,
                 chatId,
                 summary: folded,
@@ -1397,8 +1500,8 @@ export class ConversationEngine {
       return;
     }
     const { userId, chatId } = this.ownerOf(input);
-    this.storage.appendMessage(userId, chatId, "user", userContent);
-    this.storage.appendMessage(userId, chatId, "assistant", assistantContent);
+    this.storage.conversations.appendMessage(userId, chatId, "user", userContent);
+    this.storage.conversations.appendMessage(userId, chatId, "assistant", assistantContent);
   }
 
   /** Transcript marker for a turn that was attachments only. */
@@ -1422,13 +1525,13 @@ export class ConversationEngine {
     }
     if (this.storage) {
       const { userId, chatId } = this.ownerOf(input);
-      this.storage.deleteConversation(userId, chatId);
+      this.storage.conversations.deleteConversation(userId, chatId);
       // The rolling summary is a separate row with no foreign key, so it must
       // be dropped explicitly. Leaving it would re-inject a summary of the
       // cleared conversation into the next one — a privacy surprise, and a
       // context contamination the user explicitly asked to be rid of.
       try {
-        this.storage.clearConversationSummary(userId, chatId);
+        this.storage.conversations.clearConversationSummary(userId, chatId);
       } catch {
         // Best-effort: the messages are gone either way.
       }
@@ -1458,7 +1561,7 @@ export class ConversationEngine {
 
     let stored;
     try {
-      stored = this.storage.getConversationSummary(userId, chatId);
+      stored = this.storage.conversations.getConversationSummary(userId, chatId);
     } catch {
       return "failed";
     }
@@ -1467,7 +1570,7 @@ export class ConversationEngine {
     // the same boundary compactedHistory uses.
     let overflow;
     try {
-      overflow = this.storage.unsummarisedMessages(
+      overflow = this.storage.conversations.unsummarisedMessages(
         userId,
         chatId,
         stored?.summarisedUntil ?? 0,
@@ -1495,7 +1598,7 @@ export class ConversationEngine {
 
     const lastId = overflow[overflow.length - 1]!.id;
     try {
-      this.storage.setConversationSummary({
+      this.storage.conversations.setConversationSummary({
         userId,
         chatId,
         summary,
@@ -1508,20 +1611,15 @@ export class ConversationEngine {
   }
 }
 
-/** Split text into ≤4096-char chunks on word/line boundaries. */
+/**
+ * Split text into ≤4096-char chunks on word/line boundaries.
+ *
+ * Compat export: the algorithm lives in the platform core splitter
+ * (src/core/chunking.ts); the Telegram surface has its own re-export in
+ * src/bot/chunking.ts. Kept here for existing importers (tests).
+ */
 export function splitForTelegram(text: string): string[] {
-  if (text.length <= TELEGRAM_MAX_LENGTH) return [text];
-  const chunks: string[] = [];
-  let rest = text;
-  while (rest.length > TELEGRAM_MAX_LENGTH) {
-    let cut = rest.lastIndexOf("\n", TELEGRAM_MAX_LENGTH);
-    if (cut < TELEGRAM_MAX_LENGTH / 2) cut = rest.lastIndexOf(" ", TELEGRAM_MAX_LENGTH);
-    if (cut < TELEGRAM_MAX_LENGTH / 2) cut = TELEGRAM_MAX_LENGTH;
-    chunks.push(rest.slice(0, cut));
-    rest = rest.slice(cut).replace(/^\s+/, "");
-  }
-  if (rest.length > 0) chunks.push(rest);
-  return chunks;
+  return splitTextIntoChunks(text, TELEGRAM_MAX_LENGTH);
 }
 
 /** Convert any thrown error into an EngineError with a safe kind. */

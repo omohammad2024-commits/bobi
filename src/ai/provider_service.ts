@@ -103,7 +103,7 @@ export class ProviderService {
    * disabling it, would leave the runtime pointing at something unusable.
    */
   isActive(id: number): boolean {
-    return this.storage.getRuntimeSettings().activeProviderId === id;
+    return this.storage.providers.getRuntimeSettings().activeProviderId === id;
   }
 
   /**
@@ -120,11 +120,11 @@ export class ProviderService {
    * exists.
    */
   ensureSelection(): { providerId: number; modelId: number } | undefined {
-    const settings = this.storage.getRuntimeSettings();
+    const settings = this.storage.providers.getRuntimeSettings();
     if (settings.activeProviderId !== null && settings.activeModelId !== null) {
-      const p = this.storage.getProvider(settings.activeProviderId);
+      const p = this.storage.providers.getProvider(settings.activeProviderId);
       const m =
-        settings.activeModelId !== null ? this.storage.getModel(settings.activeModelId) : undefined;
+        settings.activeModelId !== null ? this.storage.providers.getModel(settings.activeModelId) : undefined;
       if (
         p !== undefined &&
         p.enabled &&
@@ -133,7 +133,7 @@ export class ProviderService {
         m.providerId === p.id
       ) {
         try {
-          if (this.storage.hasCredential(p.id)) {
+          if (this.storage.providers.hasCredential(p.id)) {
             return { providerId: p.id, modelId: m.id };
           }
         } catch {
@@ -143,7 +143,7 @@ export class ProviderService {
     }
     let providers: { id: number; enabled: boolean }[];
     try {
-      providers = this.storage.listProviders();
+      providers = this.storage.providers.listProviders();
     } catch {
       return undefined;
     }
@@ -151,14 +151,14 @@ export class ProviderService {
       if (!p.enabled) continue;
       let hasCredential = false;
       try {
-        hasCredential = this.storage.hasCredential(p.id);
+        hasCredential = this.storage.providers.hasCredential(p.id);
       } catch {
         continue;
       }
       if (!hasCredential) continue;
       let models: { id: number; enabled: boolean; isDefault: boolean }[];
       try {
-        models = this.storage.listModels(p.id);
+        models = this.storage.providers.listModels(p.id);
       } catch {
         continue;
       }
@@ -167,7 +167,7 @@ export class ProviderService {
       const chosen = enabled.find((m) => m.isDefault) ?? enabled[0];
       if (!chosen) continue;
       try {
-        this.storage.setRuntimeSelection({ providerId: p.id, modelId: chosen.id });
+        this.storage.providers.setRuntimeSelection({ providerId: p.id, modelId: chosen.id });
       } catch {
         continue;
       }
@@ -178,8 +178,8 @@ export class ProviderService {
 
   /** Providers for the panel, newest first. */
   listViews(): ProviderView[] {    const adapters = new AdapterRegistry();
-    return this.storage.listProviders().map((p) => {
-      const health = this.storage.getProviderHealth(p.id);
+    return this.storage.providers.listProviders().map((p) => {
+      const health = this.storage.providers.getProviderHealth(p.id);
       const info = adapters.describes(p.adapter);
       return {
         id: p.id,
@@ -189,9 +189,9 @@ export class ProviderService {
         baseUrl: p.baseUrl,
         enabled: p.enabled,
         allowLocal: p.allowLocal,
-        hasCredential: this.storage.hasCredential(p.id),
-        modelCount: this.storage.listModels(p.id).length,
-        poolKeyCount: this.storage.listPoolCredentials(p.id).length,
+        hasCredential: this.storage.providers.hasCredential(p.id),
+        modelCount: this.storage.providers.listModels(p.id).length,
+        poolKeyCount: this.storage.providers.listPoolCredentials(p.id).length,
         canListModels: info.listModels,
         // Marks the live selection so the panel can explain why an edit is refused.
         isActive: this.isActive(p.id),
@@ -238,14 +238,14 @@ export class ProviderService {
       }
     }
 
-    const id = this.storage.createProvider({
+    const id = this.storage.providers.createProvider({
       label,
       adapter: input.adapter,
       baseUrl: input.baseUrl.trim(),
       ...(input.allowLocal !== undefined ? { allowLocal: input.allowLocal } : {}),
     });
     if (credential) {
-      this.storage.upsertCredential({ providerId: id, ...credential });
+      this.storage.providers.upsertCredential({ providerId: id, ...credential });
     }
     return { ok: true, data: id };
   }
@@ -269,7 +269,7 @@ export class ProviderService {
       allowLocal?: boolean;
     },
   ): ServiceResult<true> {
-    const existing = this.storage.getProvider(id);
+    const existing = this.storage.providers.getProvider(id);
     if (!existing) return fail("Provider not found.", "not_found");
 
     const active = this.isActive(id);
@@ -288,22 +288,22 @@ export class ProviderService {
       const label = patch.label.trim();
       if (label.length === 0) return fail("A display name is required.");
       if (label.length > MAX_LABEL) return fail("Display name is too long.");
-      this.storage.updateProvider(id, { label });
+      this.storage.providers.updateProvider(id, { label });
     }
     if (patch.adapter !== undefined) {
       if (!isAdapterType(patch.adapter)) return fail("Invalid connection type.");
-      this.storage.updateProvider(id, { adapter: patch.adapter });
+      this.storage.providers.updateProvider(id, { adapter: patch.adapter });
     }
     if (patch.baseUrl !== undefined) {
       if (patch.baseUrl.trim().length === 0) return fail("Service address is required.");
       const urlError = baseUrlShapeError(patch.baseUrl.trim());
       if (urlError !== undefined) return fail(urlError);
-      this.storage.updateProvider(id, { baseUrl: patch.baseUrl.trim() });
+      this.storage.providers.updateProvider(id, { baseUrl: patch.baseUrl.trim() });
     }
     if (patch.apiKey !== undefined && normalizeApiKey(patch.apiKey).length > 0) {
       try {
         const enc = this.secrets.encrypt(normalizeApiKey(patch.apiKey));
-        this.storage.upsertCredential({ providerId: id, ...enc });
+        this.storage.providers.upsertCredential({ providerId: id, ...enc });
       } catch (err) {
         if (err instanceof SecretStoreError && err.kind === "missing_key") {
           return fail(err.message, "missing_key");
@@ -312,7 +312,7 @@ export class ProviderService {
       }
     }
     if (patch.allowLocal !== undefined) {
-      this.storage.updateProvider(id, { allowLocal: patch.allowLocal });
+      this.storage.providers.updateProvider(id, { allowLocal: patch.allowLocal });
     }
     return { ok: true, data: true };
   }
@@ -325,8 +325,8 @@ export class ProviderService {
    * confirm it explicitly and the audit trail names the operation.
    */
   setAllowLocal(id: number, allow: boolean): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
-    this.storage.setProviderAllowLocal(id, allow);
+    if (!this.storage.providers.getProvider(id)) return fail("Provider not found.", "not_found");
+    this.storage.providers.setProviderAllowLocal(id, allow);
     return { ok: true, data: true };
   }
 
@@ -337,28 +337,28 @@ export class ProviderService {
    * so it is refused until another provider is activated.
    */
   setEnabled(id: number, enabled: boolean): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
+    if (!this.storage.providers.getProvider(id)) return fail("Provider not found.", "not_found");
     if (!enabled && this.isActive(id)) {
       return fail(
         "This provider is active; activate another provider first to disable it.",
         "in_use",
       );
     }
-    this.storage.setProviderEnabled(id, enabled);
+    this.storage.providers.setProviderEnabled(id, enabled);
     return { ok: true, data: true };
   }
 
   /** Remove a stored credential. */
   clearCredential(id: number): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
-    this.storage.deleteCredential(id);
+    if (!this.storage.providers.getProvider(id)) return fail("Provider not found.", "not_found");
+    this.storage.providers.deleteCredential(id);
     return { ok: true, data: true };
   }
 
   /** Whether a credential is set. Never returns the key itself. */
   credentialStatus(id: number): "set" | "unset" | "not_found" {
-    if (!this.storage.getProvider(id)) return "not_found";
-    return this.storage.hasCredential(id) ? "set" : "unset";
+    if (!this.storage.providers.getProvider(id)) return "not_found";
+    return this.storage.providers.hasCredential(id) ? "set" : "unset";
   }
 
   /**
@@ -370,7 +370,7 @@ export class ProviderService {
    * Returns the pool entry id.
    */
   addPoolKey(providerId: number, label: string, apiKey: string): ServiceResult<number> {
-    if (!this.storage.getProvider(providerId)) return fail("Provider not found.", "not_found");
+    if (!this.storage.providers.getProvider(providerId)) return fail("Provider not found.", "not_found");
     const cleanLabel = label.trim();
     if (cleanLabel.length === 0) return fail("A display name for the backup key is required.");
     if (cleanLabel.length > MAX_LABEL) return fail("Backup key display name is too long.");
@@ -391,7 +391,7 @@ export class ProviderService {
    * Labels, flags, and counts only — NEVER key material.
    */
   listPoolKeys(providerId: number): PoolKeyView[] {
-    if (!this.storage.getProvider(providerId)) return [];
+    if (!this.storage.providers.getProvider(providerId)) return [];
     return this.pool.listPoolEntries(providerId);
   }
 
@@ -414,7 +414,7 @@ export class ProviderService {
    * Throws SecretStoreError when the key is missing or decryption fails.
    */
   credentialFor(id: number): string | undefined {
-    const stored = this.storage.getCredential(id);
+    const stored = this.storage.providers.getCredential(id);
     if (!stored) return undefined;
     return this.secrets.decrypt(stored);
   }
@@ -425,8 +425,8 @@ export class ProviderService {
    * Refuses the active provider so a live selection is never orphaned.
    */
   remove(id: number): ServiceResult<true> {
-    if (!this.storage.getProvider(id)) return fail("Provider not found.", "not_found");
-    if (!this.storage.deleteProvider(id)) {
+    if (!this.storage.providers.getProvider(id)) return fail("Provider not found.", "not_found");
+    if (!this.storage.providers.deleteProvider(id)) {
       return fail(
         "This provider is in use; switch the active provider first.",
         "in_use",
@@ -451,12 +451,12 @@ export class ModelService {
 
   /** True when this model is the active runtime selection. */
   isActive(id: number): boolean {
-    return this.storage.getRuntimeSettings().activeModelId === id;
+    return this.storage.providers.getRuntimeSettings().activeModelId === id;
   }
 
   /** Models of a provider, newest first. */
   list(providerId: number): ModelView[] {
-    return this.storage.listModels(providerId).map((m) => ({
+    return this.storage.providers.listModels(providerId).map((m) => ({
       id: m.id,
       providerId: m.providerId,
       modelId: m.modelId,
@@ -468,7 +468,7 @@ export class ModelService {
 
   /** One model, or undefined. */
   get(id: number): ModelView | undefined {
-    const m = this.storage.getModel(id);
+    const m = this.storage.providers.getModel(id);
     if (!m) return undefined;
     return {
       id: m.id,
@@ -495,11 +495,11 @@ export class ModelService {
     if (label.length === 0) return fail("A display name for the model is required.");
     if (label.length > MAX_LABEL) return fail("Model display name is too long.");
 
-    if (this.storage.listModels(input.providerId).some((m) => m.modelId === modelId)) {
+    if (this.storage.providers.listModels(input.providerId).some((m) => m.modelId === modelId)) {
       return fail("This model ID is already registered for this provider.", "duplicate");
     }
     try {
-      const id = this.storage.createModel({ providerId: input.providerId, modelId, label });
+      const id = this.storage.providers.createModel({ providerId: input.providerId, modelId, label });
       return { ok: true, data: id };
     } catch {
       return fail("Adding the model failed.");
@@ -511,7 +511,7 @@ export class ModelService {
     const trimmed = label.trim();
     if (trimmed.length === 0) return fail("A display name for the model is required.");
     if (trimmed.length > MAX_LABEL) return fail("Model display name is too long.");
-    if (!this.storage.setModelLabel(id, trimmed)) return fail("Model not found.", "not_found");
+    if (!this.storage.providers.setModelLabel(id, trimmed)) return fail("Model not found.", "not_found");
     return { ok: true, data: true };
   }
 
@@ -522,14 +522,14 @@ export class ModelService {
    * so it is refused until another model is activated.
    */
   setEnabled(id: number, enabled: boolean): ServiceResult<true> {
-    if (!this.storage.getModel(id)) return fail("Model not found.", "not_found");
+    if (!this.storage.providers.getModel(id)) return fail("Model not found.", "not_found");
     if (!enabled && this.isActive(id)) {
       return fail(
         "This model is active; activate another model first to disable it.",
         "in_use",
       );
     }
-    if (!this.storage.setModelEnabled(id, enabled)) {
+    if (!this.storage.providers.setModelEnabled(id, enabled)) {
       return fail("Model not found.", "not_found");
     }
     return { ok: true, data: true };
@@ -537,7 +537,7 @@ export class ModelService {
 
   /** Delete a model, naming the exact reason when it is refused. */
   remove(id: number): ServiceResult<true> {
-    const model = this.storage.getModel(id);
+    const model = this.storage.providers.getModel(id);
     if (!model) return fail("Model not found.", "not_found");
 
     // The two refusals are distinct, and an owner needs to know which applies.
@@ -547,7 +547,7 @@ export class ModelService {
         "in_use",
       );
     }
-    const others = this.storage.listModels(model.providerId).filter((m) => m.id !== id && m.enabled);
+    const others = this.storage.providers.listModels(model.providerId).filter((m) => m.id !== id && m.enabled);
     if (others.length === 0) {
       return fail(
         "This is the provider’s only enabled model; add or enable another model first.",
@@ -555,13 +555,13 @@ export class ModelService {
       );
     }
 
-    if (!this.storage.deleteModel(id)) return fail("Deleting the model failed.");
+    if (!this.storage.providers.deleteModel(id)) return fail("Deleting the model failed.");
     return { ok: true, data: true };
   }
 
   /** Mark a model as its provider's default. */
   setDefault(id: number): ServiceResult<true> {
-    if (!this.storage.setModelDefault(id)) return fail("Model not found.", "not_found");
+    if (!this.storage.providers.setModelDefault(id)) return fail("Model not found.", "not_found");
     return { ok: true, data: true };
   }
 
@@ -584,7 +584,7 @@ export class ModelService {
     providerId: number,
     discoveredModelIds: readonly string[],
   ): boolean {
-    const rows = this.storage.listModels(providerId);
+    const rows = this.storage.providers.listModels(providerId);
     if (rows.length === 0 || discoveredModelIds.length === 0) return false;
     const allowed = new Set(discoveredModelIds);
     const current =
@@ -592,7 +592,7 @@ export class ModelService {
     if (current !== undefined && allowed.has(current.modelId)) return false;
     for (const id of discoveredModelIds) {
       const row = rows.find((m) => m.modelId === id && m.enabled);
-      if (row !== undefined) return this.storage.setModelDefault(row.id);
+      if (row !== undefined) return this.storage.providers.setModelDefault(row.id);
     }
     return false;
   }
@@ -604,6 +604,6 @@ export class ModelService {
 
   /** A model row, used by the gateway. */
   row(id: number): AiModelRow | undefined {
-    return this.storage.getModel(id);
+    return this.storage.providers.getModel(id);
   }
 }

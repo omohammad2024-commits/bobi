@@ -152,8 +152,9 @@ function literalAddress(hostname: string): string | undefined {
  * change it without a restart: BOBI_DNS_CACHE_MS unset → 60000; a value
  * that is not a finite number > 0 → 0, which disables the cache.
  */
+import { processEnv } from "../config/env";
 export function dnsCacheTtlMs(): number {
-  const raw = process.env.BOBI_DNS_CACHE_MS;
+  const raw = processEnv().BOBI_DNS_CACHE_MS;
   if (raw === undefined) return 60_000;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 0;

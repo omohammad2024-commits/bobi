@@ -79,8 +79,9 @@ export const DECAY_FLOOR = 1;
 /** Key prefixes consolidation never merges (episodes, superseded tombstones). */
 const MERGE_EXEMPT_PREFIXES = ["episode:", "superseded:"];
 
+import { flagUnlessZero, processEnv } from "../config/env";
 export function isConsolidationEnabled(): boolean {
-  return process.env.BOBI_MEMORY_CONSOLIDATE !== "0";
+  return flagUnlessZero(processEnv().BOBI_MEMORY_CONSOLIDATE);
 }
 
 /**

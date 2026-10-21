@@ -41,8 +41,9 @@ export const EPISODE_IDLE_MS = 30 * 60 * 1000;
 /** Default minimum user turns for an episode to be worth storing. */
 export const EPISODE_MIN_USER_TURNS = 6;
 
+import { flagUnlessZero, processEnv } from "../config/env";
 export function isEpisodesEnabled(): boolean {
-  return process.env.BOBI_MEMORY_EPISODES !== "0";
+  return flagUnlessZero(processEnv().BOBI_MEMORY_EPISODES);
 }
 
 /** Deterministic key for one ended conversation snapshot. */

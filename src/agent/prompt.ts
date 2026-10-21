@@ -26,7 +26,7 @@
  * telegraphic, but nothing is hidden and no tool is left as an anonymous
  * count: a tool the actor may not use is never in the list.
  */
-import type { ToolDescriptor } from "../tools/service";
+import type { ToolDescriptor } from "../tools/types";
 import type { Lang } from "../i18n/types";
 
 export interface PromptContext {
@@ -65,6 +65,21 @@ export interface PromptContext {
    * recognizes him instead of challenging his identity.
    */
   isOwner?: boolean;
+  /**
+   * Phase 4: prebuilt owner-profile block — who Mohammad is, as facts.
+   *
+   * Built by the caller (the engine, via OwnerProfileService +
+   * renderOwnerProfileBlock) and passed in as a frozen string, the same
+   * pattern as `contextFiles`/`skillContext`: prompt.ts only pastes it.
+   * The renderer returns "" for a fact-empty profile, so an empty block
+   * pastes nothing.
+   *
+   * Defense in depth: the block is pasted ONLY when `isOwner === true`.
+   * A block handed in for a non-owner turn is dropped here, so the
+   * owner's private profile can never leak into a public user's prompt
+   * even if a caller mis-wires it.
+   */
+  ownerProfileBlock?: string;
   /**
    * Whether this turn is in a group chat. Adds explicit role clarity so
    * the model doesn't mimic the user in multi-user context.
@@ -290,6 +305,20 @@ export function buildSystemPrompt(ctx: PromptContext): string {
     blocks.push(
       "The user you are talking to right now IS Mohammad — your verified creator and owner (identity confirmed by the system from his Telegram ID). Greet him like family, not a stranger. Never ask him to prove who he is.",
     );
+
+    // Owner profile (Phase 4): pasted here, directly after the
+    // owner-recognition block, and ONLY inside this isOwner branch — a
+    // block passed for a non-owner turn never reaches the prompt. The
+    // header frames the facts as background for personalization,
+    // assumptions and tone, never as text to recite back at him.
+    if (
+      ctx.ownerProfileBlock !== undefined &&
+      ctx.ownerProfileBlock.trim().length > 0
+    ) {
+      blocks.push(
+        `Owner profile — who Mohammad is. Use it to personalize, fill in reasonable assumptions, and match tone; do NOT recite it back at him unprompted:\n${ctx.ownerProfileBlock.trim()}`,
+      );
+    }
   }
 
   // Group chat role clarity: some models mimic the user in multi-user

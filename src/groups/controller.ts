@@ -34,7 +34,7 @@ import {
   revokeText,
   statusText,
 } from "./panel";
-import { tr, type PanelLang } from "./panel_strings";
+import { tr, type PanelLang } from "../i18n/strings/panel_strings";
 
 export interface PanelOptions {
   auth: AuthorizationService;

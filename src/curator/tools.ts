@@ -8,11 +8,12 @@
  * anyone else, and run() re-checks ownership against the server-supplied
  * isOwner predicate, so a hand-built actor cannot slip through either.
  *
- * The core safety invariant — the curator NEVER mutates memories on its own:
- * - `curate_memories` only READS memories and STORES proposals. It returns
+ * The core safety invariant — the curator NEVER deletes or rewrites memories
+ * on its own:
+ * - `curate_memories` READS memories and STORES proposals. It returns
  *   the Persian proposal list so the owner can read each exact old→new diff.
- * - `curator_decide` is the ONLY place that writes. It applies the stored
- *   proposal's action through the MemoryProvider only when
+ * - `curator_decide` is the ONLY place that applies a proposal. It applies
+ *   the stored proposal's action through the MemoryProvider only when
  *   decision === "approve"; "reject" just marks the row resolved. There is
  *   deliberately no other apply path in this file: applyProposalAction is
  *   module-private and the ProposalStore has no provider access.
@@ -21,6 +22,15 @@
  *   input cannot smuggle in a different action.
  * - Expired proposals (7-day TTL) resolve to "not found", so a stale
  *   approval can never fire later.
+ *
+ * Phase 8 (silo merge): the old standalone `summarize_memories` tool is
+ * folded into `curate_memories`. A curate run ALSO performs the archive
+ * pass (src/curator/summarize.ts): old memories are consolidated into ONE
+ * new additive archive memory and the originals' deletion is filed as a
+ * regular proposal. That single additive write is the sanctioned
+ * exception to "curate writes nothing": it can never overwrite or delete
+ * an existing memory, and deletion still happens only through
+ * curator_decide with an explicit owner approval.
  */
 import { ToolError } from "../tools/errors";
 import { CuratorService, kindLabelFa } from "./curator";
@@ -45,7 +55,6 @@ import type { Tool, ToolContext } from "../tools/types";
 
 export const CURATE_MEMORIES_PERMISSION = "tools:curate_memories";
 export const CURATOR_DECIDE_PERMISSION = "tools:curator_decide";
-export const SUMMARIZE_MEMORIES_PERMISSION = "tools:summarize_memories";
 export const NOTE_EVENT_PERMISSION = "tools:note_event";
 export const LIST_EVENTS_PERMISSION = "tools:list_events";
 
@@ -71,6 +80,16 @@ export function createCuratorService(deps: CuratorToolDeps): CuratorService {
 
 // ---------- curate_memories ----------
 
+export interface CurateMemoriesInput {
+  /**
+   * Archive pass: memories not updated for this many days are consolidated
+   * into one archive entry (default 90).
+   */
+  olderThanDays?: number;
+  /** Archive pass: max memories consolidated in one run (default 20). */
+  maxEntries?: number;
+}
+
 export interface CurateMemoriesOutput {
   proposals: Array<{
     id: string;
@@ -80,11 +99,19 @@ export interface CurateMemoriesOutput {
     summaryFa: string;
   }>;
   count: number;
+  /**
+   * Phase 8: the archive pass result. True when old memories were
+   * consolidated into a new archive memory this run (its deletion
+   * proposal for the originals is in `proposals`, kind "archive").
+   */
+  archived: boolean;
+  archiveKey?: string;
+  archivedCount?: number;
 }
 
 export const curateMemoriesManifest: ToolManifest = defineManifest({
   id: "curate_memories",
-  version: "1.0.0",
+  version: "2.0.0",
   title: "Curate Memories",
   purpose: "memory tidy plan",
   useWhen: "tidy memory asked",
@@ -93,42 +120,90 @@ export const curateMemoriesManifest: ToolManifest = defineManifest({
   confusableWith: [
     {
       tool: "curator_decide",
-      difference: "curate only proposes; decide applies or rejects a stored proposal.",
-    },
-    {
-      tool: "summarize_memories",
-      difference: "summarize archives old entries; curate flags duplicates, stale and overloaded ones.",
+      difference: "curate only proposes (plus the additive archive write); decide applies or rejects a stored proposal.",
     },
     {
       tool: "recall",
-      difference: "recall reads memories for the chat; curate reviews them for cleanup.",
+      difference: "recall reads memories for the chat; curate reviews them for cleanup and archives old ones.",
     },
   ],
   latencyTier: "instant",
   description:
-    "Scan the owner's long-term memories and store cleanup proposals (merge duplicates, drop stale, split overloaded). Changes nothing itself; owner-only.",
-  outputSummary: "Stored proposals with ids, kinds and Persian summaries, plus the count.",
+    "Scan the owner's long-term memories, store cleanup proposals (merge duplicates, drop stale, split overloaded) and archive old entries into one archive memory. Deletions happen only via curator_decide approval; owner-only.",
+  outputSummary: "Stored proposals with ids, kinds and Persian summaries, the count, and whether old memories were archived (key + count).",
   category: "memory",
 });
 
-export function createCurateMemoriesTool(deps: CuratorToolDeps): Tool<Record<string, never>, CurateMemoriesOutput> {
+export function createCurateMemoriesTool(deps: CuratorToolDeps): Tool<CurateMemoriesInput, CurateMemoriesOutput> {
   const service = createCuratorService(deps);
   return {
     name: "curate_memories",
     manifest: curateMemoriesManifest,
     description:
-      'Review long-term memories and store improvement proposals (merge duplicates, remove stale entries, split overloaded ones). It changes nothing by itself; proposals are applied only via the curator_decide tool with owner approval (owner only).',
+      'Review long-term memories and store improvement proposals (merge duplicates, remove stale entries, split overloaded ones), and archive memories not updated for a long time (default 90 days) into one "archive" entry — deletion of the originals is filed as a proposal and happens only via curator_decide with owner approval (owner only).',
     enabled: true,
     ownerOnly: true,
     permission: { requires: [CURATE_MEMORIES_PERMISSION] },
     toolset: "memory",
-    input: { fields: {} },
+    input: {
+      fields: {
+        olderThanDays: {
+          type: "number",
+          required: false,
+          description: "Archive age threshold in days (default 90).",
+          minimum: 7,
+          maximum: 365,
+        },
+        maxEntries: {
+          type: "number",
+          required: false,
+          description: "Max memories archived per run (default 20).",
+          minimum: 1,
+          maximum: 50,
+        },
+      },
+    },
 
-    async run(_input: Record<string, never>, ctx: ToolContext): Promise<CurateMemoriesOutput> {
+    async run(input: CurateMemoriesInput, ctx: ToolContext): Promise<CurateMemoriesOutput> {
       const userId = ownerOf(ctx, deps);
-      // Read-only scan: review() has no write path by construction.
+      // Cleanup scan: review() has no write path by construction.
       const proposals = await service.review(userId);
       const stored = deps.store.saveProposals(userId, proposals);
+
+      // Phase 8: the archive pass (the old summarize_memories, folded in).
+      // Its only write is the additive archive memory; the originals'
+      // deletion is a regular proposal in the same store.
+      const summarizer =
+        deps.now !== undefined
+          ? new SummarizerService({ provider: deps.provider }, { now: deps.now })
+          : new SummarizerService({ provider: deps.provider });
+      const summarizeOpts: SummarizerOptions = {};
+      if (input.olderThanDays !== undefined) summarizeOpts.olderThanDays = input.olderThanDays;
+      if (input.maxEntries !== undefined) summarizeOpts.maxEntries = input.maxEntries;
+      // Never archive the same originals twice: keys a still-pending
+      // archive proposal already covers are excluded from this pass.
+      const alreadyProposed = new Set<string>();
+      for (const p of deps.store.listPending(userId)) {
+        if (p.kind === "archive") {
+          for (const key of p.memoryIds) alreadyProposed.add(key);
+        }
+      }
+      if (alreadyProposed.size > 0) summarizeOpts.excludeKeys = alreadyProposed;
+      const report = await summarizer.review(userId, summarizeOpts);
+
+      let archived = false;
+      let archiveKey: string | undefined;
+      let archivedCount: number | undefined;
+      if (report.archived && report.proposal !== undefined) {
+        const [archiveStored] = deps.store.saveProposals(userId, [report.proposal]);
+        if (archiveStored !== undefined) {
+          stored.push(archiveStored);
+        }
+        archived = true;
+        archiveKey = report.archiveKey;
+        archivedCount = report.count;
+      }
+
       return {
         proposals: stored.map((p) => ({
           id: p.id,
@@ -138,6 +213,9 @@ export function createCurateMemoriesTool(deps: CuratorToolDeps): Tool<Record<str
           summaryFa: p.summaryFa,
         })),
         count: stored.length,
+        archived,
+        ...(archiveKey !== undefined ? { archiveKey } : {}),
+        ...(archivedCount !== undefined ? { archivedCount } : {}),
       };
     },
   };
@@ -166,7 +244,7 @@ export const curatorDecideManifest: ToolManifest = defineManifest({
   purpose: "decide on proposal",
   useWhen: "owner decides",
   doNotUseWhen:
-    "No proposal id yet — run curate_memories or summarize_memories first to create one.",
+    "No proposal id yet — run curate_memories first to create one.",
   confusableWith: [
     {
       tool: "curate_memories",
@@ -261,114 +339,9 @@ export function createCuratorTools(deps: CuratorToolDeps): readonly Tool<unknown
   return [
     createCurateMemoriesTool(deps),
     createCuratorDecideTool(deps),
-    createSummarizeMemoriesTool(deps),
     createNoteEventTool(deps),
     createListEventsTool(deps),
   ] as unknown as readonly Tool<unknown, unknown>[];
-}
-
-// ---------- summarize_memories ----------
-
-export interface SummarizeMemoriesInput {
-  olderThanDays?: number;
-  maxEntries?: number;
-}
-
-export interface SummarizeMemoriesOutput {
-  archived: boolean;
-  archiveKey?: string;
-  count?: number;
-  /** Stored proposal id for the originals' deletion — decide via curator_decide. */
-  proposalId?: string;
-  summaryFa: string;
-}
-
-/**
- * Phase-3: opt-in periodic auto-summarization. Consolidates old memories
- * into one additive archive entry and stores a deletion proposal for the
- * originals through the EXISTING curator flow — nothing is deleted without
- * the owner's explicit curator_decide approval. Owner-only.
- */
-export const summarizeMemoriesManifest: ToolManifest = defineManifest({
-  id: "summarize_memories",
-  version: "1.0.0",
-  title: "Summarize Memories",
-  purpose: "old memories merged",
-  useWhen: "consolidation due",
-  doNotUseWhen:
-    "Deleting originals happens only via curator_decide on the filed proposal; for duplicates use curate_memories.",
-  confusableWith: [
-    {
-      tool: "curate_memories",
-      difference: "curate flags duplicates/stale/split; summarize archives old entries into one.",
-    },
-    {
-      tool: "curator_decide",
-      difference: "summarize files the deletion proposal; decide approves or rejects it.",
-    },
-  ],
-  latencyTier: "instant",
-  description:
-    "Consolidate not-recently-updated memories into one archive entry and file deletion of the originals as a curator proposal. Nothing deleted without approval; owner-only.",
-  outputSummary: "Whether archived, the archive key and count, the deletion proposal id, and a summary.",
-  category: "memory",
-});
-
-export function createSummarizeMemoriesTool(deps: CuratorToolDeps): Tool<SummarizeMemoriesInput, SummarizeMemoriesOutput> {
-  return {
-    name: "summarize_memories",
-    manifest: summarizeMemoriesManifest,
-    description:
-      'Automatically archive old memories (owner only): summarizes not-recently-updated old memories into one "archive" entry and files deletion of the originals as a proposal — deletion only with owner approval in curator_decide. Default: older than 90 days.',
-    enabled: true,
-    ownerOnly: true,
-    permission: { requires: [SUMMARIZE_MEMORIES_PERMISSION] },
-    toolset: "memory",
-    input: {
-      fields: {
-        olderThanDays: {
-          type: "number",
-          required: false,
-          description: "Age threshold in days (default 90).",
-          minimum: 7,
-          maximum: 365,
-        },
-        maxEntries: {
-          type: "number",
-          required: false,
-          description: "Max memories per run (default 20).",
-          minimum: 1,
-          maximum: 50,
-        },
-      },
-    },
-
-    async run(input: SummarizeMemoriesInput, ctx: ToolContext): Promise<SummarizeMemoriesOutput> {
-      const userId = ownerOf(ctx, deps);
-      const service =
-        deps.now !== undefined
-          ? new SummarizerService({ provider: deps.provider }, { now: deps.now })
-          : new SummarizerService({ provider: deps.provider });
-      const summarizeOpts: SummarizerOptions = {};
-      if (input.olderThanDays !== undefined) summarizeOpts.olderThanDays = input.olderThanDays;
-      if (input.maxEntries !== undefined) summarizeOpts.maxEntries = input.maxEntries;
-      const report = await service.review(userId, summarizeOpts);
-      if (!report.archived || report.proposal === undefined) {
-        return { archived: false, summaryFa: report.reason ?? "Nothing was archived." };
-      }
-      // The deletion proposal goes through the standard store, so the owner
-      // approves it in curator_decide like any other proposal.
-      const [stored] = deps.store.saveProposals(userId, [report.proposal]);
-      const out: SummarizeMemoriesOutput = {
-        archived: true,
-        summaryFa: report.proposal.summaryFa,
-      };
-      if (report.archiveKey !== undefined) out.archiveKey = report.archiveKey;
-      if (report.count !== undefined) out.count = report.count;
-      if (stored !== undefined) out.proposalId = stored.id;
-      return out;
-    },
-  };
 }
 
 // ---------- note_event / list_events ----------
@@ -404,7 +377,7 @@ export const noteEventManifest: ToolManifest = defineManifest({
   purpose: "log dated event",
   useWhen: "birthday/due date",
   doNotUseWhen:
-    "A one-off timed ping is a reminder (remind_at/remind_nl); a plain fact is remember.",
+    "A one-off timed ping is a reminder (remind_at); a plain fact is remember.",
   confusableWith: [
     {
       tool: "remind_at",

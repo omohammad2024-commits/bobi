@@ -52,7 +52,7 @@ import {
   gateUser,
   isOwnerSender,
   senderLang,
-} from "./bot";
+} from "./deps";
 import type { Lang } from "../i18n/types";
 import { t } from "../i18n/index";
 import type { SkillCache } from "../skills/loader";
@@ -87,7 +87,7 @@ import {
 } from "../skills/signing";
 import type { Storage } from "../storage/storage";
 import { SKILLS_MAX_FILE_BYTES } from "../skills/types";
-import { tr, type Ph3SkillsLang } from "./cmd_phase3_skills_strings";
+import { tr, type Ph3SkillsLang } from "../i18n/strings/cmd_phase3_skills_strings";
 
 // ------------------------------------------------------------------ defs ----
 
@@ -523,8 +523,8 @@ export interface SkillTrust {
 /** Build a `SkillTrust` over the trusted-publisher registry in storage. */
 export function storageSkillTrust(storage: Storage): SkillTrust {
   return {
-    isTrusted: (keyId) => storage.getTrustedSkillPublisher(keyId) !== undefined,
-    labelOf: (keyId) => storage.getTrustedSkillPublisher(keyId)?.label,
+    isTrusted: (keyId) => storage.misc.getTrustedSkillPublisher(keyId) !== undefined,
+    labelOf: (keyId) => storage.misc.getTrustedSkillPublisher(keyId)?.label,
   };
 }
 
@@ -695,12 +695,12 @@ export function handleSkillKeygen(
   storage: Storage,
   force: boolean,
 ): string {
-  const existing = storage.getSkillSigningKey();
+  const existing = storage.misc.getSkillSigningKey();
   if (existing !== undefined && !force) {
     return t("ph5_skill_signing.keygen.exists", lang, { keyId: shortKeyId(existing.keyId) });
   }
   const kp = generateSigningKeypair();
-  storage.setSkillSigningKey({
+  storage.misc.setSkillSigningKey({
     keyId: kp.keyId,
     publicKey: kp.publicKeyB64,
     privateKeyJwk: kp.privateKeyJwk,
@@ -715,7 +715,7 @@ export function handleSkillKeygen(
 
 /** The stored keypair as export signer material, if `/skill keygen` has run. */
 export function exportSigner(storage: Storage): PackageSigner | undefined {
-  const row = storage.getSkillSigningKey();
+  const row = storage.misc.getSkillSigningKey();
   if (row === undefined) return undefined;
   return { publicKeyB64: row.publicKey, privateKeyJwk: row.privateKeyJwk };
 }
@@ -729,7 +729,7 @@ export function handleSkillKeyExport(
   lang: Ph3SkillsLang,
   storage: Storage,
 ): { ok: true; fileName: string; text: string; keyId: string } | { ok: false; text: string } {
-  const row = storage.getSkillSigningKey();
+  const row = storage.misc.getSkillSigningKey();
   if (row === undefined) {
     return { ok: false, text: t("ph5_skill_signing.keyexport.missing", lang) };
   }
@@ -778,7 +778,7 @@ export function handleSkillTrust(
   const keyId =
     parsed.kind === "key_id" ? input.trim().toLowerCase() : fingerprintPublicKey(parsed.publicKeyB64);
   const finalLabel = label?.trim() !== "" && label !== undefined ? label.trim() : `key-${keyId.slice(0, 8)}`;
-  const { added } = storage.trustSkillPublisher({
+  const { added } = storage.misc.trustSkillPublisher({
     keyId,
     label: finalLabel,
     publicKey: parsed.kind === "public_key" ? parsed.publicKeyB64 : "",
@@ -804,11 +804,11 @@ export function handleSkillUntrust(
   if (!/^[0-9a-f]{64}$/.test(keyId)) {
     return t("ph5_skill_signing.trust.invalid", lang);
   }
-  const row = storage.getTrustedSkillPublisher(keyId);
+  const row = storage.misc.getTrustedSkillPublisher(keyId);
   if (row === undefined) {
     return t("ph5_skill_signing.untrust.missing", lang);
   }
-  storage.untrustSkillPublisher(keyId);
+  storage.misc.untrustSkillPublisher(keyId);
   return t("ph5_skill_signing.untrust.removed", lang, {
     label: row.label,
     keyId: shortKeyId(keyId),
@@ -817,7 +817,7 @@ export function handleSkillUntrust(
 
 /** `/skill trusted`: list the owner's trusted publishers. */
 export function handleSkillTrustedList(lang: Ph3SkillsLang, storage: Storage): string {
-  const rows = storage.listTrustedSkillPublishers();
+  const rows = storage.misc.listTrustedSkillPublishers();
   if (rows.length === 0) {
     return t("ph5_skill_signing.trusted.empty", lang);
   }
@@ -841,7 +841,7 @@ export function handleSkillList(lang: Ph3SkillsLang, dir: string, storage: Stora
   const trust = storageSkillTrust(storage);
   const lines = [t("ph5_skill_signing.list.title", lang, { count: skills.length }), ""];
   for (const s of skills) {
-    const prov = storage.getSkillInstallProvenance(s.name);
+    const prov = storage.misc.getSkillInstallProvenance(s.name);
     let sig: string;
     if (prov?.keyId == null) {
       sig = t("ph5_skill_signing.list.sig_unsigned", lang);
@@ -1139,7 +1139,7 @@ export function registerPhase3SkillsCommands(
         // skip, --sign to require (fails loudly when no key was generated).
         const wantSign = flagSet(arg, "--sign");
         const noSign = flagSet(arg, "--no-sign");
-        const keyRow = deps.storage.getSkillSigningKey();
+        const keyRow = deps.storage.misc.getSkillSigningKey();
         if (wantSign && keyRow === undefined) {
           await safeReply(ctx, t("ph5_skill_signing.export.sign_no_key", lang));
           return;

@@ -235,10 +235,10 @@ export const runBenchManifest: ToolManifest = defineManifest({
   id: "run_bench",
   version: "1.0.0",
   title: "Run Benchmark",
-  purpose: "run benchmark suite",
-  useWhen: "quality check",
+  purpose: "benchmark suite, admin-run",
+  useWhen: "admin surface only",
   doNotUseWhen:
-    "Not for chatting or single answers; live mode needs a configured provider or it skips loudly.",
+    "Never call in chat — driven only from /bench and schedules; not for single answers or chatting.",
   confusableWith: [
     {
       tool: "usage_report",
@@ -251,7 +251,7 @@ export const runBenchManifest: ToolManifest = defineManifest({
   ],
   latencyTier: "minutes",
   description:
-    "Run the benchmark suite offline (fake provider) or live (owner's real provider), record the run in history and alert the owner on regression. Owner-only.",
+    "Run the benchmark suite offline (fake provider) or live (owner's real provider), record the run in history and alert the owner on regression. Owner-only, admin surface only: driven from /bench and scheduled tasks, not offered to the model.",
   outputSummary: "Run status, pass/fail counts, average score and whether a regression alert fired.",
   category: "bench",
   costTier: "cheap",
@@ -268,6 +268,7 @@ export function createRunBenchTool(deps: RunBenchToolDeps): Tool<RunBenchInput, 
       "اجرای بنچ‌مارک بابی (آفلاین یا زنده)، ذخیرهٔ نتیجه در تاریخچه و هشدار افت کیفیت به مالک. زمان‌بندی‌شده: آفلاین همیشه، زنده فقط وقتی ارائه‌دهنده پیکربندی شده باشد (فقط مالک).",
     enabled: true,
     ownerOnly: true,
+    offDesk: true,
     permission: { requires: [RUN_BENCH_PERMISSION] },
     toolset: "system",
     input: {

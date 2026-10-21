@@ -26,8 +26,8 @@
  * src/bot/bot.ts. The coordinator calls `registerBenchCommands(bot, deps)`
  * from createBot and merges COMMAND_DEFS into the setMyCommands call.
  * Deps the coordinator supplies:
- *   history    — new BenchHistory(new Database(config.dbPath)) (second
- *                connection, same pattern as ProposalStore)
+ *   history    — new BenchHistory(storage.database) (the platform's
+ *                single shared handle, phase 6)
  *   runBenchNow — run the suite on demand. The straightforward wiring is the
  *                run_bench tool itself:
  *                  const runBenchTool = createRunBenchTool({
@@ -57,7 +57,7 @@
  *     daemon worker (milliseconds, inside the scheduler's action budget).
  */
 import type { Bot } from "grammy";
-import { gateGroup, gateUser, senderLang } from "./bot";
+import { gateGroup, gateUser, senderLang } from "./deps";
 import { requireOwnerTier } from "./access";
 import type { HermesCommandDef, HermesCommandDeps } from "./cmd_context";
 import {
@@ -70,7 +70,7 @@ import {
 import { parseCron } from "../scheduler/cron";
 import { BenchHistory } from "../bench/history";
 import type { RunBenchOutput } from "../bench/tool";
-import { tr, type BenchLang } from "./cmd_phase3_bench_strings";
+import { tr, type BenchLang } from "../i18n/strings/cmd_phase3_bench_strings";
 
 // ---------------------------------------------------------------------------
 // Command definitions (menu entries, merged by the coordinator)

@@ -48,6 +48,7 @@ import type { CircuitStateReader, CircuitStateView } from "./circuit_breaker";
 import { modelCapabilities, modelSupportsTools } from "./model_capabilities";
 
 /** Env var that disables smart routing. Default: routing is ON. */
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 export const SMART_ROUTING_ENV_VAR = "BOBI_SMART_ROUTING";
 
 /**
@@ -58,9 +59,7 @@ export const SMART_ROUTING_ENV_VAR = "BOBI_SMART_ROUTING";
  * as BOBI_STREAMING and BOBI_SEMANTIC_MEMORY.
  */
 export function smartRoutingEnabled(): boolean {
-  const raw = process.env[SMART_ROUTING_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), SMART_ROUTING_ENV_VAR));
 }
 
 /** Task complexity tiers, in ascending order of demand. */
@@ -425,7 +424,7 @@ export class SmartRouter {
     const out: RouteCandidate[] = [];
     let providers: AiProviderRow[];
     try {
-      providers = this.storage.listProviders();
+      providers = this.storage.providers.listProviders();
     } catch {
       return out;
     }
@@ -433,14 +432,14 @@ export class SmartRouter {
       if (!provider.enabled) continue;
       let hasCred = false;
       try {
-        hasCred = this.storage.hasCredential(provider.id);
+        hasCred = this.storage.providers.hasCredential(provider.id);
       } catch {
         continue;
       }
       if (!hasCred) continue;
       let models: AiModelRow[];
       try {
-        models = this.storage.listModels(provider.id);
+        models = this.storage.providers.listModels(provider.id);
       } catch {
         continue;
       }
@@ -577,7 +576,7 @@ export class SmartRouter {
   /** Latest probe row for a provider; unreadable storage reads as none. */
   private healthRow(providerId: number): AiProviderHealthRow | undefined {
     try {
-      return this.storage.getProviderHealth(providerId);
+      return this.storage.providers.getProviderHealth(providerId);
     } catch {
       return undefined;
     }

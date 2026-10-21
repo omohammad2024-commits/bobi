@@ -39,7 +39,7 @@ export class GroupAccessService {
    */
   isApproved(chatId: string): boolean {
     try {
-      return this.storage.groupAccess(chatId)?.state === "approved";
+      return this.storage.access.groupAccess(chatId)?.state === "approved";
     } catch {
       // A storage failure must not be read as approval.
       return false;
@@ -49,7 +49,7 @@ export class GroupAccessService {
   /** The stored state for diagnostics; undefined when there is no row. */
   stateOf(chatId: string): GroupState | undefined {
     try {
-      return this.storage.groupAccess(chatId)?.state;
+      return this.storage.access.groupAccess(chatId)?.state;
     } catch {
       return undefined;
     }
@@ -63,7 +63,7 @@ export class GroupAccessService {
    */
   registerGroup(g: GroupInfo): { created: boolean } {
     try {
-      const created = this.storage.createPendingGroup({
+      const created = this.storage.access.createPendingGroup({
         chatId: g.chatId,
         chatType: g.chatType,
         // exactOptionalPropertyTypes: omit rather than pass undefined.
@@ -79,7 +79,7 @@ export class GroupAccessService {
   /** The pending record, for building the owner's notification. */
   pendingGroup(chatId: string): GroupAccessRecord | undefined {
     try {
-      const row = this.storage.groupAccess(chatId);
+      const row = this.storage.access.groupAccess(chatId);
       return row?.state === "pending" ? row : undefined;
     } catch {
       return undefined;
@@ -93,7 +93,7 @@ export class GroupAccessService {
    * membership updates from producing notification storms.
    */
   needsNotification(chatId: string): boolean {
-    const row = this.storage.groupAccess(chatId);
+    const row = this.storage.access.groupAccess(chatId);
     return row !== undefined && row.notifiedAt === undefined;
   }
 
@@ -104,14 +104,14 @@ export class GroupAccessService {
    * which case a concurrent attempt won the race and must not send again.
    */
   markNotified(chatId: string, expected: number | undefined): boolean {
-    return this.storage.markGroupNotified(chatId, expected);
+    return this.storage.access.markGroupNotified(chatId, expected);
   }
 
   /** Record that a notification attempt failed. Never approves the group. */
   markNotificationFailed(chatId: string): void {
     // The row stays `pending` with a null `notified_at` so the next update
     // retries; nothing here changes the approval state.
-    void this.storage.groupAccess(chatId);
+    void this.storage.access.groupAccess(chatId);
   }
 
   /**
@@ -146,13 +146,13 @@ export class GroupAccessService {
     ownerId: string,
   ): TransitionResult {
     try {
-      const row = this.storage.groupAccess(chatId);
+      const row = this.storage.access.groupAccess(chatId);
       if (!row) return { ok: false, reason: "not_found" };
       if (row.state !== from) return { ok: false, reason: "invalid_transition" };
 
       // The UPDATE itself re-tests `from`, so a concurrent transition that
       // changes the row between the check above and the write is rejected.
-      const changed = this.storage.transitionGroup(chatId, from, to, ownerId);
+      const changed = this.storage.access.transitionGroup(chatId, from, to, ownerId);
       if (!changed) return { ok: false, reason: "invalid_transition" };
 
       return { ok: true, previous: from };
@@ -163,19 +163,19 @@ export class GroupAccessService {
 
   /** Pending groups awaiting a decision, newest first, one page at a time. */
   listPending(limit = 8, offset = 0): GroupAccessRecord[] {
-    return this.storage.listGroupsByState("pending", limit, offset);
+    return this.storage.access.listGroupsByState("pending", limit, offset);
   }
 
   /** Approved groups, newest first. */
   listApproved(limit = 8, offset = 0): GroupAccessRecord[] {
-    return this.storage.listGroupsByState("approved", limit, offset);
+    return this.storage.access.listGroupsByState("approved", limit, offset);
   }
 
   countPending(): number {
-    return this.storage.countGroupsByState("pending");
+    return this.storage.access.countGroupsByState("pending");
   }
 
   countApproved(): number {
-    return this.storage.countGroupsByState("approved");
+    return this.storage.access.countGroupsByState("approved");
   }
 }

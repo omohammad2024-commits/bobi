@@ -20,7 +20,7 @@ import { Context, InlineKeyboard } from "grammy";
 import type { AdminBoundary } from "../auth/admin_boundary";
 import type { AuthorizationService } from "../auth/service";
 import type { Permission } from "../auth/roles";
-import type { ProviderHealthService, ProbeResult } from "../ai/health";
+import type { ProviderProbeService, ProbeResult } from "../ai/provider_probe";
 import type { ProviderSecretStore } from "../ai/secret_store";
 import type { AdapterRegistry } from "../ai/adapter_registry";
 import { ModelService, ProviderService, type ProviderView } from "../ai/provider_service";
@@ -36,8 +36,8 @@ import type { Storage } from "../storage/storage";
 import { resolveLang } from "../i18n";
 import { decode, encode, type PanelAction } from "./callbacks";
 import { PANEL_DENIED, PANEL_STALE, backKeyboard } from "./panel";
-import { formatNum, tr, type PanelLang } from "./panel_strings";
-import { atr } from "./ai_panel_audit_strings";
+import { formatNum, tr, type PanelLang } from "../i18n/strings/panel_strings";
+import { atr } from "../i18n/strings/ai_panel_audit_strings";
 import {
   adapterKeyboard,
   addFormText,
@@ -109,7 +109,7 @@ export interface AiAdminOptions {
   storage: Storage;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   secrets: ProviderSecretStore;
   adapters: AdapterRegistry;
   /** Web-search settings; absent means the search section is not offered. */
@@ -133,7 +133,7 @@ export class AiAdminController {
   private readonly storage: Storage;
   private readonly providers: ProviderService;
   private readonly models: ModelService;
-  private readonly health: ProviderHealthService;
+  private readonly health: ProviderProbeService;
   private readonly secrets: ProviderSecretStore;
   private readonly adapters: AdapterRegistry;
   private readonly search: SearchSettingsService | undefined;
@@ -156,7 +156,7 @@ export class AiAdminController {
     this.adapters = opts.adapters;
     this.search = opts.search;
     this.engineTimeouts = opts.engineTimeouts;
-    this.prefs = opts.prefs ?? ((u, k) => this.storage.getUserPref(u, k));
+    this.prefs = opts.prefs ?? ((u, k) => this.storage.misc.getUserPref(u, k));
   }
 
   /** Actor from a trusted context; undefined when identity is absent. */
@@ -217,10 +217,10 @@ export class AiAdminController {
    */
   private activePairForPanel(): { providerLabel: string; modelLabel: string } | null {
     try {
-      const sel = this.storage.getRuntimeSettings();
+      const sel = this.storage.providers.getRuntimeSettings();
       if (sel.activeProviderId === null || sel.activeModelId === null) return null;
-      const p = this.storage.getProvider(sel.activeProviderId);
-      const m = this.storage.getModel(sel.activeModelId);
+      const p = this.storage.providers.getProvider(sel.activeProviderId);
+      const m = this.storage.providers.getModel(sel.activeModelId);
       if (!p || !m || !p.enabled || !m.enabled || m.providerId !== p.id) return null;
       return { providerLabel: p.label, modelLabel: m.label };
     } catch {
@@ -242,12 +242,12 @@ export class AiAdminController {
    */
   hasConfiguredProvider(): boolean {
     try {
-      const sel = this.storage.getRuntimeSettings();
+      const sel = this.storage.providers.getRuntimeSettings();
       if (sel.activeProviderId === null || sel.activeProviderId === undefined) return false;
-      const p = this.storage.getProvider(sel.activeProviderId);
+      const p = this.storage.providers.getProvider(sel.activeProviderId);
       if (p === undefined || !p.enabled) return false;
-      if (!this.storage.hasCredential(sel.activeProviderId)) return false;
-      if (this.storage.listModels(sel.activeProviderId).length === 0) return false;
+      if (!this.storage.providers.hasCredential(sel.activeProviderId)) return false;
+      if (this.storage.providers.listModels(sel.activeProviderId).length === 0) return false;
       return true;
     } catch {
       return false;
@@ -260,9 +260,9 @@ export class AiAdminController {
    */
   activeProviderLabel(): string | undefined {
     try {
-      const sel = this.storage.getRuntimeSettings();
+      const sel = this.storage.providers.getRuntimeSettings();
       if (sel.activeProviderId === null || sel.activeProviderId === undefined) return undefined;
-      return this.storage.getProvider(sel.activeProviderId)?.label;
+      return this.storage.providers.getProvider(sel.activeProviderId)?.label;
     } catch {
       return undefined;
     }
@@ -476,19 +476,19 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.toggle", permission: PERM_MANAGE },
           () => {
-            const s = this.storage.getFailoverSettings();
+            const s = this.storage.providers.getFailoverSettings();
             const next = !s.enabled;
             if (next) {
               // Turning failover on with no usable candidate would silently do
               // nothing later, so say so now rather than pretending.
-              if (this.storage.listFailoverCandidates().length === 0) {
+              if (this.storage.providers.listFailoverCandidates().length === 0) {
                 return {
                   ok: false as const,
                   message: tr(lang, "panel.fo.need_candidate"),
                 };
               }
             }
-            this.storage.setFailoverSettings({ enabled: next });
+            this.storage.providers.setFailoverSettings({ enabled: next });
             return {
               ok: true as const,
               message: next
@@ -511,7 +511,7 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.attempts.view", permission: PERM_VIEW },
           () => {
-            const s = this.storage.getFailoverSettings();
+            const s = this.storage.providers.getFailoverSettings();
             return {
               text: attemptsText(s.maxAttempts, lang),
               keyboard: attemptsKeyboard(s.maxAttempts, lang),
@@ -529,8 +529,8 @@ export class AiAdminController {
           { actor, operation: "fo.attempts.set", permission: PERM_MANAGE, targetId: String(value) },
           () => {
             // The codec already bounds 1..4; storage clamps again.
-            this.storage.setFailoverSettings({ maxAttempts: value });
-            const s = this.storage.getFailoverSettings();
+            this.storage.providers.setFailoverSettings({ maxAttempts: value });
+            const s = this.storage.providers.getFailoverSettings();
             return tr(lang, "panel.fo.attempts_set", { n: formatNum(s.maxAttempts, lang) });
           },
         );
@@ -549,7 +549,7 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.timeout.view", permission: PERM_VIEW },
           () => {
-            const s = this.storage.getFailoverSettings();
+            const s = this.storage.providers.getFailoverSettings();
             return {
               text: timeoutText(s.timeoutMs, lang),
               keyboard: timeoutKeyboard(s.timeoutMs, lang),
@@ -566,8 +566,8 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.timeout.set", permission: PERM_MANAGE, targetId: String(value) },
           () => {
-            this.storage.setFailoverSettings({ timeoutMs: value });
-            const s = this.storage.getFailoverSettings();
+            this.storage.providers.setFailoverSettings({ timeoutMs: value });
+            const s = this.storage.providers.getFailoverSettings();
             return tr(lang, "panel.fo.timeout_set", { n: formatNum(s.timeoutMs, lang) });
           },
         );
@@ -642,12 +642,12 @@ export class AiAdminController {
             if (!model || !model.enabled || model.providerId !== providerId) {
               return { refused: tr(lang, "panel.fo.add_refused_model") };
             }
-            const current = this.storage.listFailoverCandidates();
+            const current = this.storage.providers.listFailoverCandidates();
             // A duplicate candidate would double the effective attempt count.
             if (current.some((c) => c.providerId === providerId && c.modelId === modelId)) {
               return { refused: tr(lang, "panel.fo.add_duplicate") };
             }
-            this.storage.setFailoverCandidates([
+            this.storage.providers.setFailoverCandidates([
               ...current,
               { providerId, modelId },
             ]);
@@ -673,12 +673,12 @@ export class AiAdminController {
         const r = await this.admin.runAdmin(
           { actor, operation: "fo.remove", permission: PERM_MANAGE, targetId: String(index) },
           () => {
-            const current = this.storage.listFailoverCandidates();
+            const current = this.storage.providers.listFailoverCandidates();
             // A stale index from an older render must not remove the wrong row.
             if (index < 0 || index >= current.length) {
               return { refused: tr(lang, "panel.fo.remove_stale") };
             }
-            this.storage.setFailoverCandidates(current.filter((_, i) => i !== index));
+            this.storage.providers.setFailoverCandidates(current.filter((_, i) => i !== index));
             return { ok: true as const };
           },
         );
@@ -756,7 +756,7 @@ export class AiAdminController {
             targetId: String(index),
           },
           () => {
-            const current = this.storage.listFailoverCandidates();
+            const current = this.storage.providers.listFailoverCandidates();
             const target = up ? index - 1 : index + 1;
             // Refuse a move that would go outside the list, rather than
             // silently reordering something unintended.
@@ -771,7 +771,7 @@ export class AiAdminController {
             const b = next[target]!;
             next[index] = b;
             next[target] = a;
-            this.storage.setFailoverCandidates(next);
+            this.storage.providers.setFailoverCandidates(next);
             return { ok: true as const };
           },
         );
@@ -1187,7 +1187,7 @@ export class AiAdminController {
             // Activating a model of a disabled provider would point the
             // runtime at a provider that can never answer; refuse it here
             // instead of leaving a dead selection behind.
-            const provider = this.storage.getProvider(model.providerId);
+            const provider = this.storage.providers.getProvider(model.providerId);
             if (!provider || !provider.enabled) {
               return {
                 providerId: model.providerId,
@@ -1198,7 +1198,7 @@ export class AiAdminController {
             if (!res.ok) return { providerId: model.providerId, text: res.message };
             // Selecting the default also activates this provider+model, so a
             // single click both sets the default and makes it live.
-            this.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
+            this.storage.providers.setRuntimeSelection({ providerId: model.providerId, modelId: id });
             return { providerId: model.providerId, text: tr(lang, "panel.models.made_default") };
           },
         );
@@ -1226,7 +1226,7 @@ export class AiAdminController {
             const view = this.providers.view(id);
             if (!view) return undefined;
             const models = this.models.enabledModels(id);
-            const settings = this.storage.getRuntimeSettings();
+            const settings = this.storage.providers.getRuntimeSettings();
             if (models.length === 0) {
               // A provider with no enabled models is still listed (marked) on
               // the picker; say plainly what to do instead of showing an empty
@@ -1258,9 +1258,9 @@ export class AiAdminController {
           async () => {
             const model = this.models.get(id);
             if (!model || !model.enabled) return undefined;
-            const provider = this.storage.getProvider(model.providerId);
+            const provider = this.storage.providers.getProvider(model.providerId);
             if (!provider || !provider.enabled) return undefined;
-            this.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
+            this.storage.providers.setRuntimeSelection({ providerId: model.providerId, modelId: id });
             // Probe on select: warn inline when the fresh selection doesn't
             // answer, so the owner discovers a dead provider here — not by
             // chatting into the void. A failed probe never blocks the selection.
@@ -1311,7 +1311,7 @@ export class AiAdminController {
         // A stale button can name a provider that no longer exists; the
         // health service records against the provider row, so check first
         // instead of letting the probe throw on a missing row.
-        if (!this.storage.getProvider(providerId)) {
+        if (!this.storage.providers.getProvider(providerId)) {
           return {
             text: `${tr(lang, "panel.provider.test_fail")} (${tr(lang, "panel.discover.no_provider")})`,
           };
@@ -1398,7 +1398,7 @@ export class AiAdminController {
         // `aqa` a bulk import once landed on) moves to the first
         // discovered chat model — same repair as the mini app's
         // discovery. A still-discoverable default is never touched.
-        const provider = this.storage.getProvider(providerId);
+        const provider = this.storage.providers.getProvider(providerId);
         if (provider?.adapter === "gemini") {
           this.models.resetDefaultToFirstOf(
             providerId,
@@ -1498,7 +1498,7 @@ export class AiAdminController {
 
   /** The active provider + its models, for the quick-switch screen. */
   private selectView(lang: PanelLang): { text: string; keyboard: InlineKeyboard } {
-    const settings = this.storage.getRuntimeSettings();
+    const settings = this.storage.providers.getRuntimeSettings();
     const provider =
       settings.activeProviderId !== null ? this.providers.view(settings.activeProviderId) : undefined;
     const models = provider ? this.models.enabledModels(provider.id) : [];
@@ -1609,7 +1609,7 @@ export class AiAdminController {
     providerId: number,
     lang: PanelLang,
   ): Promise<{ ok: true; models: readonly RemoteModel[] } | { ok: false; message?: string }> {
-    const provider = this.storage.getProvider(providerId);
+    const provider = this.storage.providers.getProvider(providerId);
     if (!provider) return { ok: false, message: tr(lang, "panel.discover.no_provider") };
     // A row saved before the guard existed can still hold a known-broken
     // type ↔ URL pair: name the fix instead of a doomed request's
@@ -1674,13 +1674,13 @@ export class AiAdminController {
    * so the owner can see why it would never be used.
    */
   private failoverView(lang: PanelLang): { text: string; keyboard: unknown } {
-    const s = this.storage.getFailoverSettings();
-    const settings = this.storage.getRuntimeSettings();
+    const s = this.storage.providers.getFailoverSettings();
+    const settings = this.storage.providers.getRuntimeSettings();
     const primary =
       settings.activeProviderId !== null ? this.providers.view(settings.activeProviderId) : undefined;
     const primaryModel = settings.activeModelId !== null ? this.models.get(settings.activeModelId) : undefined;
 
-    const rows = this.storage.listFailoverCandidates().map((c, i) => {
+    const rows = this.storage.providers.listFailoverCandidates().map((c, i) => {
       const p = this.providers.view(c.providerId);
       const m = this.models.get(c.modelId);
       return {
@@ -1749,15 +1749,15 @@ export class AiAdminController {
    * not evidence that a request would succeed.
    */
   private buildStatusText(lang: PanelLang): string {
-    const s = this.storage.getFailoverSettings();
-    const settings = this.storage.getRuntimeSettings();
+    const s = this.storage.providers.getFailoverSettings();
+    const settings = this.storage.providers.getRuntimeSettings();
     const providers = this.providers.listViews();
     const primary =
       settings.activeProviderId !== null ? providers.find((p) => p.id === settings.activeProviderId) : undefined;
     const primaryModel =
       settings.activeModelId !== null ? this.models.get(settings.activeModelId) : undefined;
 
-    const candidates = this.storage.listFailoverCandidates();
+    const candidates = this.storage.providers.listFailoverCandidates();
     const activeCandidates = candidates.filter((c) => {
       const p = providers.find((x) => x.id === c.providerId);
       const m = this.models.get(c.modelId);

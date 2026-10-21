@@ -57,6 +57,7 @@ import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { AiError } from "./provider";
 
 /** Env var that disables the connection manager's active features. Default: ON. */
+import { flagUnlessOff, flagUnlessZero, processEnv, readNamed } from "../config/env";
 export const CONN_MANAGER_ENV_VAR = "BOBI_CONN_MANAGER";
 /** Env var overriding the idle-reap threshold, ms. Default 300000. */
 export const CONN_IDLE_MS_ENV_VAR = "BOBI_CONN_IDLE_MS";
@@ -74,14 +75,12 @@ export const MAX_CONN_AGENT_MAX_AGE_MS = 3_600_000;
 
 /** True unless BOBI_CONN_MANAGER is set to a falsy value. */
 export function connectionManagerEnabled(): boolean {
-  const raw = process.env[CONN_MANAGER_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), CONN_MANAGER_ENV_VAR));
 }
 
 /** Idle-reap threshold, ms. Invalid or non-positive → the default. */
 export function connIdleMs(): number {
-  const raw = process.env[CONN_IDLE_MS_ENV_VAR];
+  const raw = readNamed(processEnv(), CONN_IDLE_MS_ENV_VAR);
   if (raw !== undefined) {
     const n = Math.floor(Number(raw));
     if (Number.isFinite(n) && n > 0) return n;
@@ -106,14 +105,14 @@ function clampAgentMaxAgeMs(n: number): number {
  * decoupled from the DNS TTL — see the module header.
  */
 export function connAgentMaxAgeMs(): number {
-  const raw = process.env[CONN_AGENT_MAX_AGE_MS_ENV_VAR];
+  const raw = readNamed(processEnv(), CONN_AGENT_MAX_AGE_MS_ENV_VAR);
   if (raw !== undefined) return clampAgentMaxAgeMs(Number(raw));
   return DEFAULT_CONN_AGENT_MAX_AGE_MS;
 }
 
 /** True unless BOBI_KEEPALIVE=0. Same rule the transport always applied. */
 function keepAliveEnabled(): boolean {
-  return process.env.BOBI_KEEPALIVE !== "0";
+  return flagUnlessZero(processEnv().BOBI_KEEPALIVE);
 }
 
 /**
@@ -126,7 +125,7 @@ function keepAliveEnabled(): boolean {
  * rebuilding the agent whenever the validated addressesKey changes.
  */
 function dnsTtlMs(): number {
-  const raw = process.env.BOBI_DNS_CACHE_MS;
+  const raw = processEnv().BOBI_DNS_CACHE_MS;
   if (raw === undefined) return 60_000;
   const n = Number(raw);
   return Number.isFinite(n) && n > 0 ? n : 0;

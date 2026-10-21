@@ -125,7 +125,7 @@ export class HeartbeatService {
     } catch (err) {
       this.log.error("heartbeat failed", { error: describeError(err) });
       try {
-        this.storage.logHeartbeat({
+        this.storage.scheduling.logHeartbeat({
           summary: describeError(err),
           toolCalls: 0,
           status: "failed",
@@ -142,7 +142,7 @@ export class HeartbeatService {
       // No real model: an autonomous pass would be noise, not work. The skip
       // is still logged, so the trail stays an honest record of what the
       // heartbeat did.
-      this.storage.logHeartbeat({
+      this.storage.scheduling.logHeartbeat({
         summary: "Skipped: no real model configured.",
         toolCalls: 0,
         status: "skipped",
@@ -160,7 +160,7 @@ export class HeartbeatService {
       actor: this.actorForOwner(),
     });
 
-    this.storage.logHeartbeat({
+    this.storage.scheduling.logHeartbeat({
       summary: truncateChars(out.chunks.join(""), SUMMARY_MAX_CHARS),
       toolCalls: out.toolCalls,
       status: "ok",
@@ -169,9 +169,9 @@ export class HeartbeatService {
 
   /** The beat's prompt: what the heartbeat is, the open goals, recent passes. */
   private composePrompt(): string {
-    const goals = this.storage.listGoals(this.ownerId, "active", GOALS_FOR_PROMPT);
+    const goals = this.storage.scheduling.listGoals(this.ownerId, "active", GOALS_FOR_PROMPT);
     // Oldest first: the narrative reads forward.
-    const recent = this.storage.recentHeartbeats(RECENT_BEATS_FOR_PROMPT).reverse();
+    const recent = this.storage.scheduling.recentHeartbeats(RECENT_BEATS_FOR_PROMPT).reverse();
 
     const lines: string[] = [
       "This is a heartbeat: a periodic, autonomous check by the bot, without the owner having sent a message.",

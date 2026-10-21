@@ -38,6 +38,7 @@
  */
 import { createHash } from "node:crypto";
 
+import { processEnv } from "../config/env";
 /** Primary environment variable enabling prompt-cache breakpoints. */
 export const PROMPT_CACHE_ENV_VAR = "BOBI_PROMPT_CACHE";
 /** Legacy prefix accepted as a fallback, matching config.ts convention. */
@@ -48,7 +49,7 @@ const LEGACY_PROMPT_CACHE_ENV_VAR = "SOL_PROMPT_CACHE";
  * Opt-in: anything other than an explicit "1"/"true"/"yes" means off.
  */
 export function promptCacheEnabled(
-  env: { [key: string]: string | undefined } = process.env,
+  env: { [key: string]: string | undefined } = processEnv(),
 ): boolean {
   const raw = (env[PROMPT_CACHE_ENV_VAR] ?? env[LEGACY_PROMPT_CACHE_ENV_VAR] ?? "")
     .trim()

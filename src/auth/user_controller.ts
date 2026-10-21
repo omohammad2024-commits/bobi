@@ -30,7 +30,7 @@ import {
   usersRevokeKeyboard,
   usersRevokeText,
 } from "./user_panel";
-import { tr, type PanelLang } from "../groups/panel_strings";
+import { tr, type PanelLang } from "../i18n/strings/panel_strings";
 
 export interface UserPanelOptions {
   auth: AuthorizationService;

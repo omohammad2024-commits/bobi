@@ -28,11 +28,8 @@
  */
 import { createHash, timingSafeEqual } from "node:crypto";
 import { APP_VERSION } from "../core/app";
-import {
-  handleDashboardRequest,
-  isDashboardEnabled,
-  type BenchWorkerProgress,
-} from "./dashboard";
+import { buildHealthBody } from "../core/health";
+import { handleDashboardRequest } from "./dashboard";
 import { createMiniAppHandler, type MiniAppDeps } from "../miniapp/api";
 import type { ConversationEngine } from "../conversation/engine";
 import type { ToolActor } from "../tools/types";
@@ -75,12 +72,6 @@ export interface ApiServerDeps {
   version?: string;
   /** Per-IP request budget for the turn endpoint; default 30/min. */
   rateLimitPerMinute?: number;
-  /**
-   * Phase-5: daemon BenchWorker progress surface, passed through to the
-   * dashboard's live stream endpoint. Optional; without it the stream
-   * answers 503.
-   */
-  benchWorker?: BenchWorkerProgress;
   /**
    * Mini App (owner's complete remote control). When present, /miniapp/* is
    * served on this same socket: static frontend + initData-authenticated JSON
@@ -149,18 +140,13 @@ export function createApiServer(
       const miniappRes = miniappHandler(req);
       if (miniappRes !== undefined) return miniappRes;
     }
-    // Phase 3, item 3: owner-only web dashboard. Opt-in via BOBI_DASHBOARD=1;
-    // the sub-router returns undefined for non-dashboard paths so the 404
-    // below still answers everything else. No second listener: the dashboard
-    // shares this server's socket, token, and rate-limit posture.
-    if (isDashboardEnabled()) {
-      const dashboardRes = handleDashboardRequest(req, {
-        storage: deps.storage,
-        token,
-        ...(deps.benchWorker !== undefined ? { benchWorker: deps.benchWorker } : {}),
-      });
-      if (dashboardRes !== undefined) return dashboardRes;
-    }
+    // Retired web dashboard (platform Phase 10): /dashboard redirects to
+    // the Mini App and the old /api/v1/dashboard/* namespace answers 410.
+    // The handler returns undefined for non-dashboard paths so the 404
+    // below still answers everything else. It serves no data, so no auth
+    // or enable flag applies — see src/http/dashboard.ts.
+    const dashboardRes = handleDashboardRequest(req);
+    if (dashboardRes !== undefined) return dashboardRes;
     // Unknown routes get a bare 404 with no hint about what does exist.
     return json(404, { error: "Not found." });
   };
@@ -198,12 +184,20 @@ export function createApiServer(
 
   function handleHealth(req: Request, ver: string): Response {
     // /health is intentionally unauthenticated: it answers only "alive" plus
-    // the version and process uptime, the same minimal promise as the
-    // platform health probe in src/core/health.ts.
+    // the version and process uptime. The body is the ONE canonical health
+    // shape, built by src/core/health.ts — the same body the standalone
+    // health server answers when it owns the port (platform Phase 10).
     if (req.method !== "GET") {
       return json(405, { error: "Method not allowed." });
     }
-    return json(200, { ok: true, version: ver, uptimeMs: processUptimeMs() });
+    const uptimeMs = processUptimeMs();
+    return json(
+      200,
+      buildHealthBody({
+        version: ver,
+        ...(uptimeMs !== undefined ? { uptimeMs } : {}),
+      }),
+    );
   }
 
   async function handleTurn(

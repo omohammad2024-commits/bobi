@@ -21,6 +21,7 @@
  */
 export type ReasoningEffort = "off" | "low" | "medium" | "high";
 
+import { processEnv } from "../config/env";
 /** Primary environment variable for the reasoning knob. */
 export const REASONING_ENV_VAR = "BOBI_REASONING_EFFORT";
 /** Legacy prefix accepted as a fallback, matching config.ts convention. */
@@ -35,7 +36,7 @@ const DEFAULT_EFFORT: ReasoningEffort = "off";
  * Anything else — unset, empty, or junk — resolves to "off".
  */
 export function resolveReasoningEffort(
-  env: { [key: string]: string | undefined } = process.env,
+  env: { [key: string]: string | undefined } = processEnv(),
 ): ReasoningEffort {
   const raw = (env[REASONING_ENV_VAR] ?? env[LEGACY_REASONING_ENV_VAR] ?? "")
     .trim()

@@ -1,17 +1,20 @@
+import { processEnv } from "../config/env";
 import { InlineKeyboard } from "grammy";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { t, type Lang } from "../i18n";
-import { tr } from "./menu_strings";
+import { tr } from "../i18n/strings/menu_strings";
 import type { HermesCommandDef } from "./cmd_context";
+import type { HelpGroup } from "../tools/command_help";
+
+export type { HelpGroup };
 
 /**
  * English labels for the main menu buttons.
  *
  * Kept as the ground truth: buildMainMenu() with the default language must
  * render exactly these strings (asserted in tests). Labels now live in the
- * local menu table (`menu_strings.ts`) — the sibling i18n owner folds them
- * into the central packs later.
+ * menu table in the i18n system (`src/i18n/strings/menu_strings.ts`).
  */
 export const MAIN_MENU_LABELS = {
   chat: tr("en", "menu.label.chat"),
@@ -149,7 +152,7 @@ export function startScreenText(lang: Lang = "en", isOwner: boolean = true): str
  * Mini App button at all — never a dead button.
  */
 export function miniAppUrl(): string | undefined {
-  const fromEnv = (process.env.BOBI_MINIAPP_URL ?? "").trim();
+  const fromEnv = (processEnv().BOBI_MINIAPP_URL ?? "").trim();
   if (fromEnv.startsWith("https://")) return fromEnv;
   try {
     const p = join(process.cwd(), "miniapp.url");
@@ -308,8 +311,9 @@ export function replyForCallback(
 
 // ---------------------------------------------------------------- help ----
 
-/** /help sections, in display order. */
-export type HelpGroup = "general" | "session" | "automation" | "owner";
+/* HelpGroup (the /help sections, in display order) is defined in
+ * src/tools/command_help.ts and re-exported at the top of this module,
+ * so existing `HelpGroup` imports from ./menu keep working. */
 
 /** The grouped-/help title (central pack — kept stable for existing tests). */
 export function helpTitle(lang: Lang = "en"): string {

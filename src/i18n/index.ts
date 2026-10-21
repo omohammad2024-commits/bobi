@@ -10,6 +10,12 @@
  * - Interpolation values are server-side only (command names, counts,
  *   owner-configured labels). User-controlled text is never interpolated
  *   into these templates, so no escaping layer is needed.
+ *
+ * Module string tables:
+ * - Per-module string tables live under `src/i18n/strings/` as part of this
+ *   one i18n system (folded in during the Phase 10 redesign). English-only
+ *   tables there delegate their lookup to `translateFrom` below; the
+ *   bilingual (fa/en) tables keep their own lookup logic.
  */
 import { en } from "./en";
 import type { Lang, LanguagePack } from "./types";
@@ -37,6 +43,27 @@ export function t(
 ): string {
   void lang; // English-only: accepted for call-site compatibility.
   let text = en[key] ?? key;
+  if (vars !== undefined) {
+    for (const [name, value] of Object.entries(vars)) {
+      text = text.split(`{${name}}`).join(String(value));
+    }
+  }
+  return text;
+}
+
+/**
+ * Translate a key from an arbitrary string table.
+ *
+ * Same semantics as `t()`: falls back to the key itself when the table has
+ * no entry, and `{name}`-style placeholders are replaced from `vars` via
+ * split/join; a placeholder with no value is left as-is.
+ */
+export function translateFrom(
+  table: Record<string, string>,
+  key: string,
+  vars?: Record<string, string | number>,
+): string {
+  let text = table[key] ?? key;
   if (vars !== undefined) {
     for (const [name, value] of Object.entries(vars)) {
       text = text.split(`{${name}}`).join(String(value));

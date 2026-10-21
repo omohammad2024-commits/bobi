@@ -71,7 +71,7 @@ export class UsageService {
     outputTokens: number;
   }): void {
     try {
-      this.storage.addUsage({
+      this.storage.usage.addUsage({
         userId: run.userId,
         day: this.today(),
         requests: run.requests,
@@ -99,8 +99,8 @@ export class UsageService {
     let all: UsageRecord = { ...user, userId: "*" };
 
     try {
-      user = this.storage.usageFor(userId, day);
-      all = this.storage.usageForDay(day);
+      user = this.storage.usage.usageFor(userId, day);
+      all = this.storage.usage.usageForDay(day);
     } catch {
       // A storage problem reports zeros rather than failing the panel.
     }

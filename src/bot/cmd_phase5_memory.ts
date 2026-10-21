@@ -31,7 +31,7 @@ import {
   gateUser,
   isOwnerSender,
   senderLang,
-} from "./bot";
+} from "./deps";
 import type { Lang } from "../i18n/types";
 import type { MemoryProvider } from "../memory/provider";
 import type { ProposalStore } from "../curator/proposals";
@@ -52,7 +52,7 @@ import {
   verifyMemoryPackage,
   type MemoryPackageError,
 } from "../memory/mem_share";
-import { tr, type Ph5MemLang } from "./cmd_phase5_memory_strings";
+import { tr, type Ph5MemLang } from "../i18n/strings/cmd_phase5_memory_strings";
 
 // ------------------------------------------------------------------ defs ----
 

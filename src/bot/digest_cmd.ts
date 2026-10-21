@@ -36,7 +36,7 @@
  */
 import { type Bot, type Context } from "grammy";
 import { t, type Lang } from "../i18n";
-import { gateGroup, gateUser, senderLang, type BotDeps } from "./bot";
+import { gateGroup, gateUser, senderLang, type BotDeps } from "./deps";
 import { isOwnerCtx, requireOwnerTier } from "./access";
 import { blockquoteToEntities } from "./expandable_quote";
 import {
@@ -55,6 +55,7 @@ import {
   type DigestDeleteConfirm,
 } from "../digest/interactive";
 import type { ScheduledTaskRecord, Storage } from "../storage/storage";
+import { fetchWeatherLine } from "../tools/weather";
 import { parseTaskAction } from "../tools/scheduled_tasks";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import type { ToolActor } from "../tools/types";
@@ -159,7 +160,16 @@ function resolveDigestEnv(env: DigestEnv): ResolvedDigest {
   };
 }
 
+/** User pref naming the owner's city for the digest weather line. */
+export const DIGEST_CITY_PREF_KEY = "digest.city";
+
 function digestDeps(resolved: ResolvedDigest, ownerId: string): DigestDeps {
+  // Phase 9: the digest's weather source. The line exists only when the
+  // owner has set a `digest.city` pref — no location is ever guessed, and
+  // fetchWeatherLine resolves to undefined on any failure, so the digest
+  // simply omits the section (byte-identical to before).
+  const city =
+    resolved.storage?.getUserPref(ownerId, DIGEST_CITY_PREF_KEY)?.trim() ?? "";
   return {
     storage: resolved.storage!,
     proposalStore: resolved.proposalStore,
@@ -167,6 +177,12 @@ function digestDeps(resolved: ResolvedDigest, ownerId: string): DigestDeps {
     ...(resolved.now !== undefined ? { now: resolved.now } : {}),
     ...(resolved.searchHeadlines !== undefined
       ? { searchHeadlines: resolved.searchHeadlines }
+      : {}),
+    ...(city.length > 0
+      ? {
+          weatherLine: () =>
+            fetchWeatherLine((url) => fetch(url), city),
+        }
       : {}),
   };
 }
@@ -269,7 +285,7 @@ export async function handleDigestCallback(
     }
 
     case "task:run": {
-      const task = storage.getTask(ownerId, action.id);
+      const task = storage.scheduling.getTask(ownerId, action.id);
       if (task === undefined) {
         await answer(t("digest.toast.unavailable", lang));
         return true;
@@ -293,21 +309,21 @@ export async function handleDigestCallback(
     }
 
     case "task:delc": {
-      storage.deleteTask(ownerId, action.id);
+      storage.scheduling.deleteTask(ownerId, action.id);
       await refreshDigest();
       await answer(t("digest.toast.task_deleted", lang));
       return true;
     }
 
     case "rem:done": {
-      storage.cancelReminder(ownerId, action.id);
+      storage.scheduling.cancelReminder(ownerId, action.id);
       await refreshDigest();
       await answer(t("digest.toast.reminder_done", lang));
       return true;
     }
 
     case "mem:show": {
-      const mems = storage.listMemories(ownerId, 3);
+      const mems = storage.memories.listMemories(ownerId, 3);
       const mem = mems[action.index];
       if (mem === undefined) {
         await answer();

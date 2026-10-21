@@ -116,7 +116,7 @@ export function setupFromPreset(
 
   // 3. Activate the pair together, so the runtime is never half-set.
   try {
-    deps.storage.setRuntimeSelection({ providerId, modelId });
+    deps.storage.providers.setRuntimeSelection({ providerId, modelId });
   } catch {
     notes.push("Auto-activation did not happen; activate it from the provider & model picker.");
     return {

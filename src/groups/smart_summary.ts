@@ -49,12 +49,14 @@
  * This module is deliberately self-contained: the name sanitizer below is
  * a small intentional duplicate of the one in assistant.ts so the injection
  * boundary does not depend on shared code paths with the deterministic
- * module. Runtime imports: only types from ./assistant and tr() from
- * ./assistant_strings (no import cycle: assistant.ts imports THIS module).
+ * module. Runtime imports: only types from ./types (the leaf module
+ * holding AssistantConfig/GroupChatMessage, platform Phase 5) and tr()
+ * from ./assistant_strings (no import cycle: assistant.ts imports THIS
+ * module, and both now take the shared types from ./types).
  */
-import type { AssistantLang } from "./assistant_strings";
-import { tr } from "./assistant_strings";
-import type { AssistantConfig, GroupChatMessage } from "./assistant";
+import type { AssistantLang } from "../i18n/strings/assistant_strings";
+import { tr } from "../i18n/strings/assistant_strings";
+import type { AssistantConfig, GroupChatMessage } from "./types";
 
 // ----------------------------------------------------------------- caps ----
 

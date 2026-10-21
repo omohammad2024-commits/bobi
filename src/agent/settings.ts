@@ -3,17 +3,20 @@
  * construction (the engine builds a fresh loop per run, so a changed variable
  * takes effect on the next message — no restart semantics to reason about).
  *
- * Names follow the project's envVar() pattern (see src/config/config.ts):
- * BOBI_ wins, the pre-rename SOL_ prefix is the fallback, the bare name last.
+ * Names follow the project's envVar() pattern: BOBI_ wins, the pre-rename
+ * SOL_ prefix is the fallback, the bare name last. Phase 7: the chain itself
+ * is implemented once in src/config/env.ts; this module only adds the
+ * agent-specific parsing (clamps, flag idiom) on top of it.
  * Values are clamped to sane ranges; nonsense falls back to the default
  * rather than breaking a run.
  */
+import { processEnv, readChained } from "../config/env";
 
 type Env = Readonly<Record<string, string | undefined>>;
 
 /** Read one value with the BOBI_ → SOL_ → bare fallback chain. */
-export function agentEnv(suffix: string, env: Env = process.env): string | undefined {
-  return env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`] ?? env[suffix];
+export function agentEnv(suffix: string, env: Env = processEnv()): string | undefined {
+  return readChained(env, suffix, "full");
 }
 
 /** A boolean switch: default on, only explicit false-y strings disable. */
@@ -33,22 +36,22 @@ function envInt(suffix: string, env: Env, min: number, max: number, fallback: nu
 }
 
 /** Parallel tool execution within one model turn. Kill switch: BOBI_AGENT_PARALLEL=0. */
-export function parallelEnabled(env: Env = process.env): boolean {
+export function parallelEnabled(env: Env = processEnv()): boolean {
   return envFlag("AGENT_PARALLEL", env);
 }
 
 /** Concurrency bound for parallel tool execution. Env: BOBI_AGENT_MAX_PARALLEL (default 4). */
-export function maxParallel(env: Env = process.env): number {
+export function maxParallel(env: Env = processEnv()): number {
   return envInt("AGENT_MAX_PARALLEL", env, 1, 8, 4);
 }
 
 /** Planning mode before the first iteration. Kill switch: BOBI_AGENT_PLANNING=0. */
-export function planningEnabled(env: Env = process.env): boolean {
+export function planningEnabled(env: Env = processEnv()): boolean {
   return envFlag("AGENT_PLANNING", env);
 }
 
 /** Self-review pass after tool turns. Kill switch: BOBI_AGENT_SELF_REVIEW=0. */
-export function selfReviewEnabled(env: Env = process.env): boolean {
+export function selfReviewEnabled(env: Env = processEnv()): boolean {
   return envFlag("AGENT_SELF_REVIEW", env);
 }
 

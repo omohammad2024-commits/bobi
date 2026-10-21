@@ -26,7 +26,7 @@
  */
 
 import { InlineKeyboard } from "grammy";
-import { splitForTelegram } from "../conversation/engine";
+import { splitForTelegram } from "./chunking";
 import { resolvePersonalityName } from "../personality/personalities";
 
 /** UI language for the shared UX helpers. English-only since v1.0. */
@@ -266,11 +266,8 @@ export const TOOL_PROGRESS_LABELS: Readonly<
     remind_at: "setting reminder",
     list_reminders: "listing reminders",
     cancel_reminder: "cancelling reminder",
+    snooze_reminder: "snoozing reminder",
     search_history: "searching history",
-    note_followup: "noting follow-up",
-    list_nudges: "listing follow-ups",
-    ack_nudge: "acknowledging follow-up",
-    snooze_nudge: "snoozing follow-up",
     add_goal: "saving goal",
     list_goals: "listing goals",
     complete_goal: "completing goal",

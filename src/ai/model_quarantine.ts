@@ -31,6 +31,7 @@
  */
 
 /** Env var that disables model quarantine entirely. Default: ON. */
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 export const MODEL_QUARANTINE_ENV_VAR = "BOBI_MODEL_QUARANTINE";
 /** Env var for the quarantine duration, ms. Default 300000; 0 = off. */
 export const MODEL_QUARANTINE_MS_ENV_VAR = "BOBI_MODEL_QUARANTINE_MS";
@@ -42,14 +43,12 @@ export const MODEL_QUARANTINE_FAILURE_THRESHOLD = 3;
 export const MODEL_QUARANTINE_DEFAULT_MS = 300_000;
 
 export function modelQuarantineEnabled(): boolean {
-  const raw = process.env[MODEL_QUARANTINE_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), MODEL_QUARANTINE_ENV_VAR));
 }
 
 /** Quarantine duration, ms. 0 disables (also via the kill switch above). */
 export function modelQuarantineMs(): number {
-  const raw = process.env[MODEL_QUARANTINE_MS_ENV_VAR];
+  const raw = readNamed(processEnv(), MODEL_QUARANTINE_MS_ENV_VAR);
   if (raw !== undefined) {
     const n = Math.floor(Number(raw));
     if (Number.isFinite(n) && n >= 0) return n;

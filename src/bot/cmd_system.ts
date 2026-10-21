@@ -27,6 +27,7 @@
  * so they are unit-testable; the grammy wrappers in `registerSystemCommands`
  * are thin.
  */
+import { processEnv } from "../config/env";
 import type { Bot, Context } from "grammy";
 import { InputFile } from "grammy";
 import {
@@ -52,16 +53,29 @@ import {
   gateUser,
   isOwnerSender,
   senderLang,
-} from "./bot";
-import type { UserPrefStore } from "./bot";
+} from "./deps";
+import type {
+  GitResult,
+  ProposalStoreLike,
+  RegisterOpts,
+  SystemCommandOpts,
+  UserPrefStore,
+} from "./deps";
+export type {
+  GitResult,
+  ProposalStoreLike,
+  RegisterOpts,
+  SystemCommandOpts,
+} from "./deps";
 import type { Lang } from "../i18n/types";
-import { tr, type SysLang } from "./cmd_system_strings";
+import { tr, type SysLang } from "../i18n/strings/cmd_system_strings";
 import { estimateCost } from "../ai/usage";
 import { REASONING_ENV_VAR, resolveReasoningEffort, type ReasoningEffort } from "../ai/reasoning";
 import { loadPlugins } from "../plugins/loader";
 import type { SkillCache } from "../skills/loader";
 import type { McpManager } from "../mcp/bridge";
 import type { Storage } from "../storage/storage";
+import type { ProvidersRepo } from "../storage/repos/providers";
 import type { ToolService } from "../tools/service";
 import type { ToolActor } from "../tools/types";
 import type { UserAccessService } from "../auth/user_service";
@@ -97,34 +111,6 @@ export const COMMAND_DEFS: HermesCommandDef[] = [
 
 // -------------------------------------------------------------- options ----
 
-/** Result of running `git` — injected for tests. */
-export interface GitResult {
-  code: number;
-  out: string;
-  err: string;
-}
-
-/** Optional wiring the coordinator provides at registration time. */
-export interface SystemCommandOpts {
-  /** Absolute path of the SQLite database file. Coordinator wires config.dbPath. */
-  dbPath?: string;
-  /** Snapshots directory; default `BOBI_SNAPSHOT_DIR` or `./data/snapshots`. */
-  snapshotDir?: string;
-  /** Plugins directory; default `BOBI_PLUGINS_DIR` or `./plugins`. */
-  pluginsDir?: string;
-  /** The live MCP manager (index.ts). Absent = /reload_mcp reports unavailable. */
-  mcp?: McpManager;
-  /** The live skill cache (index.ts). Absent = /skills and /reload_skills report unavailable. */
-  skills?: SkillCache;
-  /** True while any conversation turn is running. Coordinator wires a reader. */
-  isAnyTurnRunning?: () => boolean;
-  now?: () => number;
-  /** Exit hook (default: process.exit) — the service manager restarts us. */
-  exit?: (code: number) => void;
-  /** Git runner (default: Bun.spawn). Injected in tests. */
-  execGit?: (args: string[], cwd: string, timeoutMs: number) => Promise<GitResult>;
-}
-
 export interface ResolvedOpts extends Required<
   Pick<SystemCommandOpts, "snapshotDir" | "pluginsDir" | "now" | "exit" | "execGit">
 > {
@@ -140,10 +126,10 @@ export function resolveOpts(opts: SystemCommandOpts = {}): ResolvedOpts {
     dbPath: opts.dbPath ?? "",
     snapshotDir:
       opts.snapshotDir ??
-      ((process.env.BOBI_SNAPSHOT_DIR ?? "").trim() || "./data/snapshots"),
+      ((processEnv().BOBI_SNAPSHOT_DIR ?? "").trim() || "./data/snapshots"),
     pluginsDir:
       opts.pluginsDir ??
-      ((process.env.BOBI_PLUGINS_DIR ?? "").trim() || "./plugins"),
+      ((processEnv().BOBI_PLUGINS_DIR ?? "").trim() || "./plugins"),
     now: opts.now ?? Date.now,
     exit: opts.exit ?? ((code: number) => process.exit(code)),
     execGit: opts.execGit ?? defaultExecGit,
@@ -782,7 +768,7 @@ export function handleModelShow(
  * validation, owner-gated at the handler level.
  */
 export type ModelSwitchStorage = Pick<
-  Storage,
+  ProvidersRepo,
   "listProviders" | "listModels" | "getProvider" | "setRuntimeSelection"
 >;
 
@@ -1342,7 +1328,7 @@ export function handleAccessDecision(
     ? service.approve(input.id, input.ownerId)
     : service.reject(input.id, input.ownerId);
   try {
-    storage.appendAudit({
+    storage.access.appendAudit({
       operation: input.approve ? "access.approve" : "access.reject",
       outcome: transition.ok ? "success" : "denied",
       actorId: input.ownerId,
@@ -1511,16 +1497,6 @@ export function handlePause(
 
 // ------------------------------------------------------ registration ----
 
-/** Minimal proposal-store surface /curator status needs. */
-export interface ProposalStoreLike {
-  listPending(userId: string): unknown[];
-}
-
-export interface RegisterOpts extends SystemCommandOpts {
-  /** Pending-proposal store (index.ts wires ProposalStore). */
-  proposalStore?: ProposalStoreLike;
-}
-
 interface ResolvedRegisterOpts extends ResolvedOpts {
   proposalStore?: ProposalStoreLike;
 }
@@ -1584,7 +1560,7 @@ function audit(
   },
 ): void {
   try {
-    storage.appendAudit(event);
+    storage.access.appendAudit(event);
   } catch {
     // Audit is best-effort; never break the command.
   }
@@ -1730,16 +1706,16 @@ export function registerSystemCommands(
     const g = await gate(ctx, lang);
     if (g === undefined) return;
     const storage = deps.storage;
-    const rs = storage.getRuntimeSettings();
+    const rs = storage.providers.getRuntimeSettings();
     const provider =
       rs.activeProviderId != null
-        ? storage.getProvider(rs.activeProviderId)
+        ? storage.providers.getProvider(rs.activeProviderId)
         : undefined;
     const model =
       rs.activeModelId != null
-        ? storage.getModel(rs.activeModelId)
+        ? storage.providers.getModel(rs.activeModelId)
         : undefined;
-    const logFile = (process.env.BOBI_LOG_FILE ?? "").trim();
+    const logFile = (processEnv().BOBI_LOG_FILE ?? "").trim();
     const logTail = logFile.length > 0 ? readLogTail(logFile) : undefined;
     const info: DebugInfo = {
       version: g.env.version,
@@ -1777,10 +1753,10 @@ export function registerSystemCommands(
           s + estimateCost(r.inputTokens, r.outputTokens, r.modelId).usd,
         0,
       );
-    const todayRows = storage.usageByModelAll(todayStart);
-    const weekRows = storage.usageByModelAll(weekStart);
-    const today = storage.usageTotalsAll(todayStart);
-    const week = storage.usageTotalsAll(weekStart);
+    const todayRows = storage.usage.usageByModelAll(todayStart);
+    const weekRows = storage.usage.usageByModelAll(weekStart);
+    const today = storage.usage.usageTotalsAll(todayStart);
+    const week = storage.usage.usageTotalsAll(weekStart);
     await safeReply(
       ctx,
       handleUsage(
@@ -1805,9 +1781,9 @@ export function registerSystemCommands(
     const now = o.now();
     const todayStart = startOfTodayMs(now);
     const windowTotals = (sinceMs: number, untilMs?: number): UsageTotals => {
-      const a = storage.usageTotalsAll(sinceMs);
+      const a = storage.usage.usageTotalsAll(sinceMs);
       if (untilMs === undefined) return a;
-      const b = storage.usageTotalsAll(untilMs);
+      const b = storage.usage.usageTotalsAll(untilMs);
       return {
         inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
         outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
@@ -1826,7 +1802,7 @@ export function registerSystemCommands(
       todayStart - days * 86400000,
       todayStart,
     );
-    const byModel = storage.usageByModelAll(todayStart - days * 86400000);
+    const byModel = storage.usage.usageByModelAll(todayStart - days * 86400000);
     await safeReply(ctx, handleInsights(lang, days, cur, prev, byModel));
   });
 
@@ -1838,18 +1814,18 @@ export function registerSystemCommands(
     const storage = deps.storage;
     const name = messageArg(ctx);
     if (name === undefined) {
-      const rs = storage.getRuntimeSettings();
+      const rs = storage.providers.getRuntimeSettings();
       const provider =
         rs.activeProviderId != null
-          ? storage.getProvider(rs.activeProviderId)
+          ? storage.providers.getProvider(rs.activeProviderId)
           : undefined;
       const model =
         rs.activeModelId != null
-          ? storage.getModel(rs.activeModelId)
+          ? storage.providers.getModel(rs.activeModelId)
           : undefined;
       const items: ModelListItem[] = [];
-      for (const p of storage.listProviders()) {
-        for (const m of storage.listModels(p.id)) {
+      for (const p of storage.providers.listProviders()) {
+        for (const m of storage.providers.listModels(p.id)) {
           items.push({
             id: m.id,
             providerLabel: p.label,
@@ -1891,7 +1867,7 @@ export function registerSystemCommands(
       }
       return;
     }
-    const result = handleModelSwitch(lang, storage, name);
+    const result = handleModelSwitch(lang, storage.providers, name);
     await safeReply(ctx, result.text);
   });
 

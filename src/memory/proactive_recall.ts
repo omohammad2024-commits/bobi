@@ -48,14 +48,15 @@ import {
 } from "./hybrid";
 
 /** Env-tunable conservative floor on the boosted fused score. */
+import { flagUnlessZero, processEnv } from "../config/env";
 export const DEFAULT_RECALL_FLOOR = 0.025;
 
 export function isProactiveRecallEnabled(): boolean {
-  return process.env.BOBI_MEMORY_PROACTIVE_RECALL !== "0";
+  return flagUnlessZero(processEnv().BOBI_MEMORY_PROACTIVE_RECALL);
 }
 
 export function recallScoreFloor(): number {
-  const raw = process.env.BOBI_MEMORY_RECALL_FLOOR;
+  const raw = processEnv().BOBI_MEMORY_RECALL_FLOOR;
   const v = raw === undefined ? NaN : Number(raw);
   if (Number.isFinite(v) && v >= 0) return v;
   return DEFAULT_RECALL_FLOOR;
@@ -78,7 +79,7 @@ export function semanticBudgetMsFor(
       ? deps.semanticBudgetMs
       : DEFAULT_SEMANTIC_BUDGET_MS;
   }
-  const raw = process.env.BOBI_MEMORY_SEMANTIC_BUDGET_MS;
+  const raw = processEnv().BOBI_MEMORY_SEMANTIC_BUDGET_MS;
   if (raw !== undefined && raw.trim() !== "") {
     const v = Number(raw);
     if (Number.isFinite(v) && v >= 0) return v;

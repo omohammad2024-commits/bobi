@@ -24,6 +24,7 @@ import { readFileSync, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 
 /** Env var listing context files, comma-separated. Read directly (not via config). */
+import { processEnv } from "../config/env";
 export const CONTEXT_FILES_ENV = "BOBI_CONTEXT_FILES";
 
 /** Default pair, mirroring Hermes' cwd context files. */
@@ -60,9 +61,9 @@ function defaultWarn(message: string, fields?: Record<string, unknown>): void {
  * config.ts (which must stay untouched by this phase). An unset or blank
  * value falls back to ./AGENTS.md,./SOUL.md. Blank entries are dropped.
  *
- * `env` is injectable so tests do not mutate process.env.
+ * `env` is injectable so tests do not mutate the process environment.
  */
-export function contextFilePaths(env: NodeJS.ProcessEnv = process.env): string[] {
+export function contextFilePaths(env: NodeJS.ProcessEnv = processEnv()): string[] {
   const raw = env[CONTEXT_FILES_ENV];
   const list =
     raw === undefined || raw.trim().length === 0 ? DEFAULT_CONTEXT_FILES : raw;

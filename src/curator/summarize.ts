@@ -1,10 +1,12 @@
 /**
  * Periodic auto-summarization (Phase-3 item 1: proactive long-term memory).
  *
- * OPT-IN, OWNER-ONLY: nothing here runs unless the owner schedules the
- * `summarize_memories` tool (or the model calls it in an owner turn). The
- * default state of the bot is unchanged — no background pass exists until
- * the owner creates one, exactly like `curate_memories` today.
+ * OPT-IN, OWNER-ONLY: nothing here runs unless the curator's archive pass
+ * runs — since Phase 8 that pass is part of `curate_memories` (the old
+ * standalone `summarize_memories` tool was folded into it). The default
+ * state of the bot is unchanged — no background pass exists; the pass
+ * runs only when the model calls curate_memories in an owner turn, or a
+ * scheduled task the owner created does.
  *
  * THE SAFETY CONTRACT (keeps the curator invariant, with one sanctioned
  * exception):
@@ -65,6 +67,13 @@ export interface SummarizerOptions {
    * stays an explicit future opt-in.
    */
   llm?: (entries: Array<{ key: string; snippet: string }>) => Promise<string>;
+  /**
+   * Memory keys to leave out of this pass — the caller passes the keys a
+   * still-pending archive proposal already covers, so re-running the pass
+   * (now part of every curate_memories run) never archives the same
+   * originals twice or piles up duplicate archive memories.
+   */
+  excludeKeys?: ReadonlySet<string>;
 }
 
 export interface SummarizeReport {
@@ -151,12 +160,14 @@ export class SummarizerService {
     const nowMs = this.now();
     const cutoffMs = nowMs - olderThanDays * DAY_MS;
 
+    const excludeKeys = callOpts.excludeKeys ?? this.defaultOpts.excludeKeys;
     const memories: StoredMemory[] = await this.deps.provider.list(userId, 500);
     // Oldest first: deterministic, and the archive reads chronologically.
     const candidates = memories
       .filter(
         (m) =>
           !isSummarizerSkippedKey(m.key) &&
+          !(excludeKeys?.has(m.key) ?? false) &&
           m.updatedAt < cutoffMs &&
           m.content.trim().length >= MIN_CONTENT_CHARS,
       )

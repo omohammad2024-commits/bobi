@@ -301,7 +301,7 @@ class McpServerImpl implements McpServer {
     args: Record<string, unknown>,
   ): Promise<Record<string, unknown>> {
     const userId = requireString(args, "userId", 64);
-    const summaries = this.deps.storage.listUserConversations(userId);
+    const summaries = this.deps.storage.conversations.listUserConversations(userId);
     return {
       conversations: summaries.map((s) => ({
         conversationId: s.conversationId,
@@ -317,7 +317,7 @@ class McpServerImpl implements McpServer {
     const limit = clampInt(args["limit"], 1, 200, 50);
     // Storage.history is ownership-checked: a conversation id that belongs
     // to another user simply returns [].
-    const messages = this.deps.storage.history(userId, conversationId, limit);
+    const messages = this.deps.storage.conversations.history(userId, conversationId, limit);
     return {
       messages: messages.map((m) => ({
         role: m.role,
@@ -369,7 +369,7 @@ class McpServerImpl implements McpServer {
       status: engine.isConversationRunning(conversationId) ? "running" : "idle",
       // countMessages is ownership-checked: someone else's conversation
       // reads as zero here, never as their count.
-      messageCount: this.deps.storage.countMessages(userId, conversationId),
+      messageCount: this.deps.storage.conversations.countMessages(userId, conversationId),
     };
   }
 }

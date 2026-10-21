@@ -1,19 +1,17 @@
+import { processEnv } from "../config/env";
 import { InlineKeyboard, type Bot, type Context } from "grammy";
 import { t, type Lang } from "../i18n";
 import {
-  COMMAND_HELP,
   isOwnerSender,
   senderLang,
-  visibleCommandHelp,
-  handleVoiceCommand,
-  handleResetCommand,
-  handleStopCommand,
-  handlePersonalityCommand,
-  handleCompressCommand,
   type BotDeps,
-  type CommandHelpEntry,
   type UserPrefStore,
-} from "./bot";
+} from "./deps";
+import {
+  COMMAND_HELP,
+  visibleCommandHelp,
+  type CommandHelpEntry,
+} from "../tools/command_help";
 import {
   editMenuMessage,
   helpEntryLine,
@@ -24,7 +22,8 @@ import {
 } from "./menu";
 import { sendInteractiveDigest } from "./digest_cmd";
 import { buildModelKeyboard, formatCount } from "./ux";
-import { splitForTelegram, type ConversationEngine } from "../conversation/engine";
+import { type ConversationEngine } from "../conversation/engine";
+import { splitForTelegram } from "./chunking";
 import { estimateCost } from "../ai/usage";
 import {
   handleHistoryCommand,
@@ -84,7 +83,7 @@ import {
   type ModelListItem,
   type AccessServices,
 } from "./cmd_system";
-import type { SysLang } from "./cmd_system_strings";
+import type { SysLang } from "../i18n/strings/cmd_system_strings";
 import type { Storage } from "../storage/storage";
 
 /**
@@ -344,15 +343,47 @@ export function buildUsageCardKeyboard(
 // --------------------------------------------------------------- run ----
 
 /**
+ * The builtin command handlers the tap-to-run dispatch needs, INJECTED by
+ * bot.ts (Phase 5 step B2) so this module never imports bot.ts. The shapes
+ * mirror the handle*Command signatures in bot.ts exactly: narrow envs built
+ * from BotDeps/engine picks, the sender's language last.
+ */
+export interface PaletteHandlers {
+  voice: (
+    ctx: Context,
+    env: Pick<BotDeps, "tts" | "prefs">,
+    lang: Lang,
+  ) => Promise<void>;
+  reset: (ctx: Context, env: BotDeps, lang: Lang) => Promise<void>;
+  stop: (
+    ctx: Context,
+    env: { engine: Pick<ConversationEngine, "cancel"> },
+    lang: Lang,
+  ) => Promise<void>;
+  personality: (
+    ctx: Context,
+    env: Pick<BotDeps, "prefs">,
+    lang: Lang,
+  ) => Promise<void>;
+  compress: (
+    ctx: Context,
+    env: { engine: Pick<ConversationEngine, "compressNow"> },
+    lang: Lang,
+  ) => Promise<void>;
+}
+
+/**
  * Everything a palette tap-run needs.
  *
  * `deps` is the bot-wide BotDeps (storage, engine, prefs, auth, panels…);
  * `sysOpts` is the same options object index.ts passes to
- * registerSystemCommands, so the system runners reuse the same defaults.
+ * registerSystemCommands, so the system runners reuse the same defaults;
+ * `handlers` carries bot.ts's builtin command handlers (see PaletteHandlers).
  */
 export interface PaletteEnv {
   deps: BotDeps;
   sysOpts: RegisterOpts;
+  handlers: PaletteHandlers;
 }
 
 type Runner = (ctx: Context, env: PaletteEnv, lang: Lang) => Promise<void>;
@@ -509,7 +540,7 @@ const RUNNERS: Record<string, Runner> = {
     await editMenuMessage(ctx, render.text, render.keyboard);
   },
   voice: async (ctx, env, lang) => {
-    await handleVoiceCommand(
+    await env.handlers.voice(
       ctx,
       {
         ...(env.deps.tts !== undefined ? { tts: env.deps.tts } : {}),
@@ -519,20 +550,20 @@ const RUNNERS: Record<string, Runner> = {
     );
   },
   reset: async (ctx, env, lang) => {
-    await handleResetCommand(ctx, env.deps, lang);
+    await env.handlers.reset(ctx, env.deps, lang);
   },
   stop: async (ctx, env, lang) => {
-    await handleStopCommand(ctx, { engine: env.deps.engine }, lang);
+    await env.handlers.stop(ctx, { engine: env.deps.engine }, lang);
   },
   personality: async (ctx, env, lang) => {
-    await handlePersonalityCommand(
+    await env.handlers.personality(
       ctx,
       env.deps.prefs !== undefined ? { prefs: env.deps.prefs } : {},
       lang,
     );
   },
   compress: async (ctx, env, lang) => {
-    await handleCompressCommand(ctx, { engine: env.deps.engine }, lang);
+    await env.handlers.compress(ctx, { engine: env.deps.engine }, lang);
   },
   admin: async (ctx, env, _lang) => {
     if (env.deps.panel) await env.deps.panel.openPanel(ctx);
@@ -567,12 +598,12 @@ const RUNNERS: Record<string, Runner> = {
   debug: sysRun(async (ctx, env, o, lang, sysLang) => {
     const storage = await needStorage(ctx, env, lang);
     if (!storage) return;
-    const rs = storage.getRuntimeSettings();
+    const rs = storage.providers.getRuntimeSettings();
     const provider =
-      rs.activeProviderId != null ? storage.getProvider(rs.activeProviderId) : undefined;
+      rs.activeProviderId != null ? storage.providers.getProvider(rs.activeProviderId) : undefined;
     const model =
-      rs.activeModelId != null ? storage.getModel(rs.activeModelId) : undefined;
-    const logFile = (process.env.BOBI_LOG_FILE ?? "").trim();
+      rs.activeModelId != null ? storage.providers.getModel(rs.activeModelId) : undefined;
+    const logFile = (processEnv().BOBI_LOG_FILE ?? "").trim();
     const logTail = logFile.length > 0 ? readLogTail(logFile) : undefined;
     const info: DebugInfo = {
       version: env.deps.version ?? "?",
@@ -597,10 +628,10 @@ const RUNNERS: Record<string, Runner> = {
         (s, r) => s + estimateCost(r.inputTokens, r.outputTokens, r.modelId).usd,
         0,
       );
-    const todayRows = storage.usageByModelAll(todayStart);
-    const weekRows = storage.usageByModelAll(weekStart);
-    const today = storage.usageTotalsAll(todayStart);
-    const week = storage.usageTotalsAll(weekStart);
+    const todayRows = storage.usage.usageByModelAll(todayStart);
+    const weekRows = storage.usage.usageByModelAll(weekStart);
+    const today = storage.usage.usageTotalsAll(todayStart);
+    const week = storage.usage.usageTotalsAll(weekStart);
     await replyText(
       ctx,
       handleUsage(
@@ -618,9 +649,9 @@ const RUNNERS: Record<string, Runner> = {
     const now = o.now();
     const todayStart = startOfTodayMs(now);
     const windowTotals = (sinceMs: number, untilMs?: number): UsageTotals => {
-      const a = storage.usageTotalsAll(sinceMs);
+      const a = storage.usage.usageTotalsAll(sinceMs);
       if (untilMs === undefined) return a;
-      const b = storage.usageTotalsAll(untilMs);
+      const b = storage.usage.usageTotalsAll(untilMs);
       return {
         inputTokens: Math.max(0, a.inputTokens - b.inputTokens),
         outputTokens: Math.max(0, a.outputTokens - b.outputTokens),
@@ -633,20 +664,20 @@ const RUNNERS: Record<string, Runner> = {
       cur.push({ day: isoDay(start), ...windowTotals(start, start + 86400000) });
     }
     const prev = windowTotals(todayStart - days * 86400000, todayStart);
-    const byModel = storage.usageByModelAll(todayStart - days * 86400000);
+    const byModel = storage.usage.usageByModelAll(todayStart - days * 86400000);
     await replyText(ctx, handleInsights(sysLang, days, cur, prev, byModel));
   }),
   model: sysRun(async (ctx, env, _o, lang, sysLang) => {
     const storage = await needStorage(ctx, env, lang);
     if (!storage) return;
-    const rs = storage.getRuntimeSettings();
+    const rs = storage.providers.getRuntimeSettings();
     const provider =
-      rs.activeProviderId != null ? storage.getProvider(rs.activeProviderId) : undefined;
+      rs.activeProviderId != null ? storage.providers.getProvider(rs.activeProviderId) : undefined;
     const model =
-      rs.activeModelId != null ? storage.getModel(rs.activeModelId) : undefined;
+      rs.activeModelId != null ? storage.providers.getModel(rs.activeModelId) : undefined;
     const items: ModelListItem[] = [];
-    for (const p of storage.listProviders()) {
-      for (const m of storage.listModels(p.id)) {
+    for (const p of storage.providers.listProviders()) {
+      for (const m of storage.providers.listModels(p.id)) {
         items.push({
           id: m.id,
           providerLabel: p.label,

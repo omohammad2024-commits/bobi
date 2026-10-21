@@ -2,14 +2,14 @@ import { InlineKeyboard, type Context } from "grammy";
 import { t, type Lang } from "../i18n";
 import { isProviderPreset, providerPreset, PROVIDER_PRESETS } from "../ai/adapter";
 import { setupPrompt, parseSetupReply, type SetupResult } from "../ai/setup";
-import type { ProbeResult } from "../ai/health";
+import type { ProbeResult } from "../ai/provider_probe";
 import {
   BUILT_IN_PERSONALITIES,
   personalityNames,
   getPersonality,
   resolvePersonalityName,
 } from "../personality/personalities";
-import { PERSONALITY_PREF_KEY, type UserPrefStore } from "./bot";
+import { PERSONALITY_PREF_KEY, type UserPrefStore } from "./deps";
 import { buildMainMenu, editMenuMessage } from "./menu";
 import { formatCount } from "./ux";
 

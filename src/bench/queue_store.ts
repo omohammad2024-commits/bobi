@@ -28,7 +28,26 @@
  * tool / worker path, same as the bench history tables.
  */
 import type { Database } from "bun:sqlite";
-import type { BenchJob, BenchJobSource } from "./worker";
+
+/*
+ * BenchJob / BenchJobSource are defined HERE (platform Phase 5): they
+ * describe this store's rows. They used to live in worker.ts while this
+ * module imported them back from it — a cycle (worker.ts imports the
+ * BenchJobStore value from here). worker.ts now imports the types from
+ * here and re-exports them, so existing imports from ./worker keep
+ * working.
+ */
+
+/** Where a job came from. Manual jobs get a direct failure DM; scheduled jobs use the repeated-failure alert path. */
+export type BenchJobSource = "schedule" | "manual";
+
+export interface BenchJob {
+  id: string;
+  mode: "offline" | "live";
+  taskIds?: string[];
+  source: BenchJobSource;
+  enqueuedAtMs: number;
+}
 
 export type StoredBenchJobStatus = "queued" | "running";
 

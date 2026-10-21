@@ -30,6 +30,7 @@
  */
 
 /** Env var that disables the circuit breaker entirely. Default: ON. */
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 export const CIRCUIT_BREAKER_ENV_VAR = "BOBI_CIRCUIT_BREAKER";
 /** Env var overriding the consecutive-failure trip threshold. Default 3. */
 export const BREAKER_THRESHOLD_ENV_VAR = "BOBI_BREAKER_THRESHOLD";
@@ -40,14 +41,12 @@ export const BREAKER_COOLDOWN_MS_ENV_VAR = "BOBI_BREAKER_COOLDOWN_MS";
 export const BREAKER_MAX_COOLDOWN_MS = 5 * 60 * 1000;
 
 export function circuitBreakerEnabled(): boolean {
-  const raw = process.env[CIRCUIT_BREAKER_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), CIRCUIT_BREAKER_ENV_VAR));
 }
 
 /** Consecutive transient failures that open the breaker. Default 3, min 1. */
 export function breakerThreshold(): number {
-  const raw = process.env[BREAKER_THRESHOLD_ENV_VAR];
+  const raw = readNamed(processEnv(), BREAKER_THRESHOLD_ENV_VAR);
   if (raw !== undefined) {
     const n = Math.floor(Number(raw));
     if (Number.isFinite(n) && n >= 1) return n;
@@ -57,7 +56,7 @@ export function breakerThreshold(): number {
 
 /** Cooldown after the first opening, ms. Default 30s; invalid → default. */
 export function breakerBaseCooldownMs(): number {
-  const raw = process.env[BREAKER_COOLDOWN_MS_ENV_VAR];
+  const raw = readNamed(processEnv(), BREAKER_COOLDOWN_MS_ENV_VAR);
   if (raw !== undefined) {
     const n = Math.floor(Number(raw));
     if (Number.isFinite(n) && n >= 1) return n;

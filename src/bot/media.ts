@@ -88,8 +88,10 @@ export async function extractMedia(ctx: Context, botToken: string): Promise<Medi
     }
 
     // A type with no mapping is one the adapters cannot carry, so there is no
-    // point downloading it.
-    if (partTypeForMediaType(candidate.mediaType) === undefined) {
+    // point downloading it. A candidate carrying its own part type (the
+    // thumbnail-less animation fallback) is exempt: its type was chosen by
+    // the selection rules precisely because the mapping has no entry for it.
+    if (candidate.partType === undefined && partTypeForMediaType(candidate.mediaType) === undefined) {
       skipped.push({ kind: candidate.kind, reason: "unsupported" });
       continue;
     }
@@ -123,6 +125,17 @@ export interface MediaCandidate {
   /** Duration Telegram reported, in seconds, for voice/audio. */
   durationSec?: number;
   name?: string;
+  /**
+   * The part type to build, overriding the media-type mapping.
+   *
+   * Set only where the mapping has no entry for a type the pipeline must
+   * still carry: an animation without a thumbnail arrives as video/mp4,
+   * which `partTypeForMediaType` does not map (it is not a document type
+   * in general), yet the file has to reach the provider as a document
+   * part rather than be refused as "unsupported". Every other candidate
+   * leaves this unset and follows the mapping.
+   */
+  partType?: ContentPart["type"];
 }
 
 /**
@@ -166,15 +179,59 @@ export function candidatesIn(message: NonNullable<Context["message"]>): MediaCan
     });
   }
 
+  if (message.animation !== undefined) {
+    const anim = message.animation;
+    if (anim.thumbnail !== undefined) {
+      // A GIF is seen, not played: the model gets the thumbnail frame as an
+      // image, the same treatment a photo gets. Downloading the mp4 itself
+      // would buy nothing — most adapters cannot carry video at all.
+      out.push({
+        kind: "animation",
+        fileId: anim.thumbnail.file_id,
+        mediaType: "image/jpeg",
+        ...(anim.thumbnail.file_size !== undefined
+          ? { declaredSize: anim.thumbnail.file_size }
+          : anim.file_size !== undefined
+            ? { declaredSize: anim.file_size }
+            : {}),
+        ...(anim.file_name !== undefined ? { name: anim.file_name } : {}),
+      });
+    } else {
+      // No thumbnail to stand in for the frame, so the file itself goes —
+      // as a document part. video/mp4 has no part-type mapping (correctly:
+      // a bare mp4 document is not silently a picture), but an animation is
+      // visual media the user pointed at, so the candidate carries its
+      // part type explicitly instead of dying as "unsupported". Adapters
+      // that cannot consume video degrade through their named-note path.
+      out.push({
+        kind: "animation",
+        fileId: anim.file_id,
+        mediaType: anim.mime_type ?? "video/mp4",
+        ...(anim.file_size !== undefined ? { declaredSize: anim.file_size } : {}),
+        ...(anim.file_name !== undefined ? { name: anim.file_name } : {}),
+        partType: "document",
+      });
+    }
+  }
+
   if (message.document !== undefined) {
     const doc = message.document;
-    out.push({
-      kind: "document",
-      fileId: doc.file_id,
-      mediaType: doc.mime_type ?? "application/octet-stream",
-      ...(doc.file_size !== undefined ? { declaredSize: doc.file_size } : {}),
-      ...(doc.file_name !== undefined ? { name: doc.file_name } : {}),
-    });
+    // Telegram mirrors an animation into `document` (same file, video/mp4).
+    // Emitting both would download one GIF twice and describe the mirror as
+    // an unsupported document — the animation candidate above already
+    // represents the file, so the mirror is suppressed.
+    const isAnimationMirror =
+      message.animation !== undefined &&
+      doc.file_unique_id === message.animation.file_unique_id;
+    if (!isAnimationMirror) {
+      out.push({
+        kind: "document",
+        fileId: doc.file_id,
+        mediaType: doc.mime_type ?? "application/octet-stream",
+        ...(doc.file_size !== undefined ? { declaredSize: doc.file_size } : {}),
+        ...(doc.file_name !== undefined ? { name: doc.file_name } : {}),
+      });
+    }
   }
 
   return out;
@@ -183,7 +240,9 @@ export function candidatesIn(message: NonNullable<Context["message"]>): MediaCan
 /** Build the neutral part for a fetched attachment. */
 function buildPart(candidate: MediaCandidate, base64: string): ContentPart {
   const mediaType = candidate.mediaType.split(";")[0]!.trim().toLowerCase();
-  const kind = partTypeForMediaType(mediaType);
+  // An explicit part type on the candidate wins: it exists for the one type
+  // the mapping deliberately does not cover (a thumbnail-less animation).
+  const kind = candidate.partType ?? partTypeForMediaType(mediaType);
 
   // `kind` is checked before download, so this is a narrowing aid rather than a
   // real branch; an unexpected value falls back to a document.
@@ -232,6 +291,7 @@ export function hasMedia(message: NonNullable<Context["message"]>): boolean {
     message.photo !== undefined ||
     message.voice !== undefined ||
     message.audio !== undefined ||
+    message.animation !== undefined ||
     message.document !== undefined
   );
 }

@@ -6,14 +6,13 @@
  *
  *   { "mcpServers": { "bobi": { "command": "bun", "args": ["src/mcp/serve.ts"] } } }
  *
- * Wiring is intentionally MINIMAL compared to `src/index.ts` (the Telegram
- * bot): the same config file, the same database, the same provider selection
- * (AiGateway with owner-configured providers, FakeProvider fallback), the
- * same core tools — but none of the bot-only pieces (panels, schedulers,
- * heartbeat, health endpoint, Telegram delivery). Richer wiring (memory
- * tools, skills, the MCP client tools from `src/mcp/bridge.ts`) can be added
- * here later without changing `src/mcp/server.ts`, which stays transport-
- * and wiring-agnostic.
+ * Thin starter over the SAME platform the Telegram bot runs
+ * (src/bootstrap.ts buildPlatform, surface "mcp"): same config, same
+ * database, same provider selection, the FULL tool wiring and the same
+ * memory stack — this is exactly the same BOBI as on Telegram, with the
+ * same tools and the same memory. Telegram-only machinery is NOT started
+ * here: no bot, no schedulers, no heartbeat/bench worker, no health/API
+ * servers, no interval sweeps, no external-MCP connections.
  *
  * SECURITY: the `ownerActor` passed to the MCP server is built here,
  * server-side, from the validated owner identity — the same
@@ -22,17 +21,9 @@
  * `src/mcp/server.ts` for the trust model.
  */
 import { loadConfig } from "../config/config";
-import { Storage } from "../storage/storage";
-import { ConversationEngine } from "../conversation/engine";
-import { FakeProvider } from "../ai/fake";
-import { AiGateway } from "../ai/gateway";
-import { AdapterRegistry } from "../ai/adapter_registry";
-import { ProviderSecretStore } from "../ai/secret_store";
-import { ToolService } from "../tools/service";
-import { AuthorizationService } from "../auth/service";
 import { OwnerIdentity, parseOwnerId } from "../auth/identity";
-import { resolveLang } from "../i18n";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
+import { buildPlatform } from "../bootstrap";
 import { createMcpServer } from "./server";
 
 async function main(): Promise<void> {
@@ -50,48 +41,25 @@ async function main(): Promise<void> {
     return;
   }
   const identity = OwnerIdentity.fromNumber(ownerId.ownerId);
-  const auth = new AuthorizationService(identity);
+  void identity;
 
-  const storage = Storage.open(config.dbPath);
-
-  // Same provider selection as the bot: the owner-configured provider via
-  // the gateway, offline fake when nothing is configured.
-  const secrets = new ProviderSecretStore(config.aiMasterKey);
-  const adapters = new AdapterRegistry();
-  const gateway = new AiGateway({ storage, adapters, secrets });
-  const selection = gateway.currentSelection();
-  const provider = selection ? gateway : new FakeProvider();
-
-  // Core tools only (see module doc): the full extra-tools wiring lives in
-  // src/index.ts and is intentionally not duplicated here.
-  const tools = new ToolService();
-  const engine = new ConversationEngine({
-    provider,
-    model: selection ? selection.modelId : config.aiModel,
-    timeoutMs: config.aiTimeoutMs,
-    maxConcurrent: config.aiMaxConcurrent,
-    storage,
-    tools,
-    timezone: config.timezone,
-    // Bilingual agent output: MCP turns resolve the requesting user's /lang.
-    langFor: (userId: string) =>
-      resolveLang(userId, (uid, key) => storage.getUserPref(uid, key)),
-  });
+  const platform = await buildPlatform(config, { surface: "mcp" });
+  if (platform === undefined) return; // fail-closed gate already reported
 
   // Owner-level grants, resolved server-side right now — never from a request.
   const ownerActor = toToolActor(
-    authorizeToolUse(auth, { id: ownerId.ownerId }, tools.registry.list()),
+    authorizeToolUse(platform.auth, { id: ownerId.ownerId }, platform.tools.registry.list()),
   );
 
   const server = createMcpServer({
-    storage,
-    engineFactory: () => engine,
+    storage: platform.storage,
+    engineFactory: () => platform.turn.engine,
     ownerActor,
   });
 
   const stop = (): void => {
-    engine.cancelAll();
-    storage.close();
+    platform.turn.engine.cancelAll();
+    platform.storage.close();
   };
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);

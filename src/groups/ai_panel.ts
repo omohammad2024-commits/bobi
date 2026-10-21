@@ -16,8 +16,8 @@ import { InlineKeyboard } from "grammy";
 import { encode } from "./callbacks";
 import { ADAPTER_TEMPLATES, PROVIDER_PRESETS } from "../ai/adapter";
 import type { ModelView, ProviderView } from "../ai/provider_service";
-import { formatNum, formatTime, tr, type PanelLang } from "./panel_strings";
-import { atr } from "./ai_panel_audit_strings";
+import { formatNum, formatTime, tr, type PanelLang } from "../i18n/strings/panel_strings";
+import { atr } from "../i18n/strings/ai_panel_audit_strings";
 
 export function aiMenuKeyboard(lang: PanelLang = "fa"): InlineKeyboard {
   return new InlineKeyboard()

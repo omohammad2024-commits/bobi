@@ -60,7 +60,7 @@ import {
   type DigestSchedulePort,
   type GroupHistory,
 } from "./assistant";
-import { tr, type AssistantLang } from "./assistant_strings";
+import { tr, type AssistantLang } from "../i18n/strings/assistant_strings";
 import { summarizeSmart, type SmartSummaryPort } from "./smart_summary";
 
 export const GROUP_DIGEST_TOOL_NAME = "group_digest";

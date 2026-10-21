@@ -47,19 +47,19 @@ import type {
   ConversationInput,
   ConversationOutput,
 } from "../conversation/engine";
-import { splitForTelegram } from "../conversation/engine";
+import { splitForTelegram } from "./chunking";
 import type { ToolActor, ToolRunResult } from "../tools/types";
 import type { ToolService } from "../tools/service";
 import type { Storage } from "../storage/storage";
 import type { AuthorizationService } from "../auth/service";
-import type { UserPrefStore } from "./bot";
+import type { UserPrefStore } from "./deps";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
-import { gateGroup, gateUser, isOwnerSender, senderLang } from "./bot";
+import { gateGroup, gateUser, isOwnerSender, senderLang } from "./deps";
 import { requireOwnerTier } from "./access";
 import { blockquoteToEntities } from "./expandable_quote";
 import { hasConfirmFlag } from "./cmd_session";
 import { progressMessage, truncateLabel, withTyping } from "./ux";
-import { tr, type AutoLang } from "./cmd_auto_strings";
+import { tr, type AutoLang } from "../i18n/strings/cmd_auto_strings";
 
 // ---------------------------------------------------------------------------
 // Command definitions (menu entries, merged by the coordinator)

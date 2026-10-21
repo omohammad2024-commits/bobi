@@ -63,6 +63,9 @@ import {
 import { loadTasks } from "../../bench/schema";
 import { BenchHistory } from "./history";
 import { BenchJobStore } from "./queue_store";
+import type { BenchJob, BenchJobSource } from "./queue_store";
+
+export type { BenchJob, BenchJobSource };
 import {
   alertDue,
   decideAlert,
@@ -71,7 +74,7 @@ import {
   formatSkipAlert,
   type BaselineOptions,
 } from "./baseline";
-import { tr, type WorkerLang } from "./worker_strings";
+import { tr, type WorkerLang } from "../i18n/strings/worker_strings";
 
 // ---------------------------------------------------------------------------
 // Process-wide bench execution lock
@@ -109,16 +112,10 @@ export function isBenchRunLocked(): boolean {
 // Jobs + queue
 // ---------------------------------------------------------------------------
 
-/** Where a job came from. Manual jobs get a direct failure DM; scheduled jobs use the repeated-failure alert path. */
-export type BenchJobSource = "schedule" | "manual";
-
-export interface BenchJob {
-  id: string;
-  mode: "offline" | "live";
-  taskIds?: string[];
-  source: BenchJobSource;
-  enqueuedAtMs: number;
-}
+/* BenchJob / BenchJobSource are defined in ./queue_store (they
+ * describe the store's rows, platform Phase 5), imported at the top of
+ * this module and re-exported there, so existing imports from ./worker
+ * keep working. */
 
 /** What the run_bench tool hands to the queue (the queue assigns id + time). */
 export interface BenchJobSpec {

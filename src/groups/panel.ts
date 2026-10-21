@@ -12,7 +12,7 @@
 import { InlineKeyboard } from "grammy";
 import type { GroupAccessRecord } from "../storage/storage";
 import { encode } from "./callbacks";
-import { formatNum, tr, type PanelLang } from "./panel_strings";
+import { formatNum, tr, type PanelLang } from "../i18n/strings/panel_strings";
 import { formatCost } from "../core/usage";
 
 /** Page size for the owner's lists. */

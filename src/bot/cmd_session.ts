@@ -1,15 +1,15 @@
 import { Bot, InlineKeyboard, InputFile, type Context } from "grammy";
 import type { HermesCommandDef, HermesCommandDeps } from "./cmd_context";
 import {
-  COMMAND_HELP,
   commandArg,
   gateGroup,
   gateUser,
   isOwnerSender,
   senderLang,
-  stopTurn,
   type UserPrefStore,
-} from "./bot";
+} from "./deps";
+import { COMMAND_HELP } from "../tools/command_help";
+import { stopTurn } from "./turn_control";
 import { requireOwnerTier } from "./access";
 import {
   buildSessionsKeyboard,
@@ -20,15 +20,16 @@ import {
 import { replyExpandable } from "./expandable_quote";
 import type { MessageEntity } from "@grammyjs/types";
 import type { Storage, StoredMessage } from "../storage/storage";
+import type { ConversationsRepo } from "../storage/repos/conversations";
 import {
   EngineError,
-  splitForTelegram,
   type ConversationEngine,
   type ConversationInput,
   type ConversationOutput,
 } from "../conversation/engine";
+import { splitForTelegram } from "./chunking";
 import type { Lang } from "../i18n";
-import { tr } from "./cmd_session_strings";
+import { tr } from "../i18n/strings/cmd_session_strings";
 
 /**
  * Phase: Hermes command parity — session commands.
@@ -116,7 +117,7 @@ export type PrefsEnv = { prefs?: UserPrefStore };
 export type StoragePrefsEnv = { storage: Storage; prefs?: UserPrefStore };
 export type NewEnv = {
   engine: Pick<ConversationEngine, "cancel" | "clearHistory">;
-  storage: Pick<Storage, "countMessages" | "getConversationSummary">;
+  storage: Pick<ConversationsRepo, "countMessages" | "getConversationSummary">;
 };
 export type RetryEnv = {
   engine: Pick<ConversationEngine, "respond" | "cancel">;
@@ -252,12 +253,12 @@ function readAllHistory(
   userId: string,
   chatId: string,
 ): StoredMessage[] {
-  const total = storage.countMessages(userId, chatId);
+  const total = storage.conversations.countMessages(userId, chatId);
   if (total > MAX_FULL_READ) {
     throw new Error("conversation too large");
   }
   if (total <= 0) return [];
-  return storage.history(userId, chatId, total);
+  return storage.conversations.history(userId, chatId, total);
 }
 
 function isTooLarge(err: unknown): boolean {
@@ -321,23 +322,23 @@ function rewriteConversation(
   chatId: string,
   keep: readonly StoredMessage[],
 ): void {
-  const summary = storage.getConversationSummary(userId, chatId);
-  storage.deleteConversation(userId, chatId);
+  const summary = storage.conversations.getConversationSummary(userId, chatId);
+  storage.conversations.deleteConversation(userId, chatId);
   const newIds: number[] = [];
   for (const m of keep) {
-    newIds.push(storage.appendMessage(userId, chatId, m.role, m.content));
+    newIds.push(storage.conversations.appendMessage(userId, chatId, m.role, m.content));
   }
   if (summary !== undefined) {
     const idx = keep.findIndex((m) => m.id === summary.summarisedUntil);
     if (idx >= 0 && newIds[idx] !== undefined) {
-      storage.setConversationSummary({
+      storage.conversations.setConversationSummary({
         userId,
         chatId,
         summary: summary.summary,
         summarisedUntil: newIds[idx]!,
       });
     } else {
-      storage.clearConversationSummary(userId, chatId);
+      storage.conversations.clearConversationSummary(userId, chatId);
     }
   }
 }
@@ -386,8 +387,8 @@ export async function handleHistoryCommand(
   let messages: StoredMessage[];
   let total = 0;
   try {
-    total = env.storage.countMessages(ids.userId, ids.chatId);
-    messages = env.storage.history(ids.userId, ids.chatId, n);
+    total = env.storage.conversations.countMessages(ids.userId, ids.chatId);
+    messages = env.storage.conversations.history(ids.userId, ids.chatId, n);
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;
@@ -548,7 +549,7 @@ export async function handleRetryCommand(
     // did not change, so no remap is needed.
     try {
       for (const m of droppedTail) {
-        env.storage.appendMessage(ids.userId, ids.chatId, m.role, m.content);
+        env.storage.conversations.appendMessage(ids.userId, ids.chatId, m.role, m.content);
       }
     } catch {
       // Best effort: the failure reply below is the essential part.
@@ -721,7 +722,7 @@ export async function handleBranchCommand(
   }
   try {
     for (const m of all) {
-      env.storage.appendMessage(ids.userId, newChatId, m.role, m.content);
+      env.storage.conversations.appendMessage(ids.userId, newChatId, m.role, m.content);
     }
     // Give the branch a readable name in /sessions.
     try {
@@ -761,7 +762,7 @@ export async function handleResumeCommand(
   }
   let sessions;
   try {
-    sessions = env.storage.listUserConversations(ids.userId);
+    sessions = env.storage.conversations.listUserConversations(ids.userId);
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;
@@ -794,7 +795,7 @@ export async function handleResumeCommand(
   }
   let messages: StoredMessage[];
   try {
-    messages = env.storage.history(ids.userId, match.conversationId, HISTORY_DEFAULT_N);
+    messages = env.storage.conversations.history(ids.userId, match.conversationId, HISTORY_DEFAULT_N);
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;
@@ -829,7 +830,7 @@ export async function handleSessionsCommand(
   if (!ids) return;
   let sessions;
   try {
-    sessions = env.storage.listUserConversations(ids.userId);
+    sessions = env.storage.conversations.listUserConversations(ids.userId);
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;
@@ -925,7 +926,7 @@ export async function handleSessionResumeCallback(
   if (conversationId !== undefined) {
     try {
       owned =
-        env.storage
+        env.storage.conversations
           .listUserConversations(userId)
           .some((c) => c.conversationId === conversationId) === true;
     } catch {
@@ -969,13 +970,13 @@ export async function handleStatusCommand(
   let runs = 0;
   let topModel: string | undefined;
   try {
-    messageCount = env.storage.countMessages(ids.userId, ids.chatId);
+    messageCount = env.storage.conversations.countMessages(ids.userId, ids.chatId);
     const since = startOfTodayTehran();
-    const totals = env.storage.usageTotals(ids.userId, since);
+    const totals = env.storage.usage.usageTotals(ids.userId, since);
     inputTokens = totals.inputTokens;
     outputTokens = totals.outputTokens;
     runs = totals.runs;
-    topModel = env.storage.usageByModel(ids.userId, since)[0]?.modelId;
+    topModel = env.storage.usage.usageByModel(ids.userId, since)[0]?.modelId;
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;
@@ -1020,9 +1021,9 @@ export async function handleContextCommand(
   let window_: StoredMessage[];
   let summary;
   try {
-    total = env.storage.countMessages(ids.userId, ids.chatId);
-    window_ = env.storage.history(ids.userId, ids.chatId, ENGINE_WINDOW);
-    summary = env.storage.getConversationSummary(ids.userId, ids.chatId);
+    total = env.storage.conversations.countMessages(ids.userId, ids.chatId);
+    window_ = env.storage.conversations.history(ids.userId, ids.chatId, ENGINE_WINDOW);
+    summary = env.storage.conversations.getConversationSummary(ids.userId, ids.chatId);
   } catch {
     await safeReply(ctx, tr(lang, "cmd_session.storage_error"));
     return;

@@ -29,8 +29,7 @@
  *     to the model and never sent to any chat. Hooks observe; they do not
  *     converse.
  */
-import type { ToolService } from "../tools/service";
-import type { ToolActor } from "../tools/types";
+import type { ToolActor, ToolServicePort } from "../tools/types";
 import { isHookEvent } from "./events";
 import type { HookEvent, HookPayload } from "./events";
 import { HookCache } from "./loader";
@@ -60,7 +59,7 @@ export interface HookRunContext {
    * loaded but their actions are skipped with a warning (there is nothing
    * safe to run them through).
    */
-  tools?: ToolService;
+  tools?: ToolServicePort;
   /**
    * The triggering turn's actor. Hook actions run AS THIS ACTOR — it is the
    * caller's job to supply the right one (the turn's actor, or the owner for

@@ -21,6 +21,7 @@ import { writeFile } from "node:fs/promises";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ConversationEngine } from "../src/conversation/engine";
+import { webhookEventSink } from "../src/webhooks";
 import { FakeProvider } from "../src/ai/fake";
 import type { AiProvider } from "../src/ai/provider";
 import { ToolService, type ToolServiceOptions } from "../src/tools/service";
@@ -132,6 +133,9 @@ export function buildBenchStack(provider: AiProvider, model: string): BenchStack
     tools,
     timezone: "Asia/Tehran",
     summariseHistory: false,
+    // Phase 5: webhook events leave through the sink adapter (no-op
+    // unless webhooks are configured in this process's env, as before).
+    onEvent: webhookEventSink(),
   });
   return {
     engine,
@@ -204,6 +208,9 @@ export function buildLiveStack(dbPath?: string): LiveStackInfo {
     tools,
     timezone: "Asia/Tehran",
     summariseHistory: false,
+    // Phase 5: webhook events leave through the sink adapter (no-op
+    // unless webhooks are configured in this process's env, as before).
+    onEvent: webhookEventSink(),
   });
   const stack: BenchStack = {
     engine,

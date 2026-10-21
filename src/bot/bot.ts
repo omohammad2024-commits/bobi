@@ -23,7 +23,10 @@ import {
   openPaletteMessage,
   paletteCategoriesRender,
   registerPaletteCommands,
+  type PaletteHandlers,
 } from "./palette";
+import { enterTurn, exitTurn, stopTurn } from "./turn_control";
+export { enterTurn, exitTurn, stopTurn } from "./turn_control";
 import {
   DIGEST_CALLBACK_PREFIX,
   handleDigestCallback,
@@ -59,44 +62,51 @@ import type { ToolActor } from "../tools/types";
 import type { AuthorizationService } from "../auth/service";
 import { authorizeToolUse, toToolActor } from "../auth/tool_bridge";
 import { isToolError } from "../tools/errors";
-import type { GroupAccessService } from "../groups/service";
-import type { PanelController } from "../groups/controller";
-import type { AiAdminController } from "../groups/ai_controller";
-import { checkGroupAccess, denialNote } from "../groups/enforcement";
 import {
   getAssistantConfig,
   recordGroupMessage,
   shouldReplyAssistant,
-  type GroupHistory,
 } from "../groups/assistant";
-import type { UserAccessService } from "../auth/user_service";
-import type { UserPanelController } from "../auth/user_controller";
-import { checkUserAccess, userDenialNote } from "../auth/user_enforcement";
 import {
-  isOwnerCtx,
   requireOwnerTier,
 } from "./access";
 import {
   buildPublicMainMenu,
 } from "./menu";
 import type { Storage } from "../storage/storage";
-import type { RegisterOpts } from "./cmd_system";
+import {
+  commandArg,
+  gateGroup,
+  gateUser,
+  isOwnerSender,
+  PERSONALITY_PREF_KEY,
+  safeReply,
+  senderLang,
+  type BotDeps,
+  type RegisterOpts,
+  type UserPrefStore,
+} from "./deps";
+export {
+  commandArg,
+  gateGroup,
+  gateUser,
+  isOwnerSender,
+  PERSONALITY_PREF_KEY,
+  senderLang,
+} from "./deps";
+export type { BotDeps, RegisterOpts, UserPrefStore } from "./deps";
 import { extractMedia, hasMedia, deliverToolMedia } from "./media";
 import { cleanupDownloadForPart } from "../tools/downloader";
 import { createModerator } from "../moderation/index";
-import type { RateLimiter } from "../core/rate_limit";
-import type { UsageService } from "../core/usage";
 import type { ContentPart } from "../ai/provider";
 import {
   transcribeAudio,
   TRANSCRIBE_TIMEOUT_MS,
-  type TranscribeOptions,
 } from "../ai/transcribe";
 import {
   synthesizeSpeech,
   planVoiceDelivery,
   TTS_TIMEOUT_MS,
-  type TtsOptions,
 } from "../ai/tts";
 import { maybeExtractDocuments } from "../tools/extract_document";
 import {
@@ -106,124 +116,6 @@ import {
   resolvePersonalityName,
 } from "../personality/personalities";
 import type { CompressResult } from "../conversation/engine";
-
-/**
- * The per-user preference store the bot needs for voice mode.
- *
- * Kept to the two methods actually used so tests can substitute a fake and
- * `Storage` satisfies it structurally — the bot never needs the rest of the
- * storage surface.
- */
-export interface UserPrefStore {
-  getUserPref(userId: string, key: string): string | undefined;
-  setUserPref(userId: string, key: string, value: string): void;
-}
-
-export interface BotDeps {
-  engine: ConversationEngine;
-  /**
-   * SQLite storage (Hermes-parity command modules). Optional: without it the
-   * /history, /save, /sessions… family reports "unavailable" instead of
-   * failing.
-   */
-  storage?: Storage;
-  /**
-   * Bot token, needed to download attachment bytes.
-   *
-   * Telegram reports a file's `file_path` but not its content, and the download
-   * URL embeds the token. It is passed here rather than read from the
-   * environment so this module never touches configuration directly.
-   */
-  botToken?: string;
-  /** Optional until tools are wired at the call site. */
-  tools?: ToolService;
-  /** Central authorization; when absent, tools stay unavailable. */
-  auth?: AuthorizationService;
-  /** Group approval store. When absent, group messages are not gated. */
-  groups?: GroupAccessService;
-  /** Private-chat user approval. When absent, direct messages are not gated. */
-  users?: UserAccessService;
-  /** User-access panel controller; absent means no user approval UI. */
-  userPanel?: UserPanelController;
-  /** Owner panel controller; absent means no /admin route. */
-  panel?: PanelController;
-  /** AI management controller; absent means no /ai route. */
-  aiAdmin?: AiAdminController;
-  /** Per-user budgets. When absent, nothing is rate limited. */
-  rateLimit?: RateLimiter;
-  /** Usage accounting. When absent, spend is not recorded. */
-  usage?: UsageService;
-  /**
-   * Phase B2: whisper-compatible transcription endpoint for voice messages.
-   *
-   * Optional; absent or an empty baseUrl means transcription is disabled and
-   * audio parts keep the existing behaviour (the adapter's named note). Wired
-   * from TRANSCRIBE_* configuration.
-   */
-  transcribe?: TranscribeOptions;
-  /**
-   * Phase B3: TTS endpoint for voice replies.
-   *
-   * Optional; absent or an empty baseUrl means voice replies are unavailable
-   * and /voice reports that TTS is not configured. Wired from TTS_* config.
-   */
-  tts?: TtsOptions;
-  /**
-   * Phase B3: per-user preference store (voice_mode). Optional; without it
-   * /voice cannot persist the sender's choice.
-   */
-  prefs?: UserPrefStore;
-  /**
-   * Stage-3 moderation: the bot owner's numeric Telegram id as a string.
-   * When absent, group moderation stays inert (all messages allowed).
-   * Set at the call site from OwnerIdentity — never from message content.
-   */
-  moderationOwnerId?: string;
-  /**
-   * Phase-3 group assistant mode (opt-in per group, owner-managed).
-   * When absent, the assistant hook in the message path stays inert
-   * (all groups behave as before). Set at the call site from OwnerIdentity.
-   */
-  groupAssistant?: {
-    ownerId: string;
-    history: GroupHistory;
-  };
-  /**
-   * Bot version string, shown by /version (and its palette tap). Read from
-   * package.json once at startup by the coordinator.
-   */
-  version?: string;
-  /**
-   * System-command options for the command palette's tap-to-run runners
-   * (same object the coordinator passes to registerSystemCommands, so
-   * defaults stay in one place).
-   */
-  systemOpts?: RegisterOpts;
-  /**
-   * Optional web-search resolver for the interactive /digest headlines
-   * section. The coordinator wires the same resolver it gives the
-   * build_digest tool; absent means the digest simply has no headlines
-   * section (the builder skips it gracefully).
-   */
-  digestSearchHeadlines?: import("../digest/builder").SearchHeadlinesFn;
-}
-
-/** Shown once to a group that is not approved yet. */
-const GROUP_NOT_READY_KEY = "gate.group_not_ready";
-
-/**
- * The sender's UI language. English-only since v1.0: always "en".
- *
- * Kept as a function (rather than inlining "en") because dozens of call
- * sites — including other workers' command modules — take it, and the
- * signature stays stable while they migrate.
- */
-export function senderLang(
-  _ctx: { from?: { id: number | string } | undefined },
-  _prefs: UserPrefStore | undefined,
-): Lang {
-  return "en";
-}
 
 /**
  * The tool-layer actor for a Telegram user, derived from the Authorization
@@ -244,99 +136,6 @@ function toolActorFor(
   // rather than guessing, so such an update gets no tool access.
   const actor = ctx.from ? auth.actorFromTelegramUser(ctx.from) : undefined;
   return toToolActor(authorizeToolUse(auth, actor, tools.registry.list()));
-}
-
-/**
- * Group access gate.
- *
- * Called before anything else runs for a group update. A pending, rejected,
- * or revoked group never reaches the engine, the provider, or a tool, and the
- * decision is read from the database each time.
- */
-export async function gateGroup(
-  ctx: Context,
-  groups: GroupAccessService | undefined,
-  lang: Lang = "en",
-): Promise<boolean> {
-  // No store configured: nothing to enforce. Groups simply stay ungated.
-  if (!groups) return true;
-  if (!ctx.chat) return true;
-
-  const decision = checkGroupAccess(groups, {
-    chatType: ctx.chat.type,
-    chatId: String(ctx.chat.id),
-  });
-  if (decision.allowed) return true;
-
-  console.error(`[sol] group blocked: ${denialNote({ chatType: ctx.chat.type, chatId: String(ctx.chat.id) }, decision)}`);
-  try {
-    await ctx.reply(t(GROUP_NOT_READY_KEY, lang));
-  } catch {
-    // A blocked group may have removed the bot; that is not an error.
-  }
-  return false;
-}
-
-/**
- * Private-chat access gate — the two-tier model.
- *
- * Public chat is OPEN: anyone may talk to Bobi, no approval queue. The owner
- * is exempt from everything. Two persisted owner controls remain:
- * - banned (`rejected`): the sender gets one short, polite refusal.
- * - muted (`revoked`): the update is silently dropped — no reply at all.
- *
- * Everyone else — no row, `pending`, or `approved` — is allowed through.
- * Legacy `pending` rows (from the old approval flow) no longer gate anything:
- * no new pending rows are created here and the owner is never notified.
- *
- * The decision is read from the database on every call, so a ban/mute takes
- * effect on the very next message.
- */
-export async function gateUser(
-  ctx: Context,
-  deps: {
-    users?: UserAccessService;
-    auth?: AuthorizationService;
-    userPanel?: UserPanelController;
-    prefs?: UserPrefStore;
-  },
-): Promise<boolean> {
-  const { users } = deps;
-  if (!users || !ctx.chat || !ctx.from) return true;
-
-  const auth = deps.auth;
-  const actor = auth ? auth.actorFromTelegramUser(ctx.from) : undefined;
-  const isOwner = auth !== undefined && auth.isOwner(actor);
-  const userId = String(ctx.from.id);
-
-  const decision = checkUserAccess(users, {
-    userId,
-    isOwner,
-    chatType: ctx.chat.type,
-  });
-  if (decision.allowed) return true;
-
-  console.error(
-    `[sol] user blocked: ${userDenialNote({ userId, isOwner, chatType: ctx.chat.type }, decision)}`,
-  );
-  // A muted user hears nothing at all; a banned user gets one short, polite
-  // line. The denial is English (the bot's only UI language since v1.0).
-  if (decision.state === "revoked") return false;
-  const lang = senderLang(ctx, deps.prefs);
-  await safeReply(ctx, t("gate.user_banned", lang));
-  return false;
-}
-
-/** Reply, tolerating a failure (blocked bot, deleted message). */
-async function safeReply(
-  ctx: { reply(text: string): Promise<unknown> },
-  text: string,
-): Promise<void> {
-  try {
-    await ctx.reply(text);
-  } catch {
-    // A user who blocked the bot cannot be told anything; that is not an error.
-  }
 }
 
 /**
@@ -1063,20 +862,6 @@ export function formatCommandHelp(
 }
 
 /**
- * Whether the sender is the owner, for help filtering.
- *
- * Delegates to the two-tier access module: the owner is proven from the
- * trusted numeric id, never from message text. Fail-closed: without auth (or
- * without a sender) nobody counts as the owner.
- */
-export function isOwnerSender(
-  ctx: Context,
-  deps: { auth?: AuthorizationService },
-): boolean {
-  return isOwnerCtx(ctx, deps);
-}
-
-/**
  * Try to run an owner-defined custom shortcut for a "/name" message.
  *
  * Returns true when a shortcut matched and was executed (the caller must
@@ -1107,7 +892,7 @@ async function tryRunShortcut(
   } catch {
     return false;
   }
-  const shortcut = storage.getShortcut(name);
+  const shortcut = storage.misc.getShortcut(name);
   if (!shortcut) return false;
 
   if (shortcut.kind === "prompt") {
@@ -1181,9 +966,6 @@ export async function handleHelpCommand(
 
 // --------------------------------------------------------------- /reset ----
 
-/** The user_prefs key for the per-user personality skin. Exported for index.ts wiring. */
-export const PERSONALITY_PREF_KEY = "personality";
-
 /** The environment /reset needs: the engine's cancel + history clearing. */
 export type ResetEnv = {
   engine: Pick<ConversationEngine, "cancel" | "clearHistory">;
@@ -1240,17 +1022,6 @@ export async function handleResetCommand(
 }
 
 // --------------------------------------------------------- /personality ----
-
-/**
- * Extract the argument from a command text like "/personality concise" or
- * "/personality@bot concise". Returns undefined when there is no argument.
- * Pure, for tests.
- */
-export function commandArg(text: string): string | undefined {
-  const parts = text.trim().split(/\s+/);
-  if (parts.length < 2) return undefined;
-  return parts.slice(1).join(" ");
-}
 
 /** The environment /personality needs: the per-user preference store. */
 export type PersonalityCommandEnv = Pick<BotDeps, "prefs">;
@@ -1399,41 +1170,10 @@ export async function handleCompressCommand(
 
 // ---------------------------------------------------------------- /stop ----
 
-/**
- * Phase G1: per-conversation registry of in-flight turns, so /stop can abort
- * exactly the turn running in the chat that sent it.
- *
- * runTurn enters a controller when the turn's work begins and removes it when
- * the turn completes (success, failure, or supersession), so a finished turn
- * never looks in-flight. /stop aborts the controller and cancels the engine's
- * run for that conversation; the agent loop already honors the abort signal,
- * and the abandoned run stays silent (it surfaces as "superseded").
- */
-const stopControllers = new Map<string, AbortController>();
-
-/** Register an in-flight turn for a conversation. Exported for tests. */
-export function enterTurn(conversationId: string): AbortController {
-  const controller = new AbortController();
-  stopControllers.set(conversationId, controller);
-  return controller;
-}
-
-/** Remove a finished turn from the registry. Exported for tests. */
-export function exitTurn(conversationId: string): void {
-  stopControllers.delete(conversationId);
-}
-
-/**
- * Abort the in-flight turn for a conversation, if any.
- * Returns true when something was aborted. Exported for tests.
- */
-export function stopTurn(conversationId: string): boolean {
-  const controller = stopControllers.get(conversationId);
-  if (controller === undefined) return false;
-  stopControllers.delete(conversationId);
-  controller.abort();
-  return true;
-}
+// The in-flight turn registry (enterTurn/exitTurn/stopTurn) lives in
+// ./turn_control — a leaf module extracted in Phase 5 step B2 so
+// cmd_session.ts can stop a turn without importing bot.ts. Re-exported
+// here so existing imports from "./bot" keep working.
 
 /** The environment /stop needs: the engine's cancellation. */
 export type StopEnv = { engine: Pick<ConversationEngine, "cancel"> };
@@ -1800,6 +1540,20 @@ export function describeNothingUsable(
   return note.length > 0 ? note : t("media.empty", lang);
 }
 
+/**
+ * The builtin command handlers the palette's tap-to-run dispatch needs,
+ * injected into PaletteEnv (Phase 5 step B2) so palette.ts no longer
+ * imports bot.ts. The implementations stay here, next to their typed
+ * command registrations below.
+ */
+const PALETTE_HANDLERS: PaletteHandlers = {
+  voice: handleVoiceCommand,
+  reset: handleResetCommand,
+  stop: handleStopCommand,
+  personality: handlePersonalityCommand,
+  compress: handleCompressCommand,
+};
+
 export function createBot(token: string, deps: BotDeps): Bot {
   const bot = new Bot(token);
   const { engine, groups, panel, aiAdmin, userPanel } = deps;
@@ -1808,7 +1562,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   // Hermes has no equivalent. Default-off: with no moderationOwnerId or no
   // storage the moderator allows everything, so this is inert until wired.
   const moderator = createModerator({
-    ...(deps.storage !== undefined ? { storage: deps.storage } : {}),
+    ...(deps.storage !== undefined ? { storage: deps.storage.misc } : {}),
     ownerId: deps.moderationOwnerId ?? "",
     isOwner: (userId: string) => {
       const n = Number(userId);
@@ -1897,7 +1651,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
   // Same entry point as /help, for users who reach for the explicit name.
   registerPaletteCommands(
     bot,
-    { deps, sysOpts: deps.systemOpts ?? {} },
+    { deps, sysOpts: deps.systemOpts ?? {}, handlers: PALETTE_HANDLERS },
   );
 
   // ---- /digest — the interactive daily digest (Phase-2 item 3) ----
@@ -2069,7 +1823,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
       await ctx.answerCallbackQuery().catch(() => undefined);
       await handlePaletteCallback(
         ctx,
-        { deps, sysOpts: deps.systemOpts ?? {} },
+        { deps, sysOpts: deps.systemOpts ?? {}, handlers: PALETTE_HANDLERS },
         data,
         lang,
       );
@@ -2212,7 +1966,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
       const gaChatId = String(ctx.chat.id);
       recordGroupMessage(
         {
-          ...(deps.storage !== undefined ? { storage: deps.storage } : {}),
+          ...(deps.storage !== undefined ? { storage: deps.storage.misc } : {}),
           ownerId: ga.ownerId,
           history: ga.history,
         },
@@ -2228,7 +1982,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
         },
       );
       if (!ctx.message.text.startsWith("/")) {
-        const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
+        const gaCfg = getAssistantConfig(deps.storage?.misc, ga.ownerId, gaChatId);
         if (gaCfg.enabled) {
           const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
           const botUsername = ctx.me.username ?? "";
@@ -2320,7 +2074,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
         const gaChatId = String(ctx.chat.id);
         recordGroupMessage(
           {
-            ...(deps.storage !== undefined ? { storage: deps.storage } : {}),
+            ...(deps.storage !== undefined ? { storage: deps.storage.misc } : {}),
             ownerId: ga.ownerId,
             history: ga.history,
           },
@@ -2335,7 +2089,7 @@ export function createBot(token: string, deps: BotDeps): Bot {
             tsMs: Date.now(),
           },
         );
-        const gaCfg = getAssistantConfig(deps.storage, ga.ownerId, gaChatId);
+        const gaCfg = getAssistantConfig(deps.storage?.misc, ga.ownerId, gaChatId);
         if (gaCfg.enabled) {
           const replyToBot = ctx.message.reply_to_message?.from?.id === ctx.me.id;
           const botUsername = ctx.me.username ?? "";

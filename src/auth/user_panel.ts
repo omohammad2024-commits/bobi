@@ -1,6 +1,6 @@
 /**
  * Owner panel UI for private-chat user access — text and keyboards rendered
- * from the panel string table (`../groups/panel_strings.ts`).
+ * from the panel string table (`../i18n/strings/panel_strings.ts`).
  *
  * Mirrors `groups/panel.ts` deliberately: the two approval workflows are the
  * same shape, so an owner who has used one already knows the other. This module
@@ -13,7 +13,7 @@
 import { InlineKeyboard } from "grammy";
 import type { UserAccessRecord } from "../storage/storage";
 import { encode } from "../groups/callbacks";
-import { formatNum, tr, type PanelLang } from "../groups/panel_strings";
+import { formatNum, tr, type PanelLang } from "../i18n/strings/panel_strings";
 
 /** Page size for the owner's user lists. */
 export const USER_PAGE_SIZE = 5;

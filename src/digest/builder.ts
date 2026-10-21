@@ -37,6 +37,13 @@
  * Every section is built inside its own try/catch: one failing source is
  * logged and skipped, and can never kill the digest.
  *
+ * PHASE-8 PARAMETERS (DigestDeps.topic / anchorMs / rangeDays, all
+ * optional): a one-off topic overrides the saved interests for the
+ * headline search only; anchorMs + rangeDays move/widen the Tehran day
+ * window the day sections (tasks, reminders, events, usage, focus) are
+ * built over. With all three absent the digest is exactly the pre-Phase-8
+ * morning digest — the interactive /digest path relies on that.
+ *
  * Rendering (English-only UI since v1.0, Phase-2 item 3 — interactive
  * digest): section gathering is language-neutral (`buildDigestData`); text
  * rendering takes a `DigestLocale` (`renderDigestSection`,
@@ -125,8 +132,46 @@ export interface DigestDeps {
   now?: () => number;
   /** Optional web-search resolver. Omit it (or let it throw) to skip headlines. */
   searchHeadlines?: SearchHeadlinesFn;
+  /**
+   * Optional one-line weather summary for the digest (Phase-9 seam),
+   * e.g. "Tehran: 18°C, clear — today 12–21°C". When present and it
+   * resolves to a non-empty line, the digest gains a short weather
+   * section right after the date header. When absent, or when it
+   * resolves to undefined/empty (or throws), the digest output is
+   * byte-identical to a digest built without it — weather must never
+   * break the digest. The coordinator wires the real implementation
+   * (the weather tool's fetchWeatherLine) in bootstrap.
+   */
+  weatherLine?: () => Promise<string | undefined>;
   /** Diagnostic log for skipped/failed sources. Defaults to silent. */
   log?: (message: string) => void;
+  /**
+   * Phase-8: optional headline topic for this digest only. When set (after
+   * trimming; an empty/whitespace value counts as absent), the headline
+   * search is a single `"<topic> news"` query with perQuery 3, overriding
+   * the saved `digest.interests` topics. When absent, interest-based (or
+   * generic) headline behavior is unchanged. The topic steers ONLY the
+   * headlines — focus interest matches keep using the saved interests.
+   */
+  topic?: string;
+  /**
+   * Phase-8: optional anchor instant (unix ms) for a date-shifted digest.
+   * The day window (tasks / reminders / events / usage) is computed from
+   * the Tehran calendar day containing this instant instead of the day
+   * containing `now()`. Absent = anchored at `now()` (today), exactly as
+   * before.
+   */
+  anchorMs?: number;
+  /**
+   * Phase-8: optional length (days) of the day window starting at the
+   * anchor day. Normalized defensively to an integer in 1..7 (the tool
+   * layer validates strictly and rejects out-of-range values before this
+   * point). Absent = 1 for the window math, with two legacy quirks
+   * preserved when NO window was requested at all (neither anchorMs nor
+   * rangeDays set): events keep their 7-day horizon and usage keeps its
+   * rolling last-24h window — see resolveDigestWindow.
+   */
+  rangeDays?: number;
 }
 
 /** Minimal proposal-store surface the digest needs. */
@@ -143,6 +188,7 @@ export const MAX_DIGEST_CHARS = 2500;
 
 export type DigestSectionKind =
   | "date"
+  | "weather"
   | "focus"
   | "tasks"
   | "reminders"
@@ -244,7 +290,8 @@ const FOCUS_SECTION_TITLE = "🎯 What matters to you";
 
 /** Language-neutral digest section data. Rendering is per-language. */
 export type DigestSectionData =
-  | { kind: "date"; nowMs: number }
+  | { kind: "date"; nowMs: number; rangeDays?: number }
+  | { kind: "weather"; line: string }
   | DigestFocusSection
   | { kind: "tasks"; items: DigestTaskItem[] }
   | { kind: "reminders"; items: DigestReminderItem[] }
@@ -380,6 +427,64 @@ function tehranDayBounds(nowMs: number): { start: number; end: number } {
   return { start, end: start + DAY_MS };
 }
 
+// ---------------------------------------------------------------------------
+// Phase-8 day window (topic / date-range parameters)
+// ---------------------------------------------------------------------------
+
+/**
+ * The resolved day window a digest is built over.
+ *
+ * The window is the Tehran-aligned range
+ * `[rangeStartMs, rangeStartMs + rangeDays * DAY_MS)`: tasks must fall
+ * inside it, reminders must be due by its end, and (when a window was
+ * explicitly requested) events must occur inside it, with daysUntil
+ * measured from the anchor day.
+ */
+export interface DigestWindow {
+  /** Anchor instant the window is measured from (`now()` when unshifted). */
+  anchorMs: number;
+  /** Window length in days, normalized to 1..7. */
+  rangeDays: number;
+  /** Start of the anchor's Tehran calendar day, unix ms. */
+  rangeStartMs: number;
+  /** Exclusive end of the window, unix ms (rangeStartMs + rangeDays days). */
+  rangeEndMs: number;
+  /**
+   * True when the caller explicitly requested a window (anchorMs and/or
+   * rangeDays present in deps). Two legacy behaviors hang off this flag so
+   * the default digest stays byte-identical: with no explicit window,
+   * events keep their 7-day horizon and usage keeps its rolling 24h
+   * window; with one, events are bounded by the window and usage is
+   * counted from the window start.
+   */
+  explicit: boolean;
+}
+
+/** Defensive range-length normalization for direct builder callers. */
+function normalizeRangeDays(raw: number | undefined): number {
+  if (raw === undefined || !Number.isFinite(raw)) return 1;
+  return Math.min(7, Math.max(1, Math.floor(raw)));
+}
+
+/**
+ * Resolve the effective day window from deps. Defaults preserve the
+ * pre-Phase-8 behavior exactly: anchor = now(), rangeDays = 1,
+ * explicit = false.
+ */
+export function resolveDigestWindow(deps: DigestDeps, nowMs: number): DigestWindow {
+  const anchorMs =
+    deps.anchorMs !== undefined && Number.isFinite(deps.anchorMs) ? deps.anchorMs : nowMs;
+  const rangeDays = normalizeRangeDays(deps.rangeDays);
+  const { start } = tehranDayBounds(anchorMs);
+  return {
+    anchorMs,
+    rangeDays,
+    rangeStartMs: start,
+    rangeEndMs: start + rangeDays * DAY_MS,
+    explicit: deps.anchorMs !== undefined || deps.rangeDays !== undefined,
+  };
+}
+
 function faTimeOf(ms: number): string {
   return new Intl.DateTimeFormat("fa-IR", {
     timeZone: TEHRAN,
@@ -424,24 +529,45 @@ function fmtCost(usd: number, locale: DigestLocale): string {
 /**
  * Compose the digest sections as language-neutral data.
  *
- * Priority order: date header (always), the personalized "what matters to
- * you" focus, today's tasks, reminders, upcoming events, curator
- * proposals, usage, headlines (generic filler — first to be trimmed), and
+ * Priority order: date header (always), the optional weather one-liner
+ * (only when the weatherLine dep resolves to a line), the personalized
+ * "what matters to you" focus, today's tasks, reminders, upcoming
+ * events, curator proposals, usage, headlines (generic filler — first
+ * to be trimmed), and
  * memories. Each section builder is guarded so a failing source is skipped
  * with a log line instead of killing the digest. After gathering,
  * applyItemBudget trims the lowest-priority item lists to MAX_DIGEST_ITEMS.
  */
 export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionData[]> {
   const nowMs = deps.now !== undefined ? deps.now() : Date.now();
+  const window = resolveDigestWindow(deps, nowMs);
   const log = deps.log ?? (() => {});
   const sections: DigestSectionData[] = [];
 
   // --- Header: always present, never depends on storage. -------------------
-  sections.push({ kind: "date", nowMs });
+  // The header reflects the anchor instant; rangeDays rides along only when
+  // a window was explicitly requested, so the default section (and its
+  // rendering) stays byte-identical to the pre-Phase-8 shape.
+  sections.push({
+    kind: "date",
+    nowMs: window.anchorMs,
+    ...(window.explicit ? { rangeDays: window.rangeDays } : {}),
+  });
+
+  // --- Weather one-liner (optional Phase-9 seam; never breaks the digest). --
+  if (deps.weatherLine !== undefined) {
+    try {
+      const raw = await deps.weatherLine();
+      const line = typeof raw === "string" ? oneLine(raw) : "";
+      if (line.length > 0) sections.push({ kind: "weather", line: clip(line, 200) });
+    } catch (err) {
+      log(`digest: weather section skipped (${shortErr(err)})`);
+    }
+  }
 
   // --- "What matters to you": overdue, today, soon, interest matches. ------
   try {
-    const s = focusData(deps, nowMs);
+    const s = focusData(deps, window);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: focus section skipped (${shortErr(err)})`);
@@ -449,14 +575,14 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
 
   // --- Today's scheduled tasks ----------------------------------------------
   try {
-    sections.push(taskData(deps, nowMs));
+    sections.push(taskData(deps, window));
   } catch (err) {
     log(`digest: tasks section skipped (${shortErr(err)})`);
   }
 
   // --- Pending reminders due today ------------------------------------------
   try {
-    const s = reminderData(deps, nowMs);
+    const s = reminderData(deps, window);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: reminders section skipped (${shortErr(err)})`);
@@ -464,7 +590,7 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
 
   // --- Upcoming dated events (Phase-3 proactive memory) ----------------------
   try {
-    const s = eventsData(deps, nowMs);
+    const s = eventsData(deps, window);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: events section skipped (${shortErr(err)})`);
@@ -480,7 +606,7 @@ export async function buildDigestData(deps: DigestDeps): Promise<DigestSectionDa
 
   // --- Yesterday's usage ------------------------------------------------------
   try {
-    const s = usageData(deps, nowMs);
+    const s = usageData(deps, nowMs, window);
     if (s) sections.push(s);
   } catch (err) {
     log(`digest: usage section skipped (${shortErr(err)})`);
@@ -567,44 +693,70 @@ function copySection(s: DigestSectionData): DigestSectionData {
   }
 }
 
-/** Today's enabled scheduled tasks (next run inside the Tehran day). */
-function todayTasks(deps: DigestDeps, nowMs: number): DigestTaskItem[] {
-  const { start, end } = tehranDayBounds(nowMs);
-  return deps.storage
+/**
+ * Enabled scheduled tasks whose next run falls inside the day window
+ * ([rangeStartMs, rangeEndMs) in Tehran bounds). With the default window
+ * this is exactly "today's tasks", as before.
+ */
+function tasksInWindow(deps: DigestDeps, window: DigestWindow): DigestTaskItem[] {
+  return deps.storage.scheduling
     .listTasks(deps.userId, 50)
-    .filter((task) => task.enabled && task.nextRunAtMs >= start && task.nextRunAtMs < end)
+    .filter(
+      (task) =>
+        task.enabled &&
+        task.nextRunAtMs >= window.rangeStartMs &&
+        task.nextRunAtMs < window.rangeEndMs,
+    )
     .slice(0, 5)
     .map((task) => ({ id: task.id, name: task.name, runAtMs: task.nextRunAtMs }));
 }
 
 /** Always rendered (with an empty state when there is nothing). */
-function taskData(deps: DigestDeps, nowMs: number): DigestSectionData {
-  return { kind: "tasks", items: todayTasks(deps, nowMs) };
+function taskData(deps: DigestDeps, window: DigestWindow): DigestSectionData {
+  return { kind: "tasks", items: tasksInWindow(deps, window) };
 }
 
-/** Pending reminders due by end of today (Tehran), overdue first. */
-function dueReminders(deps: DigestDeps, nowMs: number): DigestReminderItem[] {
-  const { end } = tehranDayBounds(nowMs);
-  const items = deps.storage
+/**
+ * Pending reminders due by the end of the day window (Tehran), overdue
+ * first. Overdue is flagged against the anchor instant (dueAt < anchorMs),
+ * which is `now` for a default digest, exactly as before.
+ */
+function dueReminders(deps: DigestDeps, window: DigestWindow): DigestReminderItem[] {
+  const items = deps.storage.scheduling
     .listReminders(deps.userId, 50)
-    .filter((r) => r.dueAt <= end)
+    .filter((r) => r.dueAt <= window.rangeEndMs)
     .slice(0, 4)
-    .map((r) => ({ id: r.id, text: r.text, dueAt: r.dueAt, overdue: r.dueAt < nowMs }));
+    .map((r) => ({
+      id: r.id,
+      text: r.text,
+      dueAt: r.dueAt,
+      overdue: r.dueAt < window.anchorMs,
+    }));
   items.sort((a, b) => Number(a.overdue) - Number(b.overdue) || a.dueAt - b.dueAt);
   return items;
 }
 
 /** Skipped when empty. */
-function reminderData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
-  const items = dueReminders(deps, nowMs);
+function reminderData(deps: DigestDeps, window: DigestWindow): DigestSectionData | undefined {
+  const items = dueReminders(deps, window);
   if (items.length === 0) return undefined;
   return { kind: "reminders", items };
 }
 
-/** Dated events in the next 7 days (Phase-3 proactive memory). Raw list. */
-function upcomingEvents(deps: DigestDeps, nowMs: number): DigestEventItem[] {
+/**
+ * Dated events upcoming from the anchor day (Phase-3 proactive memory).
+ * Raw list.
+ *
+ * Horizon: with no explicit window this keeps the legacy 7-day horizon
+ * (daysUntil <= 7 measured from today). With an explicit window, events
+ * must occur INSIDE the window: daysUntil is measured from the anchor day
+ * and the last in-window day is rangeDays - 1, so the bound is
+ * daysUntil > rangeDays - 1.
+ */
+function upcomingEvents(deps: DigestDeps, window: DigestWindow): DigestEventItem[] {
+  const maxDaysUntil = window.explicit ? window.rangeDays - 1 : 7;
   const items: DigestEventItem[] = [];
-  for (const m of deps.storage.listMemories(deps.userId, 200)) {
+  for (const m of deps.storage.memories.listMemories(deps.userId, 200)) {
     if (!m.key.startsWith(EVENT_KEY_PREFIX)) continue;
     let event: MemoryEvent;
     try {
@@ -613,8 +765,8 @@ function upcomingEvents(deps: DigestDeps, nowMs: number): DigestEventItem[] {
       continue;
     }
     if (typeof event?.name !== "string" || typeof event?.labelFa !== "string") continue;
-    const occ = nextOccurrence(event, nowMs);
-    if (occ === undefined || occ.daysUntil > 7) continue;
+    const occ = nextOccurrence(event, window.anchorMs);
+    if (occ === undefined || occ.daysUntil > maxDaysUntil) continue;
     items.push({
       name: oneLine(event.name).slice(0, 60),
       kindLabel: event.kind,
@@ -634,8 +786,8 @@ function upcomingEvents(deps: DigestDeps, nowMs: number): DigestEventItem[] {
  * Malformed payloads are skipped; event content is rendered as plain text,
  * never interpreted.
  */
-function eventsData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
-  const items = upcomingEvents(deps, nowMs);
+function eventsData(deps: DigestDeps, window: DigestWindow): DigestSectionData | undefined {
+  const items = upcomingEvents(deps, window);
   if (items.length === 0) return undefined;
   return { kind: "events", items };
 }
@@ -647,10 +799,28 @@ function proposalData(deps: DigestDeps): DigestSectionData | undefined {
   return { kind: "proposals", count };
 }
 
-/** Usage over the last 24h, from the ledger (metadata only, never content). */
-function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+/**
+ * Usage totals, from the ledger (metadata only, never content).
+ *
+ * Default (no explicit window): the rolling last 24h, exactly as before.
+ *
+ * Explicit window: totals counted from the window start. APPROXIMATION,
+ * stated honestly: UsageTracker.totals(userId, sinceMs) — like the
+ * storage ledger query under it — supports only a lower bound; there is
+ * no until/end parameter to bound the top of the window. A ranged digest
+ * therefore reports "everything since the range start", which can
+ * include usage after the range end when the anchor lies in the past. No
+ * until bound is faked here; adding one would need a storage change
+ * outside this unit's scope.
+ */
+function usageData(
+  deps: DigestDeps,
+  nowMs: number,
+  window: DigestWindow,
+): DigestSectionData | undefined {
   const tracker = new UsageTracker(deps.storage);
-  const totals = tracker.totals(deps.userId, nowMs - DAY_MS);
+  const sinceMs = window.explicit ? window.rangeStartMs : nowMs - DAY_MS;
+  const totals = tracker.totals(deps.userId, sinceMs);
   if (totals.runs === 0) return undefined;
   return {
     kind: "usage",
@@ -662,12 +832,17 @@ function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefin
 }
 
 /**
- * Web headlines, aimed at the owner's interests when saved.
+ * Web headlines, aimed at a one-off topic or the owner's interests.
  *
- * When interest topics exist in user_prefs (`digest.interests`), each
- * topic gets its own "<topic> news" query (up to MAX_INTEREST_TOPICS) so
- * the headlines are about what the owner cares about instead of generic
- * filler. Without topics, one generic query keeps the old behavior.
+ * Phase-8 topic: when `deps.topic` is set (trimmed, non-empty), it wins
+ * over everything else — a single `"<topic> news"` query with perQuery 3 —
+ * so an explicitly requested topic is never diluted by saved interests.
+ *
+ * Otherwise, when interest topics exist in user_prefs
+ * (`digest.interests`), each topic gets its own "<topic> news" query (up
+ * to MAX_INTEREST_TOPICS) so the headlines are about what the owner cares
+ * about instead of generic filler. Without topics, one generic query
+ * keeps the old behavior.
  *
  * Fully defensive: missing resolver, timeout, empty results, and parse
  * failures all drop the section instead of failing the digest. The section
@@ -676,10 +851,15 @@ function usageData(deps: DigestDeps, nowMs: number): DigestSectionData | undefin
  */
 async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undefined> {
   if (deps.searchHeadlines === undefined) return undefined;
-  const interests = readInterests(deps);
+  const topic = deps.topic !== undefined ? oneLine(deps.topic).slice(0, 80) : "";
+  const interests = topic.length > 0 ? [] : readInterests(deps);
   const queries =
-    interests.length > 0 ? interests.map((t) => `${t} news`) : ["today's top headlines"];
-  const perQuery = interests.length > 0 ? 2 : 3;
+    topic.length > 0
+      ? [`${topic} news`]
+      : interests.length > 0
+        ? interests.map((t) => `${t} news`)
+        : ["today's top headlines"];
+  const perQuery = topic.length > 0 ? 3 : interests.length > 0 ? 2 : 3;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12_000);
   const seen = new Set<string>();
@@ -720,7 +900,7 @@ async function headlineData(deps: DigestDeps): Promise<DigestSectionData | undef
 
 /** Newest memories, excluding structured keys (they have their own sections). */
 function recentMemories(deps: DigestDeps): DigestMemoryItem[] {
-  return deps.storage
+  return deps.storage.memories
     .listMemories(deps.userId, 10)
     .filter((m) => !m.key.startsWith(EVENT_KEY_PREFIX) && !m.key.startsWith(ARCHIVE_KEY_PREFIX))
     .slice(0, 3)
@@ -743,7 +923,7 @@ function memoryData(deps: DigestDeps): DigestSectionData | undefined {
 function readInterests(deps: DigestDeps): string[] {
   let raw: string | undefined;
   try {
-    raw = deps.storage.getUserPref(deps.userId, DIGEST_INTERESTS_PREF_KEY);
+    raw = deps.storage.misc.getUserPref(deps.userId, DIGEST_INTERESTS_PREF_KEY);
   } catch {
     return [];
   }
@@ -771,12 +951,15 @@ function readInterests(deps: DigestDeps): string[] {
  * interest topics. Capped at MAX_FOCUS_ITEMS; skipped (undefined) when
  * nothing qualifies, so a calm day keeps its friendly empty state.
  */
-function focusData(deps: DigestDeps, nowMs: number): DigestSectionData | undefined {
+function focusData(deps: DigestDeps, window: DigestWindow): DigestSectionData | undefined {
   const interests = readInterests(deps);
-  const tasks = todayTasks(deps, nowMs);
-  const reminders = dueReminders(deps, nowMs);
-  const events = upcomingEvents(deps, nowMs);
+  const tasks = tasksInWindow(deps, window);
+  const reminders = dueReminders(deps, window);
+  const events = upcomingEvents(deps, window);
   const memories = recentMemories(deps);
+  // "Soon" and "today" are measured from the anchor instant, which is
+  // `now` for a default digest — identical behavior, shifted on request.
+  const nowMs = window.anchorMs;
 
   const items: DigestFocusItem[] = [];
   const usedRefs = new Set<string>();
@@ -885,10 +1068,23 @@ export function renderDigestSection(
   switch (section.kind) {
     case "date": {
       const { date, time, hour } = fmtDateTime(section.nowMs, locale);
+      const body = t("digest.date.body", "en", { date, time });
+      // Phase-8: a multi-day digest must not claim to be one day. The
+      // range note is appended only when rangeDays > 1, so the default
+      // header stays byte-identical. (Inline English, like the focus
+      // title above: the i18n pack has no range key and is out of scope.)
+      if (section.rangeDays === undefined || section.rangeDays <= 1) {
+        return { title: `☀️ ${t(greetingKey(hour), "en")}!`, body };
+      }
+      const endMs = tehranDayBounds(section.nowMs).start + (section.rangeDays - 1) * DAY_MS;
+      const endDate = fmtDateTime(endMs, locale).date;
       return {
         title: `☀️ ${t(greetingKey(hour), "en")}!`,
-        body: t("digest.date.body", "en", { date, time }),
+        body: `${body} Covering ${fmtNum(section.rangeDays, locale)} days: ${date} - ${endDate}.`,
       };
+    }
+    case "weather": {
+      return { title: "🌤️ Weather", body: clip(section.line, 200) };
     }
     case "focus": {
       const lines = section.items.map(

@@ -6,7 +6,7 @@ import type { AuthorizationService } from "../auth/service";
 import type { GroupAccessService } from "../groups/service";
 import type { UserAccessService } from "../auth/user_service";
 import type { UserPanelController } from "../auth/user_controller";
-import type { UserPrefStore } from "./bot";
+import type { UserPrefStore } from "./deps";
 
 /**
  * Shared context for the Hermes-parity command modules

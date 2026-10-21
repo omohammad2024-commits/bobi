@@ -39,6 +39,40 @@ export interface HealthServer {
 }
 
 /**
+ * THE canonical /health body (platform Phase 10: one health surface).
+ *
+ * Both HTTP servers that can answer /health — this standalone server and
+ * the API server in src/http/server.ts — build their response here, so the
+ * route has exactly one shape no matter which socket owns the port:
+ *
+ *   { ok: true, status: "ok", app, version, uptimeSeconds, uptimeMs, ... }
+ *
+ * `ok` and `status` are both carried: deploy healthchecks were verified
+ * against `ok: true`, and the standalone server's consumers read
+ * `status: "ok"` — one body, both contracts. `detail` fields (the
+ * standalone server's diagnostics) spread last, exactly as before.
+ * Uptime fields are omitted when the caller cannot supply an uptime —
+ * never faked.
+ */
+export function buildHealthBody(opts?: {
+  version?: string;
+  uptimeMs?: number;
+  detail?: () => Record<string, unknown>;
+}): Record<string, unknown> {
+  const uptimeMs = opts?.uptimeMs;
+  return {
+    ok: true,
+    status: "ok",
+    app: APP_NAME,
+    version: opts?.version ?? APP_VERSION,
+    ...(uptimeMs !== undefined
+      ? { uptimeSeconds: Math.floor(uptimeMs / 1000), uptimeMs }
+      : {}),
+    ...(opts?.detail?.() ?? {}),
+  };
+}
+
+/**
  * Start the health server.
  *
  * Bind failures are reported through `onError` rather than thrown: a bot that
@@ -58,13 +92,10 @@ export async function startHealthServer(opts: HealthOptions): Promise<HealthServ
       return;
     }
 
-    const body: Record<string, unknown> = {
-      status: "ok",
-      app: APP_NAME,
-      version: APP_VERSION,
-      uptimeSeconds: Math.floor((Date.now() - startedAt) / 1000),
-      ...(opts.detail?.() ?? {}),
-    };
+    const body = buildHealthBody({
+      uptimeMs: Date.now() - startedAt,
+      ...(opts.detail !== undefined ? { detail: opts.detail } : {}),
+    });
 
     res.writeHead(200, {
       "content-type": "application/json",

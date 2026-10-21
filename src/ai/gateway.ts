@@ -81,6 +81,7 @@ import {
 } from "./model_quarantine";
 
 /** Env var that disables in-call retry. Default: retry is ON. */
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 export const GATEWAY_RETRY_ENV_VAR = "BOBI_GATEWAY_RETRY";
 
 /**
@@ -100,9 +101,7 @@ const GATEWAY_MAX_RETRIES = 2;
 const GATEWAY_RETRY_BUDGET_MS = 3000;
 
 export function gatewayRetryEnabled(): boolean {
-  const raw = process.env[GATEWAY_RETRY_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), GATEWAY_RETRY_ENV_VAR));
 }
 
 /**
@@ -418,13 +417,13 @@ export class AiGateway implements AiProvider {
    * Returns undefined when nothing valid is selected.
    */
   currentSelection(): GatewaySelection | undefined {
-    const settings = this.storage.getRuntimeSettings();
+    const settings = this.storage.providers.getRuntimeSettings();
     if (settings.activeProviderId === null || settings.activeModelId === null) return undefined;
 
-    const provider = this.storage.getProvider(settings.activeProviderId);
+    const provider = this.storage.providers.getProvider(settings.activeProviderId);
     if (!provider || !provider.enabled) return undefined;
 
-    const model = this.storage.getModel(settings.activeModelId);
+    const model = this.storage.providers.getModel(settings.activeModelId);
     if (!model || !model.enabled || model.providerId !== provider.id) return undefined;
 
     return {
@@ -446,7 +445,7 @@ export class AiGateway implements AiProvider {
   describeSelectionProblem(): string {
     let settings: { activeProviderId: number | null; activeModelId: number | null };
     try {
-      settings = this.storage.getRuntimeSettings();
+      settings = this.storage.providers.getRuntimeSettings();
     } catch {
       return "Could not read settings.";
     }
@@ -455,7 +454,7 @@ export class AiGateway implements AiProvider {
     }
     let provider;
     try {
-      provider = this.storage.getProvider(settings.activeProviderId);
+      provider = this.storage.providers.getProvider(settings.activeProviderId);
     } catch {
       return "Could not read the provider.";
     }
@@ -467,7 +466,7 @@ export class AiGateway implements AiProvider {
     }
     let hasCredential = false;
     try {
-      hasCredential = this.storage.hasCredential(provider.id);
+      hasCredential = this.storage.providers.hasCredential(provider.id);
     } catch {
       // Treat as missing below.
     }
@@ -476,7 +475,7 @@ export class AiGateway implements AiProvider {
     }
     let model;
     try {
-      model = this.storage.getModel(settings.activeModelId);
+      model = this.storage.providers.getModel(settings.activeModelId);
     } catch {
       return "Could not read the model.";
     }
@@ -1037,9 +1036,9 @@ export class AiGateway implements AiProvider {
    * owner's to avoid.
    */
   private resolveByModelId(modelId: string): GatewaySelection | undefined {
-    for (const provider of this.storage.listProviders()) {
+    for (const provider of this.storage.providers.listProviders()) {
       if (!provider.enabled) continue;
-      const model = this.storage
+      const model = this.storage.providers
         .listModels(provider.id)
         .find((m) => m.enabled && m.modelId === modelId);
       if (model !== undefined) return this.resolve(provider.id, model.id);
@@ -1062,7 +1061,7 @@ export class AiGateway implements AiProvider {
     failover: { enabled: boolean; maxAttempts: number; timeoutMs: number };
     timeoutMs: number;
   } {
-    const settings = this.storage.getFailoverSettings();
+    const settings = this.storage.providers.getFailoverSettings();
     const primary = this.routedPrimary(req) ?? this.currentSelection();
     const candidates: GatewaySelection[] = [];
 
@@ -1071,7 +1070,7 @@ export class AiGateway implements AiProvider {
 
     if (settings.enabled) {
       // Candidates are the owner's explicit list, in their order.
-      for (const c of this.storage.listFailoverCandidates()) {
+      for (const c of this.storage.providers.listFailoverCandidates()) {
         const resolved = this.resolve(c.providerId, c.modelId);
         // Skip duplicates of the primary and anything no longer eligible.
         if (!resolved) continue;
@@ -1137,7 +1136,7 @@ export class AiGateway implements AiProvider {
     const isProbeDead = (c: GatewaySelection): boolean => {
       let row: ReturnType<Storage["getProviderHealth"]>;
       try {
-        row = this.storage.getProviderHealth(c.providerId);
+        row = this.storage.providers.getProviderHealth(c.providerId);
       } catch {
         // Health is advisory: an unreadable row must never break a plan.
         return false;
@@ -1199,9 +1198,9 @@ export class AiGateway implements AiProvider {
           : undefined,
       );
       if (!decision) return undefined;
-      const provider = this.storage.getProvider(decision.providerId);
+      const provider = this.storage.providers.getProvider(decision.providerId);
       if (!provider || !provider.enabled) return undefined;
-      const model = this.storage
+      const model = this.storage.providers
         .listModels(provider.id)
         .find((m) => m.enabled && m.modelId === decision.modelId);
       if (!model) return undefined;
@@ -1218,9 +1217,9 @@ export class AiGateway implements AiProvider {
 
   /** Resolve a specific provider+model pair, or undefined if ineligible. */
   private resolve(providerId: number, modelId: number): GatewaySelection | undefined {
-    const provider = this.storage.getProvider(providerId);
+    const provider = this.storage.providers.getProvider(providerId);
     if (!provider || !provider.enabled) return undefined;
-    const model = this.storage.getModel(modelId);
+    const model = this.storage.providers.getModel(modelId);
     if (!model || !model.enabled || model.providerId !== provider.id) return undefined;
     return {
       providerId: provider.id,
@@ -1441,7 +1440,7 @@ export class AiGateway implements AiProvider {
     const live = (id: string): boolean => (this.cooldowns.get(id) ?? 0) <= now;
     const out: { id: string; apiKey: string }[] = [];
 
-    const stored = this.storage.getCredential(providerId);
+    const stored = this.storage.providers.getCredential(providerId);
     if (!stored) {
       throw new AiError("auth", "This provider has no credential set.");
     }
@@ -1465,7 +1464,7 @@ export class AiGateway implements AiProvider {
       }
     }
     if (expanded.length > 0) {
-      const start = this.storage.poolPosition(providerId, expanded.length);
+      const start = this.storage.providers.poolPosition(providerId, expanded.length);
       for (let i = 0; i < expanded.length; i++) {
         out.push(expanded[(start + i) % expanded.length]!);
       }

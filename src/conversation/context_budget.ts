@@ -9,9 +9,12 @@
  *
  * Two mechanisms live here:
  *
- * 1. Tool-result compaction (head+tail). A single tool result over
- *    TOOL_RESULT_TOKEN_LIMIT tokens keeps its first 40 and last 20 lines
- *    with an elision marker in between. The FULL result is available for its
+ * 1. Tool-result compaction (head+tail, or structural for JSON). A single
+ *    tool result over TOOL_RESULT_TOKEN_LIMIT tokens keeps its first 40 and
+ *    last 20 lines with an elision marker in between — UNLESS it is a
+ *    wrapped tool_result whose body parses as JSON, in which case the JSON
+ *    is truncated structurally (§4.7: truncateJsonForModel) and re-wrapped,
+ *    so the replayed body still parses. The FULL result is available for its
  *    own turn (the agent loop's live context); compaction only applies when
  *    the result is replayed from history — so history carries the shape of
  *    the result, not its full bulk.
@@ -31,6 +34,7 @@
  *    The live turn is never part of the array handed to this module.
  */
 import type { ChatMessage } from "../ai/provider";
+import { truncateJsonForModel, wrapToolResult } from "../agent/transcript";
 import { prioritizeHistory, PINNED_SCORE, defaultImportance } from "./prioritize";
 import {
   estimateMessagesTokens,
@@ -85,6 +89,13 @@ export function compactToolResult(
       afterTokens: beforeTokens,
     };
   }
+  // §4.7 structural rule: a wrapped tool_result whose inner body parses as
+  // JSON is compacted by truncating that JSON structurally (valid JSON in,
+  // valid JSON out, `truncated` marker inside) instead of line cutting —
+  // head+tail on a one-line JSON blob would either do nothing or slice it
+  // mid-token. `elidedLines` is 0 here: nothing line-shaped was elided.
+  const structural = compactWrappedJson(content, limit, beforeTokens);
+  if (structural !== undefined) return structural;
   const lines = content.split("\n");
   const kept = TOOL_COMPACT_HEAD_LINES + TOOL_COMPACT_TAIL_LINES;
   if (lines.length <= kept + 1) {
@@ -109,6 +120,68 @@ export function compactToolResult(
     beforeTokens,
     afterTokens: estimateTokens(compacted),
   };
+}
+
+/** A parsed `<tool_result>` wrapper: the tool name (unescaped) and its body. */
+function unwrapToolResult(content: string): { tool: string; body: string } | undefined {
+  const open = /^<tool_result tool="([^"]*)">\n/.exec(content);
+  if (open === null) return undefined;
+  const close = "\n</tool_result>";
+  if (!content.endsWith(close)) return undefined;
+  const body = content.slice(open[0].length, content.length - close.length);
+  // Undo wrapToolResult's attribute escaping (reverse order: &amp; last).
+  const tool = open[1]!
+    .replaceAll("&lt;", "<")
+    .replaceAll("&quot;", '"')
+    .replaceAll("&amp;", "&");
+  return { tool, body };
+}
+
+/**
+ * Structural compaction of one wrapped JSON tool result.
+ *
+ * The char budget handed to truncateJsonForModel is derived from the token
+ * limit via this module's own estimator: the body's measured
+ * chars-per-token rate converts `limit` tokens back into characters, and
+ * the result is verified against the estimator, halving the budget until
+ * the re-wrapped message actually fits. Returns undefined when the content
+ * is not a wrapped JSON result, or when no structural form beats the
+ * original — the caller then falls back to head+tail.
+ */
+function compactWrappedJson(
+  content: string,
+  limit: number,
+  beforeTokens: number,
+): ToolCompaction | undefined {
+  const wrapped = unwrapToolResult(content);
+  if (wrapped === undefined) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(wrapped.body);
+  } catch {
+    return undefined;
+  }
+  const bodyTokens = estimateTokens(wrapped.body);
+  if (bodyTokens <= 0) return undefined;
+  const charsPerToken = wrapped.body.length / bodyTokens;
+  let charBudget = Math.max(128, Math.floor(limit * charsPerToken));
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const clipped = truncateJsonForModel(parsed, charBudget);
+    const rewrapped = wrapToolResult(wrapped.tool, clipped);
+    const afterTokens = estimateTokens(rewrapped);
+    if (afterTokens <= limit && rewrapped.length < content.length) {
+      return {
+        content: rewrapped,
+        compacted: true,
+        elidedLines: 0,
+        beforeTokens,
+        afterTokens,
+      };
+    }
+    if (charBudget <= 128) break;
+    charBudget = Math.max(128, Math.floor(charBudget / 2));
+  }
+  return undefined;
 }
 
 export interface HistoryCompaction {

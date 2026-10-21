@@ -42,13 +42,12 @@ import type {
   ToolCall,
   ToolSpec,
 } from "../ai/provider";
-import type { ToolActor, ToolRunResult } from "../tools/types";
-import type { ToolService } from "../tools/service";
+import type { ToolActor, ToolRunResult, ToolServicePort } from "../tools/types";
 import { raceDeadline, withDeadline } from "../core/deadline";
 import type { Deadline } from "../core/deadline";
 import { t } from "../i18n";
 import type { AgentStep, AgentRunResult, StopReason } from "./transcript";
-import { serialiseToolResult, wrapToolResult } from "./transcript";
+import { describeMediaForModel, serialiseToolResult, wrapToolResult } from "./transcript";
 import { currentStreamSink, streamingEnabled } from "./stream";
 import type { AgentStreamEvent, StreamEventSink } from "./stream";
 import { maxParallel, parallelEnabled, planningEnabled, selfReviewEnabled } from "./settings";
@@ -83,7 +82,7 @@ export interface AgentLoopOptions {
   /** Model id to request. */
   model: string;
   /** Tools available to this run; also the source of the request's schema. */
-  tools: ToolService;
+  tools: ToolServicePort;
   /** Per-call provider timeout, ms. */
   callTimeoutMs: number;
   budgets?: Partial<AgentBudgets>;
@@ -158,7 +157,7 @@ export class AgentCancelled extends Error {
 export class AgentLoop {
   private readonly provider: AiProvider;
   private readonly model: string;
-  private readonly tools: ToolService;
+  private readonly tools: ToolServicePort;
   private readonly callTimeoutMs: number;
   private readonly budgets: AgentBudgets;
   private readonly now: () => number;
@@ -664,7 +663,7 @@ export class AgentLoop {
       e.rec.execCount++;
       e.rec.lastResult = result;
       executedNow++;
-      let body = serialiseToolResult(result);
+      let body = serialiseToolResult(result) + mediaNote(result);
       if (isRetryableFailure(result)) {
         body += `\n${e.rec.execCount < MAX_ATTEMPTS_PER_CALL ? RETRY_HINT : LAST_RETRY_HINT}`;
       }
@@ -723,7 +722,7 @@ export class AgentLoop {
           });
         }
       } else if (e.kind === "cached") {
-        body = `${serialiseToolResult(e.rec.lastResult!)}\n(note: repeated call — returning the earlier result instead of running it again.)`;
+        body = `${serialiseToolResult(e.rec.lastResult!)}${mediaNote(e.rec.lastResult!)}\n(note: repeated call — returning the earlier result instead of running it again.)`;
       } else if (e.kind === "exhausted") {
         body =
           "status=error: this exact call has already been attempted 3 times this run " +
@@ -1152,6 +1151,21 @@ function isRetryableFailure(result: ToolRunResult): boolean {
   return false;
 }
 
+/**
+ * The §4.7 media-feedback line for one execution's canonical feedback body:
+ * when a tool produced media for the user, the model is told WHAT was
+ * delivered (platform-generated description handles, never the bytes) on
+ * exactly one line. Built only from the execution's own result — in
+ * settle() for a fresh execution and in the cached branch from the recorded
+ * result — so piggyback replays (which reuse the source body verbatim) and
+ * cached replays each carry the line exactly once, never duplicated.
+ */
+function mediaNote(result: ToolRunResult): string {
+  if (result.media === undefined || result.media.length === 0) return "";
+  const handles = result.media.map(describeMediaForModel).join("; ");
+  return `\n[media delivered to the user: ${handles}]`;
+}
+
 /** True when an ok result carried no usable payload. */
 function isEmptyData(data: unknown): boolean {
   if (data === undefined || data === null || data === "") return true;
@@ -1223,6 +1237,7 @@ function nonEmpty(text: string): string {
   return trimmed.length > 0 ? trimmed : t("error.empty_response");
 }
 
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 /** Env var that disables the stream→single-shot fallback. Default: ON. */
 export const STREAM_FALLBACK_ENV_VAR = "BOBI_STREAM_FALLBACK";
 
@@ -1233,9 +1248,7 @@ export const STREAM_FALLBACK_ENV_VAR = "BOBI_STREAM_FALLBACK";
  * empty stream ends surface exactly as the provider produced them.
  */
 export function streamFallbackEnabled(): boolean {
-  const raw = process.env[STREAM_FALLBACK_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), STREAM_FALLBACK_ENV_VAR));
 }
 
 /** One-line diagnostics for a stream fallback: reason only, never content. */

@@ -197,7 +197,7 @@ export class CredentialPoolStore {
    */
   savePoolCredential(providerId: number, label: string, apiKey: string): number {
     const enc = this.secrets.encrypt(apiKey);
-    return this.storage.addPoolCredential({ providerId, label, ...enc });
+    return this.storage.providers.addPoolCredential({ providerId, label, ...enc });
   }
 
   /**
@@ -205,7 +205,7 @@ export class CredentialPoolStore {
    * Throws SecretStoreError when the entry does not exist or decryption fails.
    */
   loadPoolCredential(id: number): string {
-    const row = this.storage.getPoolCredential(id);
+    const row = this.storage.providers.getPoolCredential(id);
     if (!row) {
       throw new SecretStoreError("decrypt_failed", "Backup key not found.");
     }
@@ -221,7 +221,7 @@ export class CredentialPoolStore {
     providerId: number,
   ): { entryId: number; label: string; weight: number; apiKey: string }[] {
     const out: { entryId: number; label: string; weight: number; apiKey: string }[] = [];
-    for (const row of this.storage.listPoolCredentials(providerId)) {
+    for (const row of this.storage.providers.listPoolCredentials(providerId)) {
       if (!row.enabled) continue;
       try {
         out.push({
@@ -239,7 +239,7 @@ export class CredentialPoolStore {
 
   /** Pool entries for display. NEVER includes key material. */
   listPoolEntries(providerId: number): PoolEntryView[] {
-    return this.storage.listPoolCredentials(providerId).map((r) => ({
+    return this.storage.providers.listPoolCredentials(providerId).map((r) => ({
       id: r.id,
       providerId: r.providerId,
       label: r.label,
@@ -251,7 +251,7 @@ export class CredentialPoolStore {
 
   /** Enable or disable a pool entry. Returns whether the entry exists. */
   setPoolEntryEnabled(id: number, enabled: boolean): boolean {
-    return this.storage.setPoolCredentialEnabled(id, enabled);
+    return this.storage.providers.setPoolCredentialEnabled(id, enabled);
   }
 
   /**
@@ -259,6 +259,6 @@ export class CredentialPoolStore {
    * Returns whether a row was deleted.
    */
   removePoolEntry(id: number): boolean {
-    return this.storage.removePoolCredential(id);
+    return this.storage.providers.removePoolCredential(id);
   }
 }

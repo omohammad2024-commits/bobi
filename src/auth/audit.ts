@@ -77,7 +77,7 @@ export class AuditLogger {
   recent(limit?: number): ReturnType<Storage["auditEvents"]> {
     if (!this.storage) return [];
     try {
-      return this.storage.auditEvents(limit);
+      return this.storage.access.auditEvents(limit);
     } catch {
       return [];
     }

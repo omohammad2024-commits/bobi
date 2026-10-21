@@ -2,7 +2,17 @@
  * Central runtime configuration for BOBI.
  * Everything is derived from environment variables with safe defaults.
  * Secrets are never read here — only non-sensitive settings.
+ *
+ * Phase 7: this module no longer touches the process environment directly or implements the
+ * prefix chain itself — both live in `./env.ts`, the single env touchpoint
+ * (see KNOBS there for the inventory of every knob). `loadConfig()` stays
+ * the boot-time reader; per-call kill switches read through `./env.ts` too.
  */
+import {
+  boolWithFallback,
+  processEnv,
+  readChained,
+} from "./env";
 export interface SolConfig {
   /** Deployment environment label. */
   env: "development" | "production" | "test";
@@ -66,6 +76,15 @@ export interface SolConfig {
    */
   skillsDir: string;
   /**
+   * Directory of the owner's sandboxed files area (the `files` tool).
+   *
+   * Read through the "bobi" chain (BOBI_FILES_DIR only — see the KNOBS
+   * registry in ./env.ts), the same way the other directory knobs resolve.
+   * The files tool factory receives this as its root; every path the model
+   * names is resolved inside it and may never escape it.
+   */
+  filesDir: string;
+  /**
    * Voice transcription (Whisper-style) endpoint. Empty baseUrl disables it:
    * voice notes then fall back to the adapter's named text note.
    */
@@ -118,7 +137,7 @@ function pick<T extends string>(
   return raw !== undefined && allowed.has(raw) ? (raw as T) : fallback;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
+export function loadConfig(env: NodeJS.ProcessEnv = processEnv()): SolConfig {
   return {
     env: pick(envVar(env, "ENV"), VALID_ENVS, "development"),
     logLevel: pick(envVar(env, "LOG_LEVEL"), VALID_LEVELS, "info"),
@@ -149,8 +168,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
     heartbeatIntervalMs: clampInt(envVar(env, "HEARTBEAT_INTERVAL_MS"), 0, 86_400_000, 0),
     // On by default: the keyless provider needs no configuration, and an agent
     // without web access cannot answer anything past its training data.
-    enableWebSearch: pickBool(envVar(env, "ENABLE_WEB_SEARCH"), true),
+    enableWebSearch: boolWithFallback(envVar(env, "ENABLE_WEB_SEARCH"), true),
     skillsDir: envVar(env, "SKILLS_DIR")?.trim() || "./skills",
+    filesDir: readChained(env, "FILES_DIR", "bobi")?.trim() || "./data/files",
     transcribeBaseUrl: envVar(env, "TRANSCRIBE_BASE_URL")?.trim() || "",
     transcribeApiKey: envVar(env, "TRANSCRIBE_API_KEY")?.trim() || undefined,
     transcribeModel: envVar(env, "TRANSCRIBE_MODEL")?.trim() || "whisper-1",
@@ -174,24 +194,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): SolConfig {
 }
 
 /**
- * Read a configuration value, accepting the BOBI_ prefix and the older SOL_ one.
+ * Read a configuration value through the "full" chain (BOBI_ → SOL_ → bare),
+ * implemented once in `./env.ts`.
  *
  * The project was renamed from BOBI to BOBI. An existing .env in someone's
  * deployment still uses SOL_* keys, and silently ignoring them would fall back
- * to defaults — a quiet behaviour change on upgrade. The old prefix is read as a
- * fallback so a rename never alters how a running install behaves.
+ * to defaults — a quiet behaviour change on upgrade. The old prefix is read as
+ * a fallback so a rename never alters how a running install behaves.
  */
 function envVar(env: NodeJS.ProcessEnv, suffix: string): string | undefined {
-  return env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`] ?? env[suffix];
-}
-
-/** Parse a boolean env value; only explicit false-y strings disable. */
-function pickBool(raw: string | undefined, fallback: boolean): boolean {
-  if (raw === undefined) return fallback;
-  const v = raw.trim().toLowerCase();
-  if (v === "0" || v === "false" || v === "no" || v === "off") return false;
-  if (v === "1" || v === "true" || v === "yes" || v === "on") return true;
-  return fallback;
+  return readChained(env, suffix, "full");
 }
 
 /** Accept an IANA zone only when Intl recognizes it. */

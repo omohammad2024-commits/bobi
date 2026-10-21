@@ -48,7 +48,7 @@ export class UserAccessService {
    */
   isApproved(userId: string): boolean {
     try {
-      return this.storage.userAccess(userId)?.state === "approved";
+      return this.storage.access.userAccess(userId)?.state === "approved";
     } catch {
       // A storage failure must not be read as approval.
       return false;
@@ -58,7 +58,7 @@ export class UserAccessService {
   /** The stored state, for diagnostics; undefined when there is no row. */
   stateOf(userId: string): GroupState | undefined {
     try {
-      return this.storage.userAccess(userId)?.state;
+      return this.storage.access.userAccess(userId)?.state;
     } catch {
       return undefined;
     }
@@ -73,7 +73,7 @@ export class UserAccessService {
    */
   registerUser(u: UserInfo): { created: boolean } {
     try {
-      const created = this.storage.createPendingUser({
+      const created = this.storage.access.createPendingUser({
         userId: u.userId,
         // exactOptionalPropertyTypes: omit rather than pass undefined.
         ...(u.username !== undefined ? { username: u.username } : {}),
@@ -88,7 +88,7 @@ export class UserAccessService {
   /** The pending record, for building the owner's notification. */
   pendingUser(userId: string): UserAccessRecord | undefined {
     try {
-      const row = this.storage.userAccess(userId);
+      const row = this.storage.access.userAccess(userId);
       return row?.state === "pending" ? row : undefined;
     } catch {
       return undefined;
@@ -102,7 +102,7 @@ export class UserAccessService {
    * account from producing a notification storm by messaging repeatedly.
    */
   needsNotification(userId: string): boolean {
-    const row = this.storage.userAccess(userId);
+    const row = this.storage.access.userAccess(userId);
     return row !== undefined && row.notifiedAt === undefined;
   }
 
@@ -113,7 +113,7 @@ export class UserAccessService {
    * which case a concurrent attempt won the race and must not send again.
    */
   markNotified(userId: string, expected: number | undefined): boolean {
-    return this.storage.markUserNotified(userId, expected);
+    return this.storage.access.markUserNotified(userId, expected);
   }
 
   /** Approve a pending user. */
@@ -181,10 +181,10 @@ export class UserAccessService {
   ): UserTransition {
     try {
       this.registerUser({ userId });
-      const current = this.storage.userAccess(userId)?.state;
+      const current = this.storage.access.userAccess(userId)?.state;
       if (current === undefined) return { ok: false, reason: "storage" };
       if (current === to) return { ok: true, previous: current };
-      const changed = this.storage.transitionUser(userId, current, to, ownerId);
+      const changed = this.storage.access.transitionUser(userId, current, to, ownerId);
       if (!changed) return { ok: false, reason: "invalid_transition" };
       return { ok: true, previous: current };
     } catch {
@@ -199,13 +199,13 @@ export class UserAccessService {
     ownerId: string,
   ): UserTransition {
     try {
-      const row = this.storage.userAccess(userId);
+      const row = this.storage.access.userAccess(userId);
       if (!row) return { ok: false, reason: "not_found" };
       if (row.state !== from) return { ok: false, reason: "invalid_transition" };
 
       // The UPDATE itself re-tests `from`, so a concurrent transition that
       // changes the row between the check above and the write is rejected.
-      const changed = this.storage.transitionUser(userId, from, to, ownerId);
+      const changed = this.storage.access.transitionUser(userId, from, to, ownerId);
       if (!changed) return { ok: false, reason: "invalid_transition" };
 
       return { ok: true, previous: from };
@@ -216,19 +216,19 @@ export class UserAccessService {
 
   /** Pending users awaiting a decision, newest first, one page at a time. */
   listPending(limit = 8, offset = 0): UserAccessRecord[] {
-    return this.storage.listUsersByState("pending", limit, offset);
+    return this.storage.access.listUsersByState("pending", limit, offset);
   }
 
   /** Approved users, newest first. */
   listApproved(limit = 8, offset = 0): UserAccessRecord[] {
-    return this.storage.listUsersByState("approved", limit, offset);
+    return this.storage.access.listUsersByState("approved", limit, offset);
   }
 
   countPending(): number {
-    return this.storage.countUsersByState("pending");
+    return this.storage.access.countUsersByState("pending");
   }
 
   countApproved(): number {
-    return this.storage.countUsersByState("approved");
+    return this.storage.access.countUsersByState("approved");
   }
 }

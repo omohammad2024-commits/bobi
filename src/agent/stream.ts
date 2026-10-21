@@ -22,6 +22,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 /** Env var that disables streaming. Default: streaming is ON. */
+import { flagUnlessOff, processEnv, readNamed } from "../config/env";
 export const STREAMING_ENV_VAR = "BOBI_STREAMING";
 
 /**
@@ -34,9 +35,7 @@ export const STREAMING_ENV_VAR = "BOBI_STREAMING";
  * effective even if only one side checks it.
  */
 export function streamingEnabled(): boolean {
-  const raw = process.env[STREAMING_ENV_VAR];
-  if (raw === undefined) return true;
-  return !["0", "false", "no", "off"].includes(raw.trim().toLowerCase());
+  return flagUnlessOff(readNamed(processEnv(), STREAMING_ENV_VAR));
 }
 
 /**

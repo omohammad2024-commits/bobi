@@ -22,8 +22,9 @@ export const DEFAULT_MEMORY_PROVIDER = "sqlite";
  * instead of silently falling back, because a misconfigured backend should
  * be loud at startup, not a quiet surprise later.
  */
+import { processEnv } from "../config/env";
 export function resolveMemoryProvider(storage: Storage): MemoryProvider {
-  const raw = process.env.BOBI_MEMORY_PROVIDER;
+  const raw = processEnv().BOBI_MEMORY_PROVIDER;
   const name = raw === undefined || raw.trim() === "" ? DEFAULT_MEMORY_PROVIDER : raw.trim();
 
   if (name === DEFAULT_MEMORY_PROVIDER) {

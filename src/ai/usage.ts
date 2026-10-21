@@ -190,8 +190,8 @@ export function getDailyBreakdown(storage: Storage, days: number): DailyUsage[] 
     for (let i = n - 1; i >= 0; i--) {
       const start = todayStart - i * DAY_MS;
       const end = start + DAY_MS;
-      const t0 = storage.usageTotalsAll(start);
-      const t1 = storage.usageTotalsAll(end);
+      const t0 = storage.usage.usageTotalsAll(start);
+      const t1 = storage.usage.usageTotalsAll(end);
       const inputTokens = Math.max(0, t0.inputTokens - t1.inputTokens);
       const outputTokens = Math.max(0, t0.outputTokens - t1.outputTokens);
       const runs = Math.max(0, t0.runs - t1.runs);
@@ -226,15 +226,15 @@ export function getByProvider(storage: Storage, days: number): ProviderUsage[] {
   const sinceMs = Date.now() - n * DAY_MS;
   try {
     const modelToProvider = new Map<string, { id: number; label: string }>();
-    for (const p of storage.listProviders()) {
-      for (const m of storage.listModels(p.id)) {
+    for (const p of storage.providers.listProviders()) {
+      for (const m of storage.providers.listModels(p.id)) {
         if (!modelToProvider.has(m.modelId)) {
           modelToProvider.set(m.modelId, { id: p.id, label: p.label });
         }
       }
     }
     const agg = new Map<number, ProviderUsage>();
-    for (const m of storage.usageByModelAll(sinceMs)) {
+    for (const m of storage.usage.usageByModelAll(sinceMs)) {
       const prov = modelToProvider.get(m.modelId);
       const id = prov?.id ?? 0;
       const name = prov?.label ?? "Removed or unknown";
@@ -280,7 +280,7 @@ export function getLatencyStats(
   const n = clampDays(days);
   const sinceMs = Date.now() - n * DAY_MS;
   try {
-    const perModel = storage.usageByModelAll(sinceMs).map((m) => ({
+    const perModel = storage.usage.usageByModelAll(sinceMs).map((m) => ({
       modelId: m.modelId,
       runs: m.runs,
       p50Ms: null as number | null,
@@ -308,7 +308,7 @@ export class UsageTracker {
    */
   record(run: UsageRun): void {
     try {
-      this.storage.recordUsage({
+      this.storage.usage.recordUsage({
         userId: run.userId,
         conversationId: run.conversationId,
         providerId: run.providerId,
@@ -332,7 +332,7 @@ export class UsageTracker {
    */
   totals(userId: string, sinceMs?: number): UsageAggregate {
     try {
-      const t = this.storage.usageTotals(userId, sinceMs);
+      const t = this.storage.usage.usageTotals(userId, sinceMs);
       // The per-model prices differ, so a blended estimate uses the DEFAULT
       // fallback price: honest about being an estimate, never precision
       // theatre. usage_report refines per model where it matters.
@@ -361,7 +361,7 @@ export class UsageTracker {
     sinceMs?: number,
   ): (UsageAggregate & { modelId: string })[] {
     try {
-      return this.storage.usageByModel(userId, sinceMs).map((m) => {
+      return this.storage.usage.usageByModel(userId, sinceMs).map((m) => {
         const { usd, estimated } = estimateCost(m.inputTokens, m.outputTokens, m.modelId);
         return {
           modelId: m.modelId,
@@ -386,7 +386,7 @@ export class UsageTracker {
    */
   totalsAll(sinceMs?: number): UsageAggregate {
     try {
-      const t = this.storage.usageTotalsAll(sinceMs);
+      const t = this.storage.usage.usageTotalsAll(sinceMs);
       const { usd } = estimateCost(t.inputTokens, t.outputTokens, "__unknown__");
       return {
         inputTokens: t.inputTokens,
@@ -411,7 +411,7 @@ export class UsageTracker {
     sinceMs?: number,
   ): (UsageAggregate & { modelId: string })[] {
     try {
-      return this.storage.usageByModelAll(sinceMs).map((m) => {
+      return this.storage.usage.usageByModelAll(sinceMs).map((m) => {
         const { usd, estimated } = estimateCost(m.inputTokens, m.outputTokens, m.modelId);
         return {
           modelId: m.modelId,
