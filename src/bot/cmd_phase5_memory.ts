@@ -53,6 +53,7 @@ import {
   type MemoryPackageError,
 } from "../memory/mem_share";
 import { tr, type Ph5MemLang } from "../i18n/strings/cmd_phase5_memory_strings";
+import { fetchTelegramFileBytes } from "./telegram_file";
 
 // ------------------------------------------------------------------ defs ----
 
@@ -363,8 +364,8 @@ export function registerPhase5MemoryCommands(
   });
 
   /**
-   * Download an uploaded document's bytes. Default follows the repo's own
-   * pattern (media.ts): getFile, then fetch the file URL with the bot token.
+   * Download an uploaded document's bytes via the shared Telegram file
+   * fetch (timeout + streaming cap at MEMORY_PACKAGE_MAX_BYTES).
    */
   const downloadDocument = async (
     c: Context,
@@ -372,18 +373,9 @@ export function registerPhase5MemoryCommands(
   ): Promise<Uint8Array | undefined> => {
     if (opts.downloadDocument !== undefined) return opts.downloadDocument(c, fileId);
     if (opts.botToken === undefined) return undefined;
-    try {
-      const file = await c.api.getFile(fileId);
-      if (file.file_path === undefined) return undefined;
-      if (file.file_path.startsWith("/") || file.file_path.includes("..")) return undefined;
-      const res = await fetch(
-        `https://api.telegram.org/file/bot${opts.botToken}/${file.file_path}`,
-      );
-      if (!res.ok) return undefined;
-      return new Uint8Array(await res.arrayBuffer());
-    } catch {
-      return undefined;
-    }
+    return fetchTelegramFileBytes(c.api, opts.botToken, fileId, {
+      maxBytes: MEMORY_PACKAGE_MAX_BYTES,
+    });
   };
 
   const importFromDocument = async (

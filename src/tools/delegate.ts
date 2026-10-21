@@ -115,9 +115,18 @@ export function createChildToolService(parent: ToolService): ToolService {
   const childTools = parent.registry
     .list()
     .filter((t) => t.name !== DELEGATE_TOOL_NAME && !defaultNames.has(t.name));
-  return new ToolService({
+  const child = new ToolService({
     extraTools: childTools as unknown as readonly Tool<unknown, unknown>[],
   });
+  // The owner's desk-disabled set is a runtime override on the PARENT
+  // registry; a fresh registry starts empty, which would resurrect tools
+  // the owner deliberately turned off. Copy it over so a disabled tool
+  // stays disabled inside delegated sub-tasks too. (`delegate` itself is
+  // absent from the child, so its entry — if any — is a harmless no-op.)
+  for (const name of parent.registry.disabledNames()) {
+    child.registry.setDisabled(name, true);
+  }
+  return child;
 }
 
 /** Build the delegate tool. Two-tier access: owner-only — the public chats, it never delegates. */

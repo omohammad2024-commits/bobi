@@ -120,6 +120,32 @@ describe("delegate tool", () => {
     expect(res.status).toBe("not_found");
   });
 
+  test("child inherits the owner's desk-disabled tools (P0-AUTH-2)", async () => {
+    const service = parentWithDelegate(new ScriptedProvider([answer("x")]));
+    // The owner disables `calculator` from the desk (Mini App toggle).
+    expect(service.registry.setDisabled("calculator", true)).toBe(true);
+    // Parent refuses it…
+    const parentRes = await service.runTool({
+      tool: "calculator",
+      input: { op: "add", a: 1, b: 1 },
+      actor: ACTOR,
+    });
+    expect(parentRes.status).toBe("disabled");
+
+    // …and the child view must refuse it too, not resurrect it.
+    const child = createChildToolService(service);
+    expect(child.registry.isDisabled("calculator")).toBe(true);
+    expect(child.listActiveNames()).not.toContain("calculator");
+    const specs = child.toolSpecsFor(ACTOR).map((s) => s.name);
+    expect(specs).not.toContain("calculator");
+    const childRes = await child.runTool({
+      tool: "calculator",
+      input: { op: "add", a: 1, b: 1 },
+      actor: ACTOR,
+    });
+    expect(childRes.status).toBe("disabled");
+  });
+
   test("a child that tries to delegate recovers instead of recursing", async () => {
     const provider = new ScriptedProvider([
       toolTurn(call(DELEGATE_TOOL_NAME, { task: "sub" }, "d1")),

@@ -15,8 +15,9 @@
  *
  * Security notes:
  * - The URL comes from the MODEL, so it is untrusted input. Direct downloads
- *   are run through `resolveTarget` first (the same SSRF guard `fetch_url`
- *   uses): loopback and RFC1918 targets are refused unless the owner opts in.
+ *   are run through `resolveTarget` (the same SSRF guard `fetch_url` uses)
+ *   for the first URL AND every redirect hop, which are followed manually:
+ *   loopback and RFC1918 targets are refused unless the owner opts in.
  *   One honest caveat: unlike `pinnedFetch` the binary stream is NOT pinned
  *   to the resolved addresses (a plain `fetch` re-resolves DNS), so a
  *   rebinding trick is theoretically possible. The classification at least
@@ -452,6 +453,9 @@ function friendlyError(kind: DownloadErrorKind, maxMB: number): string {
  * aborted the moment the ceiling is passed, so a lying header cannot fill
  * the disk.
  */
+/** Redirect hops a direct download will follow, each re-validated. */
+const MAX_DOWNLOAD_REDIRECTS = 3;
+
 async function downloadDirect(
   url: string,
   dir: string,
@@ -459,22 +463,35 @@ async function downloadDirect(
 ): Promise<DownloadResult> {
   const maxBytes = clampMaxSize(opts.maxSizeMB) * 1024 * 1024;
 
-  let target: string;
-  try {
-    target = (
-      await resolveTarget(
-        { baseUrl: url, apiKey: undefined },
-        { allowLocalTargets: opts.allowLocalTargets === true },
-      )
-    ).baseUrl;
-  } catch (err) {
-    const blocked = err instanceof AiError && err.kind === "invalid_response";
-    return {
-      ok: false,
-      errorKind: "unsupported",
-      error: blocked ? "That URL isn't allowed." : "That URL couldn't be checked.",
-    };
-  }
+  /**
+   * Run the SSRF guard over ONE hop's URL. Redirects are followed manually
+   * (below) precisely so this runs for every hop: validating only the first
+   * URL and letting the transport follow redirects would let a public link
+   * 302 into 169.254.169.254 or a LAN address unchecked — the same shape
+   * fetch_url's manual follower exists to close.
+   */
+  const resolveHop = async (
+    hopUrl: string,
+  ): Promise<{ target: string } | { failure: DownloadResult }> => {
+    try {
+      const target = (
+        await resolveTarget(
+          { baseUrl: hopUrl, apiKey: undefined },
+          { allowLocalTargets: opts.allowLocalTargets === true },
+        )
+      ).baseUrl;
+      return { target };
+    } catch (err) {
+      const blocked = err instanceof AiError && err.kind === "invalid_response";
+      return {
+        failure: {
+          ok: false,
+          errorKind: "unsupported",
+          error: blocked ? "That URL isn't allowed." : "That URL couldn't be checked.",
+        },
+      };
+    }
+  };
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? FETCH_TIMEOUT_MS);
@@ -482,11 +499,36 @@ async function downloadDirect(
   opts.signal?.addEventListener("abort", onCallerAbort ?? (() => {}), { once: true });
 
   try {
-    const res = await fetch(target, {
-      signal: controller.signal,
-      headers: { "user-agent": "BOBI/0.0.1 (+agent)" },
-      redirect: "follow",
-    });
+    // Manual redirect following: every hop is re-validated by resolveHop
+    // before any connection to it is made, and the chain is bounded.
+    let current = url;
+    let res: Response | undefined;
+    for (let hop = 0; hop <= MAX_DOWNLOAD_REDIRECTS; hop++) {
+      const resolved = await resolveHop(current);
+      if ("failure" in resolved) return resolved.failure;
+      const hopRes = await fetch(resolved.target, {
+        signal: controller.signal,
+        headers: { "user-agent": "BOBI/0.0.1 (+agent)" },
+        redirect: "manual",
+      });
+      if (hopRes.status >= 300 && hopRes.status < 400) {
+        const location = hopRes.headers.get("location");
+        await hopRes.body?.cancel();
+        if (location === null || location.length === 0) {
+          return { ok: false, errorKind: "unknown", error: "The server redirected without a destination." };
+        }
+        if (hop === MAX_DOWNLOAD_REDIRECTS) {
+          return { ok: false, errorKind: "unknown", error: "Too many redirects." };
+        }
+        current = new URL(location, current).toString();
+        continue;
+      }
+      res = hopRes;
+      break;
+    }
+    if (res === undefined) {
+      return { ok: false, errorKind: "unknown", error: "The download failed." };
+    }
     if (!res.ok) {
       return {
         ok: false,
@@ -502,8 +544,8 @@ async function downloadDirect(
       return { ok: false, errorKind: "too_large", error: friendlyError("too_large", maxBytes / 1048576) };
     }
 
-    const ext = directExt(res, url);
-    const name = sanitizeFilename(basename(new URL(url).pathname) || "download", ext);
+    const ext = directExt(res, current);
+    const name = sanitizeFilename(basename(new URL(current).pathname) || "download", ext);
     const filePath = join(dir, name);
 
     const chunks: Uint8Array[] = [];

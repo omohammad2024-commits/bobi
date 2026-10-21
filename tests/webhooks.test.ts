@@ -17,6 +17,7 @@ import {
 } from "../src/webhooks/events";
 import {
   WebhookQueue,
+  postWebhook,
   MAX_QUEUE_SIZE,
   MAX_ATTEMPTS,
   type DeliverFn,
@@ -262,6 +263,113 @@ describe("webhook queue", () => {
     for (const c of calls) {
       expect(c.signature).toBe(signBody("s3cr3t", c.body));
     }
+  });
+});
+
+describe("postWebhook transport hardening (P0-NET-2)", () => {
+  test("(a) a loopback target is refused before any connection is made", async () => {
+    let hits = 0;
+    const server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits++;
+        return new Response("ok");
+      },
+    });
+    try {
+      await expect(
+        postWebhook(`http://127.0.0.1:${server.port}/hook`, "{}", "sig"),
+      ).rejects.toThrow();
+      expect(hits).toBe(0);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("(b) a 307 redirect never re-sends the body and signature off-host", async () => {
+    let bHits = 0;
+    let bSignature: string | null = null;
+    let bBody = "";
+    const b = Bun.serve({
+      port: 0,
+      fetch: async (req) => {
+        bHits++;
+        bSignature = req.headers.get(SIGNATURE_HEADER);
+        bBody = await req.text();
+        return new Response("ok");
+      },
+    });
+    const a = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(null, {
+          status: 307,
+          headers: { location: `http://127.0.0.1:${b.port}/hook` },
+        }),
+    });
+    try {
+      // Delivery to A must fail (redirects are not followed), and B — a
+      // host the owner never configured — must see nothing at all.
+      await expect(
+        postWebhook(`http://127.0.0.1:${a.port}/hook`, '{"event":"agent:end"}', "deadbeefsig"),
+      ).rejects.toThrow();
+      expect(bHits).toBe(0);
+      expect(bSignature).toBeNull();
+      expect(bBody).toBe("");
+    } finally {
+      a.stop();
+      b.stop();
+    }
+  });
+
+  test("(b, transport) a 307 is a failure and is never followed to its Location", async () => {
+    // Seam-level pin, independent of target validation: exactly one fetch,
+    // to the configured URL only — the Location is never requested.
+    const fetched: string[] = [];
+    const fetchFn = (async (input: RequestInfo | URL) => {
+      fetched.push(String(input));
+      return new Response(null, {
+        status: 307,
+        headers: { location: "https://elsewhere.example/hook" },
+      });
+    }) as typeof fetch;
+    await expect(
+      postWebhook("https://hooks.example.com/e", "{}", "sig", {
+        validate: async () => {},
+        fetchFn,
+      }),
+    ).rejects.toThrow("HTTP 307");
+    expect(fetched).toEqual(["https://hooks.example.com/e"]);
+  });
+
+  test("(c) the response drain is capped, not read to the end", async () => {
+    // Pull-counting stream: 200 chunks × 16KB = 3.2MB. An uncapped
+    // arrayBuffer() drain pulls every chunk; a capped drain stops early.
+    // (Pre-fix this ran against a real local server and pulled all 200;
+    // the target validator now refuses loopback before fetch, so the cap
+    // is pinned here through the transport seam instead.)
+    let pulls = 0;
+    const chunk = new Uint8Array(16 * 1024).fill(1);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (pulls > 200) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    });
+    const fetchFn = (async () =>
+      new Response(stream, {
+        status: 200,
+        headers: { "content-type": "application/octet-stream" },
+      })) as unknown as typeof fetch;
+    await postWebhook("https://hooks.example.com/e", "{}", "sig", {
+      validate: async () => {},
+      fetchFn,
+    });
+    expect(pulls).toBeLessThan(50);
   });
 });
 

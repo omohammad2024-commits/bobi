@@ -26,6 +26,7 @@ import {
   partTypeForMediaType,
 } from "../ai/provider";
 import type { ContentPart } from "../ai/provider";
+import { fetchTelegramFileBytes } from "./telegram_file";
 
 /** Why an attachment was not attached. */
 export type MediaSkipReason = "too_large" | "too_long" | "download_failed" | "unsupported";
@@ -262,27 +263,13 @@ async function download(
   botToken: string,
   fileId: string,
 ): Promise<{ base64: string } | undefined> {
-  try {
-    const file = await ctx.api.getFile(fileId);
-    if (file.file_path === undefined) return undefined;
-    // A path that is absolute or traverses upward is not one this bot should
-    // fetch; the API never returns such a path, so its presence means the
-    // response is not what it claims to be.
-    if (file.file_path.startsWith("/") || file.file_path.includes("..")) return undefined;
-
-    const url = `https://api.telegram.org/file/bot${botToken}/${file.file_path}`;
-    const res = await fetch(url);
-    if (!res.ok) return undefined;
-
-    const buf = Buffer.from(await res.arrayBuffer());
-    if (buf.byteLength > MAX_DOWNLOAD_BYTES) return undefined;
-
-    return { base64: buf.toString("base64") };
-  } catch {
-    // A network fault, a deleted file, or an expired file id all land here, and
-    // all mean the same thing to the caller.
-    return undefined;
-  }
+  // The shared Telegram file fetch: timeout + streaming size cap enforced
+  // there, so an over-cap or hung download fails instead of buffering the
+  // whole body (or hanging the turn) first.
+  const bytes = await fetchTelegramFileBytes(ctx.api, botToken, fileId, {
+    maxBytes: MAX_DOWNLOAD_BYTES,
+  });
+  return bytes === undefined ? undefined : { base64: Buffer.from(bytes).toString("base64") };
 }
 
 /** True when a message carries something this module can extract. */

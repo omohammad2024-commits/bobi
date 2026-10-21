@@ -96,8 +96,16 @@ function clip(value: string, max: number): string {
  */
 function scrubOrUndefined(value: string): string {
   let text = clip(value, 200);
-  // Telegram bot tokens look like 123456:AA...
-  text = text.replace(/\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g, "[redacted]");
+  // Telegram bot tokens look like 123456:AA... — no leading \b, so the
+  // API URL form (`…/bot123456:AA…/getMe`, where "bot" touches the digits
+  // and no boundary exists) is caught too. Kept in sync with the logger
+  // and /debug redactors (P0-SEC-1).
+  text = text.replace(/\d{6,}:[A-Za-z0-9_-]{30,}\b/g, "[redacted]");
+  // Google/Gemini and Groq key shapes.
+  text = text.replace(/\bAIza[A-Za-z0-9_-]{20,}\b/g, "[redacted]");
+  text = text.replace(/\bgsk_[A-Za-z0-9_-]{20,}\b/g, "[redacted]");
+  // A credential riding a `?key=` query parameter (Gemini's key transport).
+  text = text.replace(/[?&]key=[^&\s"']+/gi, "[redacted]");
   // Key=value pairs whose key hints at a secret.
   text = text.replace(
     /\b(token|secret|password|api[_-]?key|authorization)\b\s*[:=]\s*\S+/gi,

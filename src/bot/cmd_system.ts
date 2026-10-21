@@ -505,17 +505,24 @@ export async function handleUpdate(
  *
  * Documented scrub list (see docs/phase-commands-system.md):
  *  1. OpenAI-style keys:        sk-[A-Za-z0-9._~-]{8,}
- *  2. Telegram bot tokens:      123456:ABC-DEF... (>=30 chars after the colon)
+ *  2. Telegram bot tokens:      123456:ABC-DEF... (>=30 chars after the colon;
+ *     no leading boundary, so the `bot<token>` API URL form is caught too)
  *  3. GitHub tokens:            ghp_|gho_|ghu_|ghs_|ghr_ + 20+ alnum chars
  *  4. Slack tokens:             xox[baprs]-...
  *  5. AWS access keys:          AKIA + 16 alnum chars
  *  6. Generic key=value pairs:  api_key=..., token: ..., password=..., ...
  *  7. JSON "apiKey": "..." style fields
  *  8. Authorization: Bearer ... headers
+ *  9. Google/Gemini keys:       AIza + 20+ chars (also as a ?key= parameter)
+ * 10. Groq keys:                gsk_ + 20+ chars
+ * Items 2/9/10 are kept in sync with the logger and audit redactors (P0-SEC-1).
  */
 const SCRUB_PATTERNS: RegExp[] = [
   /sk-[A-Za-z0-9._~-]{8,}/g,
-  /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g,
+  /\d{6,}:[A-Za-z0-9_-]{30,}\b/g,
+  /\bAIza[A-Za-z0-9_-]{20,}\b/g,
+  /\bgsk_[A-Za-z0-9_-]{20,}\b/g,
+  /[?&]key=[^&\s"']+/gi,
   /\bgh[opurs]_[A-Za-z0-9]{20,}\b/g,
   /\bxox[baprs]-[A-Za-z0-9-]+\b/g,
   /\bAKIA[0-9A-Z]{16}\b/g,

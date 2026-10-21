@@ -284,6 +284,96 @@ describe("direct downloads against a local server", () => {
   });
 });
 
+describe("direct download redirect policy (P0-NET-1)", () => {
+  test("a redirect to a link-local metadata address is refused, not followed", async () => {
+    // Hop 1 is a local URL the owner opted into; hop 2 is 169.254.169.254,
+    // which the guard refuses under EVERY policy (link-local is where cloud
+    // metadata lives). Blindly following the redirect would fetch it.
+    const server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "http://169.254.169.254/secret.mp4" },
+        }),
+    });
+    try {
+      const result = await downloadMedia(`http://127.0.0.1:${server.port}/clip.mp4`, {
+        allowLocalTargets: true,
+        timeoutMs: 5_000,
+      });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      // A policy refusal, not a network failure: the guard stopped hop 2
+      // before any connection to the metadata address was attempted.
+      expect(result.errorKind).toBe("unsupported");
+      expect(result.error).toBe("That URL isn't allowed.");
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("a redirect chain within policy still downloads", async () => {
+    const payload = new Uint8Array(5_000).fill(9);
+    const target = Bun.serve({
+      port: 0,
+      fetch: () => new Response(payload, { headers: { "content-type": "video/mp4" } }),
+    });
+    const entry = Bun.serve({
+      port: 0,
+      fetch: () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: `http://127.0.0.1:${target.port}/real.mp4` },
+        }),
+    });
+    try {
+      const result = await downloadMedia(`http://127.0.0.1:${entry.port}/clip.mp4`, {
+        allowLocalTargets: true,
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.sizeBytes).toBe(5_000);
+      await cleanupDownload(result.filePath);
+    } finally {
+      entry.stop();
+      target.stop();
+    }
+  });
+
+  test("a redirect chain longer than the hop limit is refused", async () => {
+    // The server redirects five times and only then serves the file: a
+    // bounded manual follower (max 3 hops) must give up before the payload,
+    // where the transport's blind follow (limit ~20) would succeed.
+    let hits = 0;
+    const payload = new Uint8Array(1_000).fill(5);
+    const server = Bun.serve({
+      port: 0,
+      fetch: (req) => {
+        hits += 1;
+        const n = Number(new URL(req.url).searchParams.get("n") ?? "0");
+        if (n < 5) {
+          return new Response(null, {
+            status: 302,
+            headers: { location: `/clip.mp4?n=${n + 1}` },
+          });
+        }
+        return new Response(payload, { headers: { "content-type": "video/mp4" } });
+      },
+    });
+    try {
+      const result = await downloadMedia(`http://127.0.0.1:${server.port}/clip.mp4?n=0`, {
+        allowLocalTargets: true,
+      });
+      expect(result.ok).toBe(false);
+      // Entry + at most 3 followed hops, never the 6th (payload) request.
+      expect(hits).toBeLessThanOrEqual(4);
+    } finally {
+      server.stop();
+    }
+  });
+});
+
 describe("downloadTool registration shape", () => {
   test("name, permission and input contract", () => {
     expect(downloadTool.name).toBe("download_media");

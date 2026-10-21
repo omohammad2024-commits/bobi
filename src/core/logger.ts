@@ -50,17 +50,32 @@ const MAX_STRING_LENGTH = 300;
  * The Telegram bot-token form is the one that actually appears in this codebase.
  */
 const SECRET_PATTERNS: readonly RegExp[] = [
-  /\b\d{6,}:[A-Za-z0-9_-]{30,}\b/g,
+  // No leading \b on the Telegram pattern: in the API URL form
+  // (`…/bot123456:AA…/getMe`) "bot" and the digits are both word
+  // characters, so a boundary anchor would never match and the token
+  // would sail through — the exact shape a logged request URL takes.
+  /\d{6,}:[A-Za-z0-9_-]{30,}\b/g,
+  // Google/Gemini API key shape, and Groq's.
+  /\bAIza[A-Za-z0-9_-]{20,}\b/g,
+  /\bgsk_[A-Za-z0-9_-]{20,}\b/g,
+  // A credential riding a `?key=` query parameter (Gemini's key transport).
+  /[?&]key=[^&\s"']+/gi,
   /\bsk-[A-Za-z0-9_-]{16,}\b/g,
   /\btvly-[A-Za-z0-9_-]{10,}\b/g,
   /\bBearer\s+[A-Za-z0-9._-]{10,}\b/gi,
+  // key=value / key: value pairs whose key names a secret, any casing.
+  /\b(?:api[_-]?key|apikey|token|secret|password|passwd|pwd|authorization)\s*[:=]\s*\S+/gi,
 ];
 
-/** Keys whose VALUE is a secret, whatever it happens to look like. */
+/**
+ * Keys whose VALUE is a secret, whatever it happens to look like.
+ *
+ * Stored lowercase; lookups lowercase the candidate, so a field named
+ * `API_KEY`, `ApiKey` or `TOKEN` is caught just like `api_key`.
+ */
 const SECRET_KEYS: ReadonlySet<string> = new Set([
   "token",
-  "botToken",
-  "apiKey",
+  "bottoken",
   "apikey",
   "api_key",
   "key",
@@ -68,7 +83,7 @@ const SECRET_KEYS: ReadonlySet<string> = new Set([
   "password",
   "authorization",
   "credential",
-  "masterKey",
+  "masterkey",
   "ciphertext",
 ]);
 
@@ -161,7 +176,7 @@ export function nullLogger(): Logger {
 function redactFields(fields: LogFields): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(fields)) {
-    out[key] = SECRET_KEYS.has(key) ? "[redacted]" : redactValue(value, 0);
+    out[key] = SECRET_KEYS.has(key.toLowerCase()) ? "[redacted]" : redactValue(value, 0);
   }
   return out;
 }
@@ -183,7 +198,7 @@ function redactValue(value: unknown, depth: number): unknown {
 
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = SECRET_KEYS.has(k) ? "[redacted]" : redactValue(v, depth + 1);
+    out[k] = SECRET_KEYS.has(k.toLowerCase()) ? "[redacted]" : redactValue(v, depth + 1);
   }
   return out;
 }

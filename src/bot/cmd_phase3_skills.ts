@@ -87,6 +87,7 @@ import {
 } from "../skills/signing";
 import type { Storage } from "../storage/storage";
 import { SKILLS_MAX_FILE_BYTES } from "../skills/types";
+import { fetchTelegramFileBytes } from "./telegram_file";
 import { tr, type Ph3SkillsLang } from "../i18n/strings/cmd_phase3_skills_strings";
 
 // ------------------------------------------------------------------ defs ----
@@ -1067,9 +1068,8 @@ export function registerPhase3SkillsCommands(
   const dirOf = (): string | undefined => resolveDir(opts);
 
   /**
-   * Download an uploaded document's bytes. Default follows the repo's own
-   * pattern (media.ts): getFile, then fetch the file URL with the bot token.
-   * The path guard (no leading "/" or "..") is copied from there too.
+   * Download an uploaded document's bytes via the shared Telegram file
+   * fetch (timeout + streaming cap at SKILLS_MAX_FILE_BYTES).
    */
   const downloadDocument = async (
     c: Context,
@@ -1077,18 +1077,9 @@ export function registerPhase3SkillsCommands(
   ): Promise<Uint8Array | undefined> => {
     if (opts.downloadDocument !== undefined) return opts.downloadDocument(c, fileId);
     if (opts.botToken === undefined) return undefined;
-    try {
-      const file = await c.api.getFile(fileId);
-      if (file.file_path === undefined) return undefined;
-      if (file.file_path.startsWith("/") || file.file_path.includes("..")) return undefined;
-      const res = await fetch(
-        `https://api.telegram.org/file/bot${opts.botToken}/${file.file_path}`,
-      );
-      if (!res.ok) return undefined;
-      return new Uint8Array(await res.arrayBuffer());
-    } catch {
-      return undefined;
-    }
+    return fetchTelegramFileBytes(c.api, opts.botToken, fileId, {
+      maxBytes: SKILLS_MAX_FILE_BYTES,
+    });
   };
 
   // ------------------------------------------------------------- /skill ----

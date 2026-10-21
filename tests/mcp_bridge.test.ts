@@ -25,6 +25,9 @@ import {
 import type { ConnectedServer, McpManager as McpManagerType } from "../src/mcp/bridge";
 import { ToolService } from "../src/tools/service";
 import type { McpServerConfig } from "../src/mcp/types";
+import { AuthorizationService } from "../src/auth/service";
+import { OwnerIdentity } from "../src/auth/identity";
+import { authorizeToolUse, toToolActor } from "../src/auth/tool_bridge";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, "fixtures", "mcp", "echo_server.js");
@@ -466,6 +469,86 @@ describe("stub-manager routing", () => {
         connectedServers: () => [server],
       } as unknown as McpManagerType),
     ).toEqual([]);
+  });
+});
+
+describe("error results are clipped (P0-MCP-1)", () => {
+  const errCfg: McpServerConfig = {
+    name: "errs",
+    transport: "stdio",
+    enabled: true,
+    command: "node",
+    args: [join(HERE, "fixtures", "mcp", "error_server.js")],
+  };
+
+  test("an oversized isError result is clipped to the success-path ceiling", async () => {
+    await withManager([errCfg], async (m) => {
+      let caught: unknown;
+      try {
+        await m.callTool("errs", "boom", {}, new AbortController().signal);
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeDefined();
+      const e = caught as { kind?: string; message?: string };
+      expect(e.kind).toBe("invalid_input");
+      // Success results are clipped at MAX_RESULT_CHARS (8000) plus the
+      // short "…(کوتاه شد)" marker; the error path must obey the same cap
+      // instead of handing the model the server's full 200,000 chars.
+      expect(e.message!.length).toBeLessThanOrEqual(8_100);
+      expect(e.message!.length).toBeGreaterThan(7_000);
+    });
+  });
+});
+
+describe("owner-only withholding (P0-AUTH-1)", () => {
+  // MCP servers are spawned from owner-supplied config and carry the bot
+  // process's authority, so their tools must never reach a non-owner — not
+  // even the permission key, which is what makes a tool visible/executable.
+  const OWNER_ID = 111111;
+  const auth = new AuthorizationService(OwnerIdentity.fromNumber(OWNER_ID));
+  const ownerActor = { id: OWNER_ID, label: "owner" };
+  const publicActor = { id: 222222, label: "user" };
+
+  const server: ConnectedServer = {
+    config: { name: "calc", transport: "stdio", enabled: true },
+    tools: [
+      { name: "add", description: "Adds two numbers.", inputSchema: { type: "object" } },
+    ],
+  };
+  const fakeManager = {
+    callTool: async () => "sum=0",
+    connectedServers: () => [server],
+  };
+  const bridged = createMcpTools(fakeManager as unknown as McpManagerType, server);
+
+  test("bridged MCP tools are marked ownerOnly", () => {
+    expect(bridged).toHaveLength(1);
+    for (const tool of bridged) {
+      expect(tool.ownerOnly).toBe(true);
+    }
+  });
+
+  test("a non-owner is never granted the MCP server permission key", () => {
+    const granted = authorizeToolUse(auth, publicActor, bridged);
+    expect(granted.allowed).toBe(true); // the public may still use public tools
+    expect(granted.permissions).not.toContain("tools:mcp_calc");
+  });
+
+  test("the owner is granted the MCP server permission key", () => {
+    const granted = authorizeToolUse(auth, ownerActor, bridged);
+    expect(granted.permissions).toContain("tools:mcp_calc");
+  });
+
+  test("a non-owner actor cannot execute a bridged MCP tool end to end", async () => {
+    const svc = new ToolService({ extraTools: bridged });
+    const actor = toToolActor(authorizeToolUse(auth, publicActor, bridged));
+    const result = await svc.runTool({
+      tool: "mcp_calc_add",
+      input: { a: 1, b: 2 },
+      actor,
+    });
+    expect(result.status).toBe("not_allowed");
   });
 });
 

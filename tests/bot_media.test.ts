@@ -136,6 +136,41 @@ describe("voice and audio", () => {
   });
 });
 
+describe("download caps (P0-NET-3)", () => {
+  test("an oversized file stream is abandoned at the cap, not downloaded whole", async () => {
+    // Pull-counting stream: 200 chunks × 64KB = 12.8MB against the 5MB
+    // attachment cap, and NO declared file_size, so only the download
+    // itself can stop it. Buffering the whole body (arrayBuffer) pulls
+    // all 200 chunks before the size check ever runs; a streaming cap
+    // stops at ~81.
+    let pulls = 0;
+    const chunk = new Uint8Array(64 * 1024).fill(3);
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls++;
+        if (pulls > 200) {
+          controller.close();
+          return;
+        }
+        controller.enqueue(chunk);
+      },
+    });
+    globalThis.fetch = (async () =>
+      new Response(stream, { status: 200 })) as unknown as typeof fetch;
+    const ctx = {
+      message: msg({
+        photo: [{ file_id: "big", width: 1280, height: 960 }],
+      }),
+      api: {
+        getFile: async () => ({ file_path: "photos/big.jpg" }),
+      },
+    } as never;
+    const extraction = await extractMedia(ctx, "TESTTOKEN");
+    expect(extraction.parts).toEqual([]);
+    expect(pulls).toBeLessThan(120);
+  });
+});
+
 describe("documents", () => {
   test("a pdf is carried with its file name", () => {
     const candidates = candidatesIn(

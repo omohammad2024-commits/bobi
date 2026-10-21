@@ -31,8 +31,10 @@ export {
   MAX_ATTEMPTS,
   DELIVERY_TIMEOUT_MS,
   BACKOFF_BASE_MS,
+  MAX_RESPONSE_DRAIN_BYTES,
   type DeliverFn,
   type WebhookQueueOptions,
+  type PostWebhookOptions,
 } from "./queue";
 
 // Lazily parsed once; `initWebhooks` re-parses (startup, tests).

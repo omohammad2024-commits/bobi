@@ -9,6 +9,7 @@
  */
 import { serialiseEvent, type WebhookEvent } from "./events";
 import { SIGNATURE_HEADER, signBody } from "./signer";
+import { resolveTarget } from "../ai/dns_guard";
 
 /** Max events held in memory. Oldest are dropped first when exceeded. */
 export const MAX_QUEUE_SIZE = 100;
@@ -152,8 +153,86 @@ export class WebhookQueue {
   }
 }
 
-/** Default transport: one POST per URL with a 10s abort timeout. */
-export async function postWebhook(url: string, body: string, signature: string): Promise<void> {
+/**
+ * Ceiling on the response body a delivery will drain.
+ *
+ * The body of a webhook response is an acknowledgement nobody reads; it is
+ * drained only so a keepalive connection can be reused. An endpoint that
+ * streams forever (or a hostile one that answers a POST with gigabytes)
+ * must not be able to grow this process's memory — past the ceiling the
+ * stream is cancelled and the delivery still counts as delivered.
+ */
+export const MAX_RESPONSE_DRAIN_BYTES = 64 * 1024;
+
+/** Injectable seams for {@link postWebhook}; production uses the defaults. */
+export interface PostWebhookOptions {
+  /**
+   * Target validator, run before any connection. Defaults to the SSRF
+   * guard (`resolveTarget`, public-only policy). Injectable for tests.
+   */
+  validate?: (url: string) => Promise<void>;
+  /** Transport. Defaults to the global fetch. Injectable for tests. */
+  fetchFn?: typeof fetch;
+}
+
+/**
+ * Default target validation: the same SSRF guard the AI transports and
+ * fetch_url use, under its default public-only policy.
+ *
+ * Webhook URLs are owner-configured, but "owner-configured" is exactly how
+ * a mistyped or pasted URL would otherwise aim signed event POSTs at a
+ * loopback service, a LAN address, or the cloud metadata endpoint — and a
+ * hostname that rebinds to one of those is refused by the guard's address
+ * classification. Refusal is a fixed message: the resolved address is
+ * infrastructure detail and never travels into an error.
+ */
+async function validateWebhookTarget(url: string): Promise<void> {
+  try {
+    await resolveTarget({ baseUrl: url, apiKey: undefined });
+  } catch {
+    throw new Error("webhook delivery failed: target not allowed");
+  }
+}
+
+/** Drain a response body with a hard size ceiling (see the constant). */
+async function drainResponseCapped(res: Response): Promise<void> {
+  const reader = res.body?.getReader();
+  if (reader === undefined) return;
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_RESPONSE_DRAIN_BYTES) {
+      await reader.cancel();
+      break;
+    }
+  }
+}
+
+/**
+ * Default transport: one POST per URL with a 10s abort timeout.
+ *
+ * Hardening (P0-NET-2), all three parts deliberate:
+ * - the target is validated with `resolveTarget` before connecting;
+ * - redirects are NEVER followed (`redirect: "manual"`): a 307/308 would
+ *   otherwise re-send the event body AND the HMAC signature header to a
+ *   host the owner never configured — a 3xx is a delivery failure here;
+ * - the response body is drained through a size cap, not buffered whole.
+ *
+ * One honest caveat, shared with the downloader: the plain fetch re-resolves
+ * DNS after validation, so the connection is not pinned to the validated
+ * addresses; the guard's classification still blocks the direct internal
+ * target and the 60s DNS cache makes a same-name rebind race impractical.
+ */
+export async function postWebhook(
+  url: string,
+  body: string,
+  signature: string,
+  opts: PostWebhookOptions = {},
+): Promise<void> {
+  await (opts.validate ?? validateWebhookTarget)(url);
+  const doFetch = opts.fetchFn ?? fetch;
   const controller = new AbortController();
   // Unref so a hanging endpoint cannot keep the process alive past shutdown.
   const timer = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
@@ -161,7 +240,7 @@ export async function postWebhook(url: string, body: string, signature: string):
     (timer as unknown as { unref: () => void }).unref();
   }
   try {
-    const res = await fetch(url, {
+    const res = await doFetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -169,10 +248,12 @@ export async function postWebhook(url: string, body: string, signature: string):
       },
       body,
       signal: controller.signal,
+      redirect: "manual",
     });
     if (!res.ok) throw new Error(`webhook delivery failed: HTTP ${res.status}`);
-    // Drain the body so a keepalive connection can be reused.
-    await res.arrayBuffer();
+    // Drain the body so a keepalive connection can be reused — capped, so
+    // an endless or enormous acknowledgement cannot grow memory.
+    await drainResponseCapped(res);
   } finally {
     clearTimeout(timer);
   }

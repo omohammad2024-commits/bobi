@@ -258,7 +258,11 @@ export class McpManager {
     if (result.isError === true) {
       // A tool-level error is reported back to the model as a result, not an
       // exception: it often means "wrong arguments", which the model can fix.
-      throw new ToolError("invalid_input", text.length > 0 ? text : "سرور خطا برگرداند.");
+      // Error text obeys the same ceiling as a successful result.
+      throw new ToolError(
+        "invalid_input",
+        text.length > 0 ? clip(text, MAX_RESULT_CHARS) : "سرور خطا برگرداند.",
+      );
     }
     if (text.trim().length === 0) {
       throw new ToolError("invalid_result", "سرور پاسخی برنگرداند.");
@@ -366,6 +370,11 @@ export function createMcpTools(
       name: names[index]!,
       description,
       enabled: true,
+      // Servers are owner-configured and run with the bot process's
+      // authority, so their tools are owner-only: the authorization bridge
+      // withholds the permission key from everyone else, which keeps the
+      // tools invisible to — and unexecutable by — non-owners.
+      ownerOnly: true,
       // The per-server grant model is unchanged: one permission key fronts
       // every tool a server exposes.
       permission: { requires: [`tools:mcp_${serverName}`] },
