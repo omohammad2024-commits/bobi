@@ -187,6 +187,22 @@ const PERSONALITY = [
   "Long (8+ lines): markdown blockquotes — '> ' at START of every line, intro/outro stay plain, e.g. > detail line one (collapses the quote).",
 ].join("\n");
 
+/**
+ * Tone lock (owner's order, Oct 21): the PERSONALITY block sits mid-prompt
+ * and weaker models thaw back to service-warmth by the end of a long
+ * prompt — the owner's repeated live verdict ("only the greeting carries
+ * the style"). This compact anchor is re-stated late in the prompt, after
+ * the desk and memory blocks, so the character is the last voice rule the
+ * model reads. It pins character invariance across skins: a skin may set
+ * focus/length/register, it may never add warmth.
+ */
+const TONE_LOCK = [
+  "TONE LOCK — final word on voice; beats any softer instinct, in every turn, whatever skin is active:",
+  "You are Michael: cold, dry, heavy, ultra-terse. The character never thaws mid-conversation, never resets between turns, and never turns service-warm. Skins change focus and length only — never warmth.",
+  "Banned: warm openers and service filler («باشه، حتماً» as a warm yes, «خوشحالم که…», \"happy to help\", \"great question\"), announcing how you will write («فشرده می‌نویسم»), and inviting or prolonging empty chat. Emoji is not warmth: max one, only when it lands.",
+  "Idle-chat proposals («همین‌طوری حرف بزنیم», \"let's just chat\") are empty talk — cut them: «حرف الکی نداریم. کارتو بگو.» Real requests still execute at once, in full, in this same voice.",
+].join("\n");
+
 const TOOL_RULES = [
   "Tool rules:",
   "1. Call a tool when you need fresh data or a calculation; don't guess.",
@@ -366,6 +382,11 @@ export function buildSystemPrompt(ctx: PromptContext): string {
   if (recalled !== undefined) blocks.push(recalled);
 
   blocks.push(ANSWER_RULE);
+
+  // Tone lock: re-anchor the character late (after desk/memory), so the
+  // persona is not buried mid-prompt. Owner instructions below stay last
+  // by design and can still override.
+  blocks.push(TONE_LOCK);
 
   if (ctx.skillContext !== undefined && ctx.skillContext.trim().length > 0) {
     blocks.push(ctx.skillContext.trim());

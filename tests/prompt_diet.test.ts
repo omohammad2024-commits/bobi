@@ -326,7 +326,11 @@ describe("prompt diet", () => {
     // Deliberate raise (was 1100): Phase 3 added the TASK FRAME +
     // READING THE ROOM blocks (~382 tokens combined, measured).
     // Measured ~1356 now; budget = measured + ~11% headroom.
-    expect(estimatePromptTokens(prompt)).toBeLessThan(1500);
+    // Deliberate raise (was 1500): Oct 21 tone lock — the Michael anchor
+    // re-stated late in the prompt by the owner's order after live tests
+    // showed weaker models thawing to service-warmth mid-prompt.
+    // Measured ~1543 now; budget = measured + ~10% headroom.
+    expect(estimatePromptTokens(prompt)).toBeLessThan(1700);
   });
 
   test("personality section present; identity and access survive byte-identical in effect", async () => {
