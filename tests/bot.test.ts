@@ -149,6 +149,8 @@ type ChatType = "private" | "group" | "supergroup" | "channel";
 function ctx(o: {
   chatType?: ChatType;
   text?: string;
+  caption?: string;
+  media?: boolean;
   replyFromId?: number;
   hasMessage?: boolean;
 }) {
@@ -159,6 +161,8 @@ function ctx(o: {
       date: 0,
       chat: { id: 1, type: o.chatType ?? "private" },
       ...(o.text !== undefined ? { text: o.text } : {}),
+      ...(o.caption !== undefined ? { caption: o.caption } : {}),
+      ...(o.media === true ? { photo: [{ file_id: "ph", width: 1, height: 1 }] } : {}),
       ...(o.replyFromId !== undefined
         ? { reply_to_message: { from: { id: o.replyFromId } } }
         : {}),
@@ -202,6 +206,32 @@ describe("message routing", () => {
 
   test("no message → ignore", () => {
     expect(shouldHandleMessage(ctx({ hasMessage: false }), BOT_ID)).toBe(false);
+  });
+
+  // Media updates carry no `text` (the caption lives in `caption`) —
+  // the exact shape behind the production "legacy privacy filter"
+  // drop line with text="". Dropping un-addressed group media is
+  // by design (same rule as plain chatter); addressed media passes.
+  test("supergroup bare media (no caption, not a reply) → ignore", () => {
+    expect(shouldHandleMessage(ctx({ chatType: "supergroup", media: true }), BOT_ID)).toBe(false);
+  });
+
+  test("supergroup media with a plain caption → ignore", () => {
+    expect(
+      shouldHandleMessage(ctx({ chatType: "supergroup", media: true, caption: "نگاه کن" }), BOT_ID),
+    ).toBe(false);
+  });
+
+  test("supergroup media reply to bot → handle", () => {
+    expect(
+      shouldHandleMessage(ctx({ chatType: "supergroup", media: true, replyFromId: BOT_ID }), BOT_ID),
+    ).toBe(true);
+  });
+
+  test("supergroup media with a command caption → handle", () => {
+    expect(
+      shouldHandleMessage(ctx({ chatType: "supergroup", media: true, caption: "/start" }), BOT_ID),
+    ).toBe(true);
   });
 });
 

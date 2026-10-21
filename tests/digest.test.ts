@@ -14,11 +14,13 @@ import { UsageTracker } from "../src/ai/usage";
 import {
   buildDigest,
   buildDigestData,
+  DIGEST_CITY_PREF_KEY,
   DIGEST_INTERESTS_PREF_KEY,
   formatDigest,
   MAX_DIGEST_CHARS,
   renderDigestText,
 } from "../src/digest/builder";
+import type { WeatherFetchFn } from "../src/tools/weather";
 import type { DigestDeps, DigestHeadline, SearchHeadlinesFn } from "../src/digest/builder";
 import { BUILD_DIGEST_PERMISSION, createDigestTool } from "../src/tools/digest_tool";
 import { ToolError } from "../src/tools/errors";
@@ -258,6 +260,90 @@ describe("createDigestTool", () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(ToolError);
     expect((err as ToolError).kind).toBe("not_allowed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Weather line through the TOOL path (same gate as /digest: digest.city)
+// ---------------------------------------------------------------------------
+
+/** Fake Open-Meteo fetch, in the real response shapes (Tehran fixture). */
+function fakeWeatherFetch(counter?: { calls: number }): WeatherFetchFn {
+  return async (url: string) => {
+    if (counter !== undefined) counter.calls += 1;
+    if (url.startsWith("https://geocoding-api.open-meteo.com/")) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          results: [
+            {
+              name: "Tehran",
+              latitude: 35.689198,
+              longitude: 51.388973,
+              country: "Iran",
+              admin1: "Tehran",
+            },
+          ],
+        }),
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        latitude: 35.689205,
+        longitude: 51.388977,
+        timezone: "Asia/Tehran",
+        current: {
+          temperature_2m: 18.2,
+          relative_humidity_2m: 41,
+          apparent_temperature: 17.5,
+          weather_code: 0,
+          wind_speed_10m: 9.4,
+        },
+        daily: {
+          time: ["2026-10-18"],
+          weather_code: [0],
+          temperature_2m_max: [21.3],
+          temperature_2m_min: [12.1],
+          precipitation_probability_max: [0],
+        },
+      }),
+    };
+  };
+}
+
+describe("createDigestTool weather line", () => {
+  function weatherTool(weatherFetchFn: WeatherFetchFn) {
+    const d = deps({ searchHeadlines: fakeSearch() });
+    seedFull(d);
+    return {
+      d,
+      tool: createDigestTool({
+        storage: d.storage,
+        proposalStore: d.proposalStore,
+        isOwner: (id) => id === OWNER,
+        now: () => NOW_MS,
+        searchHeadlines: fakeSearch(),
+        weatherFetchFn,
+      }),
+    };
+  }
+
+  test("digest.city set → the tool's digest carries the weather line", async () => {
+    const { d, tool } = weatherTool(fakeWeatherFetch());
+    d.storage.setUserPref(OWNER, DIGEST_CITY_PREF_KEY, "Tehran");
+    const out = await tool.run({}, ctx(OWNER));
+    expect(out.text).toContain("Tehran: 18°C, clear — today 12–21°C");
+  });
+
+  test("digest.city unset → no weather line and no weather fetch at all", async () => {
+    const counter = { calls: 0 };
+    const { tool } = weatherTool(fakeWeatherFetch(counter));
+    const out = await tool.run({}, ctx(OWNER));
+    expect(out.text).not.toContain("18°C");
+    expect(counter.calls).toBe(0);
   });
 });
 

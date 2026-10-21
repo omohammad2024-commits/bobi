@@ -100,6 +100,16 @@ export const SUPPORTED_UNITS: readonly string[] = [
 export interface CurrencyRateSource {
   /** Units per 1 USD (or a documented base), for the named unit; undefined when unknown. */
   ratePerUsd(unit: string): number | undefined;
+  /**
+   * Optional priming hook: fetch rates when the cache is empty or stale.
+   * The tool's run awaits it before a rate-dependent currency conversion,
+   * so a cold cache (every process restart) primes instead of failing
+   * with the honest-but-useless "not configured" error. Static sources
+   * (tests, fixed tables) omit it. Implementations must not throw; the
+   * tool also guards the call, and a failed prime simply leaves the
+   * conversion to whatever the cache already holds.
+   */
+  refreshIfStale?: () => Promise<void>;
 }
 
 /**
@@ -184,12 +194,23 @@ export const unitConverterTool: Tool<UnitInput, UnitOutput> = {
     // With no resolver set this passes undefined, so the fixed IRR/IRT
     // pair works and rate-dependent pairs fail honestly, as before
     // (see convertCurrency).
-    const result = convertWithRates(
-      input.value,
-      from,
-      to,
-      rateSourceResolver?.(),
-    );
+    const source = rateSourceResolver?.();
+    // A rate-dependent currency conversion PRIMES the source first:
+    // the shared service's cache is empty after every restart until
+    // something fetches, so a bare cache read would fail a conversion
+    // that could have succeeded. Priming is best-effort — a failed
+    // refresh leaves the conversion to whatever the cache already
+    // holds, and convertWithRates still fails honestly when it holds
+    // nothing. Non-currency and fixed-pair conversions never prime:
+    // they stay synchronous-fast and off the network entirely.
+    if (source?.refreshIfStale !== undefined && needsLiveRates(from, to)) {
+      try {
+        await source.refreshIfStale();
+      } catch {
+        // A misbehaving source must not take the conversion down.
+      }
+    }
+    const result = convertWithRates(input.value, from, to, source);
 
     return { value: input.value, from, to, result, category: categoryOf(from) };
   },
@@ -316,6 +337,20 @@ function convertCurrency(
 
 function isIrrIrtPair(a: string, b: string): boolean {
   return (a === "irr" && b === "irt") || (a === "irt" && b === "irr");
+}
+
+/**
+ * True when converting `from` → `to` needs a live rate: both units are
+ * currency, they differ, and they are not the fixed IRR/IRT pair (which
+ * converts rate-free). Only those conversions prime the rate source.
+ */
+function needsLiveRates(from: string, to: string): boolean {
+  if (from === to) return false;
+  if (isIrrIrtPair(from, to)) return false;
+  return (
+    categoryOrUndefined(from) === "currency" &&
+    categoryOrUndefined(to) === "currency"
+  );
 }
 
 /**

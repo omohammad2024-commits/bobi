@@ -262,6 +262,9 @@ export interface DigestFocusSection {
 /** user_prefs key holding the owner's interest topics (JSON string array). Read-only. */
 export const DIGEST_INTERESTS_PREF_KEY = "digest.interests";
 
+/** user_prefs key naming the owner's city for the digest weather line. */
+export const DIGEST_CITY_PREF_KEY = "digest.city";
+
 /**
  * Global cap on rendered bullet items: the owner is busy, so a packed day
  * still fits a quick read. applyItemBudget trims the lowest-priority

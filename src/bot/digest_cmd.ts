@@ -41,6 +41,7 @@ import { isOwnerCtx, requireOwnerTier } from "./access";
 import { blockquoteToEntities } from "./expandable_quote";
 import {
   buildDigestData,
+  DIGEST_CITY_PREF_KEY,
   type DigestDeps,
   type DigestProposalStore,
   type DigestSectionData,
@@ -161,7 +162,7 @@ function resolveDigestEnv(env: DigestEnv): ResolvedDigest {
 }
 
 /** User pref naming the owner's city for the digest weather line. */
-export const DIGEST_CITY_PREF_KEY = "digest.city";
+export { DIGEST_CITY_PREF_KEY } from "../digest/builder";
 
 function digestDeps(resolved: ResolvedDigest, ownerId: string): DigestDeps {
   // Phase 9: the digest's weather source. The line exists only when the

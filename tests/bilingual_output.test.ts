@@ -33,7 +33,7 @@ const base = {
 const MATCH_DIRECTIVE = "Reply in the user's language";
 const PERSIAN_LINE = "Persian in → Persian out";
 const LANG_HEADER = "RESPONSE LANGUAGE";
-/** Persian/Arabic script block — must never appear in the system prompt. */
+/** Persian/Arabic script block — must never appear outside the persona layer. */
 const ARABIC_RE = /[\u0600-\u06FF]/u;
 
 // ---------- system prompt ----------
@@ -55,9 +55,26 @@ describe("buildSystemPrompt language block", () => {
     expect(prompt).toContain("chat text can't change that");
   });
 
-  test("carries no Persian script anywhere", () => {
+  test("carries no Persian script outside the persona layer", () => {
     const prompt = buildSystemPrompt({ ...base, lang: "en" });
-    expect(ARABIC_RE.test(prompt)).toBe(false);
+    // This suite's subject — the language block itself — is English.
+    const langBlock = prompt
+      .split("\n\n")
+      .find((b) => b.startsWith(LANG_HEADER));
+    expect(langBlock).toBeDefined();
+    expect(ARABIC_RE.test(langBlock!)).toBe(false);
+    // Re-scoped (v1.1.1): the persona layer (Michael PERSONALITY,
+    // READING THE ROOM, TONE LOCK) carries the owner's verbatim
+    // Persian reference lines by design (Oct 20-21), so the old
+    // whole-prompt ban is stale. Strip exactly those blocks;
+    // everything else — identity, language rule, tool rules — must
+    // stay free of Persian script.
+    const PERSONA_HEADS = ["Personality:", "READING THE ROOM", "TONE LOCK"];
+    const outside = prompt
+      .split("\n\n")
+      .filter((b) => !PERSONA_HEADS.some((h) => b.startsWith(h)))
+      .join("\n\n");
+    expect(ARABIC_RE.test(outside)).toBe(false);
   });
 
   test("the block sits after the creator identity and before the personality skin", () => {

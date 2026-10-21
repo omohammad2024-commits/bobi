@@ -1254,7 +1254,12 @@ async function runTurn(
   // message (wake-word / reply-to-bot) — re-filtering would silently discard
   // the exact message the assistant just green-lit.
   if (!input.groupAssistantApproved && !shouldHandleMessage(ctx, ctx.me.id)) {
-    console.error(
+    // Routine, by-design drop — NOT an error: un-addressed group
+    // chatter (plain text, bare media) is supposed to end here; only
+    // replies-to-the-bot and commands pass. Logged at info so real
+    // errors stay visible in the log stream; the line stays greppable
+    // like the other drop lines.
+    console.log(
       `[bobi] group drop: legacy privacy filter (shouldHandleMessage) chat=${ctx.chat.type} text="${ctx.message.text?.slice(0, 30) ?? ""}"`,
     );
     return;

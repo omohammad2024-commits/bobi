@@ -41,7 +41,8 @@
 import { ProposalStore } from "../curator/proposals";
 import { Storage } from "../storage/storage";
 import type { SearchHeadlinesFn } from "../digest/builder";
-import { buildDigest, formatDigest } from "../digest/builder";
+import { buildDigest, DIGEST_CITY_PREF_KEY, formatDigest } from "../digest/builder";
+import { fetchWeatherLine, type WeatherFetchFn } from "./weather";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
 import { defineManifest } from "./manifest";
@@ -56,6 +57,12 @@ export interface DigestToolDeps {
   isOwner: (userId: string) => boolean;
   /** Optional web-search resolver for the headlines section. Omit to skip it. */
   searchHeadlines?: SearchHeadlinesFn;
+  /**
+   * Injectable weather fetch for the digest weather line (tests). The
+   * line itself is wired exactly like the /digest command path: only
+   * when the owner's `digest.city` pref is set. Omit for the global fetch.
+   */
+  weatherFetchFn?: WeatherFetchFn;
   /** Injectable clock (unix ms), for deterministic tests. */
   now?: () => number;
   /** Diagnostic log for skipped/failed digest sources. */
@@ -246,6 +253,13 @@ export function createDigestTool(deps: DigestToolDeps): Tool<DigestToolInput, Di
       const hasRange = hasDate || daysGiven !== undefined;
       const effectiveDays = daysGiven ?? 1;
 
+      // Phase 9 seam, same wiring as the /digest command path: the
+      // weather line exists only when the owner has set a `digest.city`
+      // pref — no location is ever guessed, and fetchWeatherLine
+      // resolves to undefined on any failure, so the digest simply
+      // omits the section.
+      const city = deps.storage.getUserPref(userId, DIGEST_CITY_PREF_KEY)?.trim() ?? "";
+
       const sections = await buildDigest({
         storage: deps.storage,
         proposalStore: deps.proposalStore,
@@ -256,6 +270,9 @@ export function createDigestTool(deps: DigestToolDeps): Tool<DigestToolInput, Di
         ...(topic !== undefined ? { topic } : {}),
         ...(anchorMs !== undefined ? { anchorMs } : {}),
         ...(hasRange ? { rangeDays: effectiveDays } : {}),
+        ...(city.length > 0
+          ? { weatherLine: () => fetchWeatherLine(deps.weatherFetchFn, city) }
+          : {}),
       });
       const out: DigestToolOutput = { text: formatDigest(sections) };
       if (topic !== undefined) out.topic = topic;

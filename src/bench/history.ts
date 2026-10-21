@@ -170,7 +170,14 @@ export class BenchHistory {
   ): number {
     this.init();
     const stamp = report.generatedAt;
-    const tsMs = Date.parse(stamp);
+    // "Newest first" must mean RECORDING order: a report whose
+    // generatedAt predates its recording (a suite that started before
+    // a restart, a fixture stamp) would otherwise sort behind runs
+    // recorded earlier than it. Stamp the later of the two; every
+    // ORDER BY here is (ts_ms, id), so same-ms inserts still resolve
+    // by insertion id.
+    const parsed = Date.parse(stamp);
+    const tsMs = Number.isFinite(parsed) ? Math.max(parsed, Date.now()) : Date.now();
     const res = this.db
       .query(
         `INSERT INTO bench_runs
@@ -180,7 +187,7 @@ export class BenchHistory {
       )
       .run(
         stamp,
-        Number.isFinite(tsMs) ? tsMs : Date.now(),
+        tsMs,
         report.mode,
         report.provider,
         report.model,

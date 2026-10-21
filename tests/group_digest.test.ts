@@ -627,7 +627,10 @@ describe("digest task row logic", () => {
 describe("scheduler integration: due digest task DMs the owner", () => {
   test("tick runs group_digest and the owner gets the deterministic summary", async () => {
     const storage = Storage.open(":memory:");
-    let clock = Date.parse("2026-10-19T04:30:00Z"); // 08:00 Asia/Tehran
+    // 07:59 Asia/Tehran — BEFORE the 08:00 slot: cron is strictly-after,
+    // so creating the task at exactly 08:00 would arm its first fire
+    // for tomorrow and the tick below would execute nothing.
+    let clock = Date.parse("2026-10-19T04:29:00Z");
     const sent: string[] = [];
     const history = createGroupHistory();
     const store = fakeStore();
@@ -654,6 +657,10 @@ describe("scheduler integration: due digest task DMs the owner", () => {
       isOwner: (id) => id === OWNER,
       defaultTimezone: "Asia/Tehran",
       toolExists: (name) => name === GROUP_DIGEST_TOOL_NAME,
+      // Inject the fixture clock: without it, task creation stamps the
+      // next run from the WALL clock and the fixture's tick (Oct 19)
+      // lands before it whenever the suite runs on a later date.
+      now: () => clock,
     });
     const svc = new ToolService({
       extraTools: [

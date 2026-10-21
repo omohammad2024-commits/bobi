@@ -186,6 +186,48 @@ describe("currency rate service — failure honesty", () => {
     expect(service.hasRates()).toBe(false);
     expect(service.lastFailureAtMs()).toBe(T0);
   });
+
+  test("hung fetch is aborted by the timeout; the next refresh retries", async () => {
+    let hang = true;
+    const fetchFn: CurrencyFetchFn = (_url, init) => {
+      if (!hang) {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ER_API_FIXTURE,
+        });
+      }
+      // A hung request: settles only when the caller's signal aborts,
+      // exactly like the real fetch. Without the service's timeout
+      // signal this promise would never settle and would wedge the
+      // shared in-flight refresh for the process lifetime.
+      return new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined) return; // never settles — the bug shape
+        if (signal.aborted) {
+          reject(new Error("aborted"));
+          return;
+        }
+        signal.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+      });
+    };
+    const service = createCurrencyRateService({
+      fetchFn,
+      now: () => T0,
+      fetchTimeoutMs: 25,
+    });
+    await service.refreshIfStale(); // must settle via the timeout, not hang
+    expect(service.hasRates()).toBe(false);
+    expect(service.lastFailureAtMs()).toBe(T0);
+    // inFlight was cleared by the aborted refresh: a later one retries
+    // instead of awaiting the dead promise.
+    hang = false;
+    await service.refreshIfStale();
+    expect(service.hasRates()).toBe(true);
+    expect(service.ratePerUsd("eur")).toBe(0.92);
+  });
 });
 
 // ---------- the currency_rates tool ----------
@@ -362,5 +404,85 @@ describe("unit_converter — rate source resolver wiring", () => {
     );
     expect(out.result).toBe(1000);
     expect(out.category).toBe("length");
+  });
+
+  test("converter primes an empty cache via refreshIfStale (post-restart shape)", async () => {
+    const counter = { calls: 0 };
+    const service = makeService(okFetch(ER_API_FIXTURE, counter));
+    // Deliberately NO manual refreshIfStale: the cache is empty, as it
+    // is after every process restart. Before the priming fix this run
+    // failed with "not configured yet for 'eur'".
+    expect(service.hasRates()).toBe(false);
+    setUnitConverterRateSourceResolver(() => service);
+    const out = await unitConverterTool.run(
+      { value: 100, from: "usd", to: "eur" },
+      {
+        clock: () => new Date(T0),
+        actor: { userId: "user-1", permissions: ["tools:unit_converter"] },
+        signal: new AbortController().signal,
+      },
+    );
+    expect(out.result).toBeCloseTo(92, 9);
+    expect(counter.calls).toBe(1);
+  });
+
+  test("a failed re-prime never breaks a conversion the cache can serve", async () => {
+    let calls = 0;
+    const fetchFn: CurrencyFetchFn = async () => {
+      calls += 1;
+      if (calls > 1) throw new Error("source down now");
+      return { ok: true, status: 200, json: async () => ER_API_FIXTURE };
+    };
+    // ttlMs 0: every conversion re-primes, so the second run's refresh
+    // fails — the stale cache must still serve the conversion.
+    const service = makeService(fetchFn, { ttlMs: 0 });
+    setUnitConverterRateSourceResolver(() => service);
+    const run = () =>
+      unitConverterTool.run(
+        { value: 100, from: "usd", to: "eur" },
+        {
+          clock: () => new Date(T0),
+          actor: { userId: "user-1", permissions: ["tools:unit_converter"] },
+          signal: new AbortController().signal,
+        },
+      );
+    expect((await run()).result).toBeCloseTo(92, 9);
+    expect((await run()).result).toBeCloseTo(92, 9);
+    expect(calls).toBe(2);
+  });
+
+  test("failed prime with an empty cache keeps the honest not-configured error", async () => {
+    const service = makeService(failingFetch());
+    setUnitConverterRateSourceResolver(() => service);
+    const err = await expectToolRunError(
+      unitConverterTool.run(
+        { value: 100, from: "usd", to: "eur" },
+        {
+          clock: () => new Date(T0),
+          actor: { userId: "user-1", permissions: ["tools:unit_converter"] },
+          signal: new AbortController().signal,
+        },
+      ),
+    );
+    expect(err.kind).toBe("invalid_input");
+    expect(err.message).toContain("not configured");
+  });
+
+  test("non-rate conversions never prime: no fetch for length or the IRR/IRT pair", async () => {
+    const counter = { calls: 0 };
+    const service = makeService(okFetch(ER_API_FIXTURE, counter));
+    setUnitConverterRateSourceResolver(() => service);
+    const actx = {
+      clock: () => new Date(T0),
+      actor: { userId: "user-1", permissions: ["tools:unit_converter"] },
+      signal: new AbortController().signal,
+    };
+    expect(
+      (await unitConverterTool.run({ value: 1, from: "km", to: "m" }, actx)).result,
+    ).toBe(1000);
+    expect(
+      (await unitConverterTool.run({ value: 100, from: "irr", to: "irt" }, actx)).result,
+    ).toBe(10);
+    expect(counter.calls).toBe(0);
   });
 });

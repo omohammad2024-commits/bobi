@@ -405,6 +405,27 @@ describe("fetchWeatherLine", () => {
     expect(await fetchWeatherLine(fetchFn, "")).toBeUndefined();
     expect(await fetchWeatherLine(fetchFn, "   ")).toBeUndefined();
   });
+
+  test("a hung fetch resolves to no line within the timeout", async () => {
+    // Settles only when the caller's signal aborts — exactly like the
+    // real fetch. fetchWeatherLine used to pass no signal, so this
+    // shape stalled digest generation on a hung Open-Meteo response.
+    const hung: WeatherFetchFn = (_url, init) =>
+      new Promise((_resolve, reject) => {
+        const signal = init?.signal;
+        if (signal === undefined) return; // never settles — the stall
+        if (signal.aborted) {
+          reject(new Error("aborted"));
+          return;
+        }
+        signal.addEventListener("abort", () => reject(new Error("aborted")), {
+          once: true,
+        });
+      });
+    const startedAt = Date.now();
+    expect(await fetchWeatherLine(hung, "Tehran", 25)).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
 });
 
 // ---------------------------------------------------------------------------

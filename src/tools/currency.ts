@@ -53,7 +53,17 @@ export interface CurrencyFetchResponse {
   json(): Promise<unknown>;
 }
 
-export type CurrencyFetchFn = (url: string) => Promise<CurrencyFetchResponse>;
+export type CurrencyFetchFn = (
+  url: string,
+  init?: { signal?: AbortSignal },
+) => Promise<CurrencyFetchResponse>;
+
+/**
+ * Hard cap on one rates fetch. Without it a hung response would wedge
+ * the shared in-flight refresh forever: the promise never settles, so
+ * every later `refreshIfStale` awaits the same dead fetch.
+ */
+export const CURRENCY_FETCH_TIMEOUT_MS = 10_000;
 
 export interface CurrencyRateServiceDeps {
   /** Test seam: replaces the network fetch. Never model-controlled. */
@@ -62,6 +72,8 @@ export interface CurrencyRateServiceDeps {
   now?: () => number;
   /** Cache lifetime before a refresh is attempted. Default 1h. */
   ttlMs?: number;
+  /** Per-fetch timeout in ms. Default CURRENCY_FETCH_TIMEOUT_MS. */
+  fetchTimeoutMs?: number;
 }
 
 /**
@@ -87,9 +99,10 @@ export function createCurrencyRateService(
   deps: CurrencyRateServiceDeps = {},
 ): CurrencyRateService {
   const fetchFn: CurrencyFetchFn =
-    deps.fetchFn ?? ((url: string) => fetch(url));
+    deps.fetchFn ?? ((url: string, init?: { signal?: AbortSignal }) => fetch(url, init));
   const now = deps.now ?? (() => Date.now());
   const ttlMs = deps.ttlMs ?? DEFAULT_RATES_TTL_MS;
+  const fetchTimeoutMs = deps.fetchTimeoutMs ?? CURRENCY_FETCH_TIMEOUT_MS;
 
   let cache: ReadonlyMap<string, number> | undefined;
   let fetchedAt: number | undefined;
@@ -114,7 +127,12 @@ export function createCurrencyRateService(
     if (inFlight !== undefined) return inFlight;
     inFlight = (async () => {
       try {
-        const res = await fetchFn(CURRENCY_RATES_URL);
+        // The abort timeout guarantees this promise settles even when
+        // the source hangs: the catch records the failure and the
+        // finally clears inFlight, so the next refresh retries cleanly.
+        const res = await fetchFn(CURRENCY_RATES_URL, {
+          signal: AbortSignal.timeout(fetchTimeoutMs),
+        });
         if (!res.ok) {
           throw new Error(`rates fetch failed with status ${res.status}`);
         }

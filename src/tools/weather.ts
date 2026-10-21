@@ -90,6 +90,13 @@ const DEFAULT_DAYS = 3;
 const MIN_DAYS = 1;
 const MAX_DAYS = 7;
 
+/**
+ * Hard cap on the digest weather line's fetches. `fetchWeatherLine`
+ * otherwise passes no signal, so a hung Open-Meteo response would
+ * stall digest generation until some outer deadline fired.
+ */
+export const WEATHER_FETCH_TIMEOUT_MS = 10_000;
+
 const UNAVAILABLE = "Weather is unavailable right now.";
 
 export const weatherManifest: ToolManifest = defineManifest({
@@ -471,6 +478,7 @@ export const weatherTool: Tool<WeatherInput, WeatherOutput> = createWeatherTool(
 export async function fetchWeatherLine(
   fetchFn: WeatherFetchFn | undefined | null,
   location: string,
+  timeoutMs: number = WEATHER_FETCH_TIMEOUT_MS,
 ): Promise<string | undefined> {
   try {
     if (typeof location !== "string" || location.trim().length === 0) {
@@ -479,7 +487,11 @@ export async function fetchWeatherLine(
     const fn: WeatherFetchFn =
       fetchFn ?? (globalThis.fetch as unknown as WeatherFetchFn);
     if (typeof fn !== "function") return undefined;
-    const out = await getWeather(fn, { location: location.trim(), days: 1 }, undefined);
+    const out = await getWeather(
+      fn,
+      { location: location.trim(), days: 1 },
+      AbortSignal.timeout(timeoutMs),
+    );
     const head = `${out.location.name}: ${Math.round(out.current.temperatureC)}°C, ${out.current.condition}`;
     const today: WeatherDaily | undefined = out.daily[0];
     if (today === undefined) return head;
