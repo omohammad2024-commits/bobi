@@ -30,6 +30,13 @@
  * wires `maybeExtractDocuments` into the pipeline at merge time.
  */
 import { PDFParse } from "pdf-parse";
+import { readFile, stat } from "node:fs/promises";
+import { basename, extname } from "node:path";
+import { ToolError } from "./errors";
+import { ensureSandboxRoot, resolveSandboxPath } from "./sandbox";
+import { defineManifest } from "./manifest";
+import type { ToolManifest } from "./manifest";
+import type { Tool, ToolContext } from "./types";
 
 /**
  * Structural mirror of the provider's ContentPart union, defined locally so
@@ -575,3 +582,270 @@ async function extractPdfText(data: Buffer, name?: string): Promise<ExtractResul
     return { ok: false, reason: "parse-failed" satisfies ExtractFailureReason };
   }
 }
+
+// ---------------------------------------------------------------------------
+// extract_document TOOL (platform Phase 9 — the pipeline above as a callable
+// tool over the owner's files sandbox)
+// ---------------------------------------------------------------------------
+//
+// The extraction pipeline above stays exactly as it was: pure functions over
+// attachment bytes. This section wraps it in a Tool the model can call on a
+// document the owner has ALREADY saved in the files area (the sandbox the
+// `files` tool manages). It is the only part of this module that touches the
+// tool layer or the filesystem.
+//
+// Sandbox discipline mirrors files.ts (its helpers are module-private, so
+// the same checks are implemented here): absolute paths and `..` escapes are
+// refused lexically before any I/O, symlinks are refused as an escape route
+// via a realpath check on the deepest existing ancestor, and no error
+// message ever echoes a path.
+
+export const EXTRACT_DOCUMENT_PERMISSION = "tools:extract_document";
+
+/** File-size ceiling for one extraction, bytes (the PDF cap above matches). */
+export const MAX_EXTRACT_FILE_BYTES = 20 * 1024 * 1024;
+
+/** Character ceiling on the text one run hands back to the model. */
+export const MAX_EXTRACT_OUTPUT_CHARS = 16_000;
+
+export interface ExtractDocumentInput {
+  /** Path inside the files area, e.g. "reports/annual.pdf". */
+  path: string;
+}
+
+export interface ExtractDocumentOutput {
+  /** Base name of the file — never a path. */
+  name: string;
+  mediaType: string;
+  /** Characters in `text` as returned (after the output cap). */
+  chars: number;
+  /** The extracted readable text, capped at MAX_EXTRACT_OUTPUT_CHARS. */
+  text: string;
+  /** True when the full text was longer than the cap and `text` was cut. */
+  truncated: boolean;
+}
+
+export interface ExtractDocumentDeps {
+  /** Root of the files sandbox. Created lazily on first use. */
+  rootDir: string;
+  /**
+   * Server-supplied owner predicate. Supplied by bootstrap and re-checked
+   * in run() as defence in depth alongside the ownerOnly flag (the files.ts
+   * pattern, with the predicate required rather than optional).
+   */
+  isOwner: (userId: string) => boolean;
+}
+
+/**
+ * Plugin discovery manifest for `extract_document`.
+ *
+ * Category "media": like download_media and generate_image, this tool
+ * processes a media/document file into something the user/model consumes —
+ * it does not manage the sandbox itself (that is files, category "system").
+ */
+export const extractDocumentManifest: ToolManifest = defineManifest({
+  id: "extract_document",
+  version: "1.0.0",
+  title: "Extract Document",
+  description:
+    "Extract readable text from a PDF, Word (.docx) or Excel (.xlsx) document, or a plain text file, saved in the owner's files area. Returns the text capped at 16,000 characters. Owner only.",
+  purpose: "readable text from documents",
+  useWhen: "document file already saved",
+  doNotUseWhen:
+    "a plain web page — that is fetch_url; a file that is not saved in the files area yet — download it first",
+  confusableWith: [
+    {
+      tool: "files",
+      difference:
+        "files reads plain text files raw; this extracts readable text from PDF/Office documents",
+    },
+    {
+      tool: "fetch_url",
+      difference: "fetch_url reads web pages; this reads a document file",
+    },
+  ],
+  latencyTier: "seconds",
+  outputSummary:
+    "The document's text (capped at 16,000 characters), with its name, media type, character count and truncation flag.",
+  category: "media",
+  costTier: "free",
+});
+
+export function createExtractDocumentTool(
+  deps: ExtractDocumentDeps,
+): Tool<ExtractDocumentInput, ExtractDocumentOutput> {
+  return {
+    name: "extract_document",
+    manifest: extractDocumentManifest,
+    description:
+      "Extract readable text from a document saved in the files area (.pdf, .docx, .xlsx, .txt, .md, .csv). Returns the text capped at 16,000 characters. Owner only.",
+    enabled: true,
+    ownerOnly: true,
+    permission: { requires: [EXTRACT_DOCUMENT_PERMISSION] },
+    toolset: "media",
+    input: {
+      fields: {
+        path: {
+          type: "string",
+          required: true,
+          description:
+            "Path of the document inside the files area, e.g. 'reports/annual.pdf'. Supported: .pdf, .docx, .xlsx, .txt, .md, .csv.",
+          maxLength: 1024,
+        },
+      },
+    },
+
+    async run(
+      input: ExtractDocumentInput,
+      ctx: ToolContext,
+    ): Promise<ExtractDocumentOutput> {
+      assertExtractOwner(ctx, deps);
+      const raw = typeof input.path === "string" ? input.path.trim() : "";
+      if (raw.length === 0) {
+        throw new ToolError("invalid_input", "A file path is required.");
+      }
+      const mediaType = mediaTypeForDocumentExtension(extname(raw).toLowerCase());
+      if (mediaType === undefined) {
+        throw new ToolError(
+          "invalid_input",
+          "Only PDF, Word (.docx), Excel (.xlsx) and plain text (.txt, .md, .csv) files can be extracted.",
+        );
+      }
+      const root = await ensureSandboxRoot(deps.rootDir);
+      const target = await resolveSandboxPath(root, raw, {
+        mustExist: true,
+        notFoundMessage: "That file doesn't exist.",
+      });
+      const st = await stat(target).catch(() => undefined);
+      if (st === undefined) throw new ToolError("not_found", "That file doesn't exist.");
+      if (st.isDirectory()) {
+        throw new ToolError("invalid_input", "That path is a folder, not a document file.");
+      }
+      if (st.size > MAX_EXTRACT_FILE_BYTES) {
+        throw new ToolError(
+          "invalid_input",
+          "That file is larger than the 20 MB limit for extraction.",
+        );
+      }
+      const bytes = await readFile(target).catch(() => {
+        throw new ToolError("internal", "The file couldn't be read.");
+      });
+
+      let fullText: string;
+      if (shouldExtractLocally(mediaType)) {
+        const res = await extractDocumentText(bytes, mediaType, basename(target));
+        if (!res.ok) {
+          throw new ToolError("invalid_input", extractFailureMessage(res.reason));
+        }
+        fullText = res.text;
+      } else {
+        // Plain-text kinds (.txt/.md/.csv) need no parser — but the bytes
+        // must really be UTF-8 text, not a binary wearing a text extension.
+        fullText = decodePlainText(bytes);
+      }
+
+      const { text, truncated } = capOutputText(fullText);
+      return { name: basename(target), mediaType, chars: text.length, text, truncated };
+    },
+  };
+}
+
+// ------------------------------------------------------------- tool glue ----
+
+/** Map a supported file extension onto the media type the pipeline speaks. */
+function mediaTypeForDocumentExtension(ext: string): string | undefined {
+  switch (ext) {
+    case ".pdf":
+      return PDF_MIME;
+    case ".docx":
+      return DOCX_MIME;
+    case ".xlsx":
+      return XLSX_MIME;
+    case ".txt":
+      return "text/plain";
+    case ".md":
+      return "text/markdown";
+    case ".csv":
+      return "text/csv";
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Turn an ExtractFailureReason into user-facing copy.
+ *
+ * Reason-safety verdict: every reason `extractDocumentText` can return is a
+ * member of the closed ExtractFailureReason enum — stable machine tokens
+ * ("not-a-zip", "pdf-too-large", …) that carry no paths, no parser output
+ * and no provider text, so none of them can leak internals. They are still
+ * machine tokens rather than sentences, so each is translated here; an
+ * unrecognized reason falls back to a generic safe message.
+ */
+const EXTRACT_FAILURE_MESSAGES: Readonly<Partial<Record<ExtractFailureReason, string>>> = {
+  "unsupported-type": "That document type can't be extracted.",
+  "not-a-zip": "That document is damaged and couldn't be read.",
+  "zip-too-many-entries": "That document has too many parts and couldn't be read safely.",
+  "zip-entry-too-large": "Part of that document is too large to read safely.",
+  "zip-total-too-large": "That document is too large inside to read safely.",
+  "unsupported-compression": "That document uses a compression this reader can't open.",
+  "missing-document-part": "That document is missing its main content.",
+  "no-text": "That document contains no readable text.",
+  "pdf-too-large": "That PDF is larger than the 20 MB limit.",
+  "pdf-not-supported": "That PDF couldn't be read.",
+  "parse-failed": "That document couldn't be read.",
+};
+
+function extractFailureMessage(reason: string): string {
+  return (
+    EXTRACT_FAILURE_MESSAGES[reason as ExtractFailureReason] ??
+    "That document couldn't be read."
+  );
+}
+
+/** Strict UTF-8 decode for the plain-text kinds; an empty file has no text. */
+function decodePlainText(bytes: Buffer): string {
+  if (bytes.length === 0) {
+    throw new ToolError("invalid_input", "That file contains no readable text.");
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new ToolError(
+      "invalid_input",
+      "That file isn't readable text (not valid UTF-8).",
+    );
+  }
+}
+
+/**
+ * Cap the returned text at MAX_EXTRACT_OUTPUT_CHARS, cutting at a line
+ * boundary when one falls in the second half of the budget (a boundary
+ * right at the start would waste the cap, so a hard cut wins there).
+ */
+function capOutputText(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_EXTRACT_OUTPUT_CHARS) return { text, truncated: false };
+  const head = text.slice(0, MAX_EXTRACT_OUTPUT_CHARS);
+  const lastBreak = head.lastIndexOf("\n");
+  const cut =
+    lastBreak >= MAX_EXTRACT_OUTPUT_CHARS / 2 ? head.slice(0, lastBreak) : head;
+  return { text: cut, truncated: true };
+}
+
+/** The defence-in-depth owner check: the actor id comes from server code, never the model. */
+function assertExtractOwner(ctx: ToolContext, deps: ExtractDocumentDeps): void {
+  const id = ctx.actor.userId;
+  if (typeof id !== "string" || id.length === 0 || id === "unknown") {
+    throw new ToolError("not_allowed", "Identity is unknown.");
+  }
+  if (!deps.isOwner(id)) {
+    throw new ToolError("not_allowed", "Document extraction is owner only.");
+  }
+}
+
+// ------------------------------------------------------------- sandbox ----
+//
+// Path safety uses the shared helper (./sandbox): absolute paths refused,
+// lexical `..` escapes refused before any I/O, and the deepest existing
+// ancestor realpath'd and required to stay inside the root's real path
+// (symlink escapes refused). Error messages never echo the resolved path.

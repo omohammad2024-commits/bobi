@@ -9,7 +9,7 @@
  * - A tool's `run` receives already-validated input and never throws raw
  *   provider/OS errors — it throws ToolError with a safe, categorized kind.
  */
-import type { ContentPart } from "../ai/provider";
+import type { ContentPart, ToolSpec } from "../ai/provider";
 
 /** Status of a tool run, as reported by the Executor. */
 export type ToolRunStatus =
@@ -169,6 +169,92 @@ export interface ToolTriggerPatterns {
   readonly mimeTypes?: readonly string[];
 }
 
+/** Relative execution cost, for routing preference. */
+export type ToolCostTier = "free" | "cheap" | "heavy";
+
+/**
+ * How long a run typically takes, in the roadmap's three classes:
+ * "instant" = local work, no network or model call; "seconds" = one
+ * remote call or a short model call; "minutes" = downloads, media
+ * generation, multi-model consults and other long jobs.
+ */
+export type ToolLatencyTier = "instant" | "seconds" | "minutes";
+
+/** One tool this card is easily confused with, and the difference. */
+export interface ToolConfusable {
+  /** Plugin id of the confusable tool (must exist in the catalog). */
+  readonly tool: string;
+  /** One short clause: how the two differ / which one wins when. */
+  readonly difference: string;
+}
+
+/**
+ * Declarative discovery metadata for one tool.
+ *
+ * Pure data: a manifest must never contain functions, class instances,
+ * or anything that would make importing it side-effectful. Every tool
+ * module exports its manifest as a top-level const next to the tool.
+ */
+export interface ToolManifest {
+  /** Plugin id — exactly the Tool's registered name (snake_case). */
+  readonly id: string;
+  /** Contract version of the plugin, semver-shaped ("1.0.0"). */
+  readonly version: string;
+  /** Short display title for menus and catalogs. */
+  readonly title: string;
+  /**
+   * The card's one-line "what": a telegraphic noun phrase for the
+   * prompt's desk catalog (e.g. "media file from a link"). 5-40 chars
+   * (enforced by validate_manifest) — the catalog prints one line per
+   * tool, so this is written for that line, not for prose.
+   */
+  readonly purpose: string;
+  /**
+   * When to pick this tool up, short form (e.g. "media link + a
+   * download/get verb"). Printed next to `purpose` in the prompt
+   * catalog. 5-40 chars (enforced by validate_manifest).
+   */
+  readonly useWhen: string;
+  /**
+   * When NOT to pick this tool up — the anti-triggers (e.g. "user only
+   * wants the page text — that is fetch_url"). 5-140 chars (enforced
+   * by validate_manifest). Read by the model via tool_search/desk
+   * views and by humans auditing the desk; never a gate.
+   */
+  readonly doNotUseWhen: string;
+  /**
+   * Tools this one is confused with, each with the difference that
+   * separates them. May be empty when nothing is confusable. Targets
+   * must be real catalog ids (enforced by validateCatalog).
+   */
+  readonly confusableWith: readonly ToolConfusable[];
+  /** Typical run duration class (see ToolLatencyTier). */
+  readonly latencyTier: ToolLatencyTier;
+  /**
+   * 1-2 lines for the model's tool catalog and for router ranking.
+   * 10-300 chars (enforced by validate_manifest).
+   */
+  readonly description: string;
+  /** One line: what a successful run returns (5-150 chars). */
+  readonly outputSummary: string;
+  /**
+   * Grouping for catalogs and routing. Follows the toolset vocabulary
+   * where one exists ("utils", "web", "media", "memory", "schedule",
+   * "agents", "system"); free-form otherwise.
+   */
+  readonly category: string;
+  /** Deterministic intent triggers consumed by src/routing/intent.ts. */
+  readonly triggers?: ToolTriggerPatterns;
+  /**
+   * Declared execution budget for this plugin, ms — mirrors the Tool's
+   * own timeoutMs when the tool declares one (range [1000, 600000],
+   * enforced by validate_manifest). Omitted = executor default.
+   */
+  readonly timeoutMs?: number;
+  /** Relative cost tier. Omitted = "free". */
+  readonly costTier?: ToolCostTier;
+}
+
 /** A BOBI tool. Implementations are pure and side-effect free by contract. */
 export interface Tool<TIn, TOut> {
   /** Unique, stable, lowercase snake_case identifier. */
@@ -186,6 +272,17 @@ export interface Tool<TIn, TOut> {
    * run(), as defence in depth for callers that build actors directly.
    */
   readonly ownerOnly?: boolean;
+  /**
+   * When true, the tool stays registered and executable by server-side
+   * callers (scheduler dispatch, admin commands) but is never offered
+   * to the model — excluded from `toolSpecsFor`, `searchableTools`
+   * (tool_search), and therefore the prompt desk.
+   *
+   * Ergonomic visibility only, never the security boundary: executor
+   * permission checks are unchanged, and admin surfaces that list
+   * registered tools (`listActive`) still include it.
+   */
+  readonly offDesk?: boolean;
   /**
    * The toolset this tool belongs to, e.g. "utils", "memory", "schedule",
    * "web", "media", "agents", "system".
@@ -208,7 +305,7 @@ export interface Tool<TIn, TOut> {
    * tool's name. External/dynamically-built tools (MCP adapters) may
    * omit it — they are never intent-router candidates.
    */
-  readonly manifest?: import("./manifest").ToolManifest;
+  readonly manifest?: ToolManifest;
   /**
    * Executor timeout override for this tool, ms.
    *
@@ -264,3 +361,76 @@ export interface ToolActor {
 
 /** Validated input bag handed to a tool body. */
 export type ToolInput = Record<string, unknown>;
+
+/** One active tool, as listed for menus and for the model. Not an authorization grant. */
+export interface ToolDescriptor {
+  name: string;
+  description: string;
+  enabled: boolean;
+  requires: readonly string[];
+  /** Desk-card short "what" (from the tool's manifest, when attached). */
+  purpose?: string;
+  /** Desk-card short "when to pick it up" (from the manifest, when attached). */
+  useWhen?: string;
+}
+
+export interface ExecuteRequest {
+  /** Tool name requested by the caller. Untrusted. */
+  tool: string;
+  /** Raw tool input. Untrusted and validated before execution. */
+  input: unknown;
+  /** Trusted caller identity + permissions, supplied by server code. */
+  actor: ToolActor;
+  /** Optional per-run timeout override, ms. */
+  timeoutMs?: number;
+  /**
+   * Caller cancellation, when the caller has one.
+   *
+   * Combined with this executor's own timeout signal, so a tool is torn down
+   * whether the run timed out or the user moved on. Without this, a tool started
+   * by the agent loop would keep running after the user sent a newer message.
+   */
+  signal?: AbortSignal;
+  /**
+   * The conversation this run belongs to, from server-side context.
+   * Never model-supplied; see ToolContext.
+   */
+  conversationId?: string;
+  /**
+   * Server-side only: suppress the `tool:end` lifecycle hook emission for
+   * this execution.
+   *
+   * Set by the hook runner for executions a hook itself triggered — without
+   * it, a hook on `tool:end` would emit another `tool:end` and recurse
+   * without bound. Has NO effect on validation, permissions, timeouts, or
+   * the concurrency bound; it only skips the observation callback. Never
+   * model-supplied: ExecuteRequest is built by server code (the agent loop,
+   * the schedulers, the hook runner), never from model output.
+   */
+  suppressHooks?: boolean;
+}
+
+/**
+ * Structural port over ToolService (tools/service.ts) — the subset of its
+ * surface that the agent loop, the prompt builder's orbit, and the hook
+ * runner actually use.
+ *
+ * This lives here, not in service.ts, to break the last import cycle in
+ * src/: agent/loop.ts → tools/service.ts → tools/plugins.ts →
+ * tools/delegate.ts → agent/loop.ts. Consumers that only need to RUN
+ * tools and ask for their specs depend on this port; the composition
+ * roots that construct or administer the service (engine, bot, scheduler,
+ * bench, mcp, index) keep importing the concrete class. The class
+ * declares `implements ToolServicePort`, so tsc pins this subset to the
+ * real surface — same signatures, no drift.
+ *
+ * Members (derived from the consumers' usage, nothing more):
+ * - `execute` — agent/loop.ts runTool(), hooks/runner.ts runOne().
+ * - `toolSpecsFor` — agent/loop.ts specsFor().
+ */
+export interface ToolServicePort {
+  /** Internal API: raw ExecuteRequest form, for the engine boundary. */
+  execute(req: ExecuteRequest): Promise<ToolRunResult>;
+  /** Tool definitions for a model request, filtered to what this actor may run. */
+  toolSpecsFor(actor: ToolActor): ToolSpec[];
+}

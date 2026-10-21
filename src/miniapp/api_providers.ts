@@ -4,7 +4,7 @@
  *
  * Everything here reuses the existing AI layer; nothing is reimplemented:
  *   - CRUD via ProviderService / ModelService (src/ai/provider_service.ts)
- *   - live probe via ProviderHealthService (src/ai/health.ts)
+ *   - live probe via ProviderProbeService (src/ai/provider_probe.ts)
  *   - model discovery via the adapter's listModels (same pattern as
  *     ai_controller.runAuthorizedDiscovery)
  *   - URL policy via validateTarget (src/ai/target.ts); the DNS-level SSRF
@@ -33,7 +33,7 @@ import type {
   ProviderService,
   ProviderView,
 } from "../ai/provider_service";
-import type { ProviderHealthService, ProbeResult } from "../ai/health";
+import type { ProviderProbeService, ProbeResult } from "../ai/provider_probe";
 
 const MAX_MODEL_IDS = 200;
 const MAX_URL_CHARS = 512;
@@ -65,14 +65,14 @@ export interface ProviderApiDeps {
     | "isActive"
     | "enabledModels"
   >;
-  health: Pick<ProviderHealthService, "probe" | "probeModel"> & {
+  health: Pick<ProviderProbeService, "probe" | "probeModel"> & {
     /**
      * Optional: the real health service carries `last()` (with the
      * gateway's circuit-breaker / model-quarantine snapshot attached).
      * listProviders surfaces it when present; test fakes without it
      * simply omit the additive card fields.
      */
-    last?: ProviderHealthService["last"];
+    last?: ProviderProbeService["last"];
   };
   /** Overridable in tests; defaults to the real registry. */
   adapters?: AdapterRegistry;
@@ -189,7 +189,7 @@ function autoSelectIfNone(
 ): { providerId: number; modelId: number } | undefined {
   let before: { activeProviderId: number | null; activeModelId: number | null };
   try {
-    before = deps.storage.getRuntimeSettings();
+    before = deps.storage.providers.getRuntimeSettings();
   } catch {
     return undefined;
   }
@@ -228,7 +228,7 @@ function lastProbeView(
   // shows why it failed and how long it took, not just ✓/✗ + time.
   let health: ReturnType<Storage["getProviderHealth"]>;
   try {
-    health = deps.storage.getProviderHealth(view.id);
+    health = deps.storage.providers.getProviderHealth(view.id);
   } catch {
     health = undefined;
   }
@@ -278,7 +278,7 @@ function reliabilityView(
 }
 
 function listProviders(deps: ProviderApiDeps): Record<string, unknown>[] {
-  const settings = deps.storage.getRuntimeSettings();
+  const settings = deps.storage.providers.getRuntimeSettings();
   return deps.providerSvc.listViews().map((v) => ({
     id: v.id,
     label: v.label,
@@ -440,7 +440,7 @@ function discoveryError(err: unknown): ProviderApiError {
 
 function labelTaken(deps: ProviderApiDeps, label: string): boolean {
   const needle = label.trim().toLowerCase();
-  return deps.storage
+  return deps.storage.providers
     .listProviders()
     .some((p) => p.label.trim().toLowerCase() === needle);
 }
@@ -665,7 +665,7 @@ function updateProvider(
     // The add path refuses duplicate labels; the rename path must too, or a
     // rename can create the exact ambiguity the add check exists to prevent.
     const needle = label.toLowerCase();
-    const clash = deps.storage
+    const clash = deps.storage.providers
       .listProviders()
       .some((p) => p.id !== id && p.label.trim().toLowerCase() === needle);
     if (clash) {
@@ -809,7 +809,7 @@ function setActiveProvider(
   if (models.length === 0) {
     throw new ProviderApiError(400, "This provider has no enabled models; add a model first.");
   }
-  const settings = deps.storage.getRuntimeSettings();
+  const settings = deps.storage.providers.getRuntimeSettings();
   const current =
     settings.activeModelId !== null
       ? models.find((m) => m.id === settings.activeModelId)
@@ -817,7 +817,7 @@ function setActiveProvider(
   const chosen =
     current ?? models.find((m) => m.isDefault) ?? (models[0] as (typeof models)[number]);
   try {
-    deps.storage.setRuntimeSelection({ providerId: id, modelId: chosen.id });
+    deps.storage.providers.setRuntimeSelection({ providerId: id, modelId: chosen.id });
   } catch {
     throw new ProviderApiError(500, "Activation failed.");
   }
@@ -856,7 +856,7 @@ function listModels(
   if (providerId === undefined) {
     throw new ProviderApiError(400, "Invalid provider ID.");
   }
-  if (!deps.storage.getProvider(providerId)) {
+  if (!deps.storage.providers.getProvider(providerId)) {
     throw new ProviderApiError(404, "Provider not found.");
   }
   return deps.modelSvc.list(providerId).map((m) => ({
@@ -883,7 +883,7 @@ async function discoverModels(
   if (providerId === undefined) {
     throw new ProviderApiError(400, "Invalid provider ID.");
   }
-  const provider = deps.storage.getProvider(providerId);
+  const provider = deps.storage.providers.getProvider(providerId);
   if (!provider) {
     throw new ProviderApiError(404, "Provider not found.");
   }
@@ -935,7 +935,7 @@ async function discoverModels(
     clearTimeout(timer);
   }
 
-  const storedRows = deps.storage.listModels(providerId);
+  const storedRows = deps.storage.providers.listModels(providerId);
   const known = new Set(storedRows.map((m) => m.modelId));
   // Staleness (audit M7): stored models the upstream list no longer
   // returns are flagged so the UI can mark them "no longer offered"
@@ -1060,14 +1060,14 @@ function importModels(
   if (providerId === undefined) {
     throw new ProviderApiError(400, "Invalid provider ID.");
   }
-  if (!deps.storage.getProvider(providerId)) {
+  if (!deps.storage.providers.getProvider(providerId)) {
     throw new ProviderApiError(404, "Provider not found.");
   }
   const raw = params["modelIds"];
   if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_MODEL_IDS) {
     throw new ProviderApiError(400, "Model list is invalid.");
   }
-  const known = new Set(deps.storage.listModels(providerId).map((m) => m.modelId));
+  const known = new Set(deps.storage.providers.listModels(providerId).map((m) => m.modelId));
   let imported = 0;
   let skipped = 0;
   for (const entry of raw) {
@@ -1098,7 +1098,7 @@ function addModel(
   if (providerId === undefined) {
     throw new ProviderApiError(400, "Invalid provider ID.");
   }
-  if (!deps.storage.getProvider(providerId)) {
+  if (!deps.storage.providers.getProvider(providerId)) {
     throw new ProviderApiError(404, "Provider not found.");
   }
   const modelId = asNonEmptyString(params["modelId"], 128);
@@ -1159,12 +1159,12 @@ function setActiveModel(
   if (!model || !model.enabled) {
     throw new ProviderApiError(400, "Model not found or disabled.");
   }
-  const provider = deps.storage.getProvider(model.providerId);
+  const provider = deps.storage.providers.getProvider(model.providerId);
   if (!provider || !provider.enabled) {
     throw new ProviderApiError(400, "This model’s provider is disabled.");
   }
   try {
-    deps.storage.setRuntimeSelection({ providerId: model.providerId, modelId: id });
+    deps.storage.providers.setRuntimeSelection({ providerId: model.providerId, modelId: id });
   } catch {
     throw new ProviderApiError(500, "Activation failed.");
   }

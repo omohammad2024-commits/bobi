@@ -33,8 +33,9 @@ export interface WebhookConfig {
  * Read webhook config from the environment (an injectable record, so tests
  * never touch the real process environment).
  */
+import { processEnv } from "../config/env";
 export function loadWebhookConfig(
-  env: Record<string, string | undefined> = process.env,
+  env: Record<string, string | undefined> = processEnv(),
 ): WebhookConfig {
   const raw = (env.BOBI_WEBHOOK_URL ?? "")
     .split(",")

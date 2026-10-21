@@ -22,6 +22,18 @@ import { validateManifest } from "./validate_manifest";
 
 export class ToolRegistry {
   private readonly tools = new Map<string, Tool<never, never>>();
+  /**
+   * Owner-disabled tool names (platform Phase 10, the Mini App desk view).
+   *
+   * A Tool's own `enabled` flag is a build-time property of the tool; this
+   * set is the owner's runtime override on top of it, persisted by the
+   * wiring (bootstrap) and flipped from the Mini App. A name in this set
+   * makes the tool inactive EVERYWHERE the registry's `isEnabled` is
+   * consulted — model specs, tool_search, menus, and Executor dispatch —
+   * while the tool stays registered, so re-enabling is instant and its
+   * desk card never disappears from the owner's desk view.
+   */
+  private readonly ownerDisabled = new Set<string>();
 
   /** Register a tool. Throws on a duplicate name or an incomplete desk card. */
   register<TIn extends Record<string, unknown>, TOut>(
@@ -75,8 +87,39 @@ export class ToolRegistry {
   /** Names of registered tools that are enabled, in registration order. */
   listActiveNames(): readonly string[] {
     return this.list()
-      .filter((t) => t.enabled)
+      .filter((t) => this.isEnabled(t))
       .map((t) => t.name);
+  }
+
+  /**
+   * Effective enabled state: the tool's own flag AND the owner's desk
+   * override. Every "may this tool be offered or run" decision in the
+   * service and the executor goes through here, never through
+   * `tool.enabled` directly.
+   */
+  isEnabled(tool: { name: string; enabled: boolean }): boolean {
+    return tool.enabled && !this.ownerDisabled.has(tool.name);
+  }
+
+  /**
+   * Flip the owner's desk override for a registered tool. Returns false
+   * for an unknown name (nothing was changed), true otherwise.
+   */
+  setDisabled(name: string, disabled: boolean): boolean {
+    if (!this.tools.has(name)) return false;
+    if (disabled) this.ownerDisabled.add(name);
+    else this.ownerDisabled.delete(name);
+    return true;
+  }
+
+  /** True when the owner has desk-disabled this (registered) tool name. */
+  isDisabled(name: string): boolean {
+    return this.ownerDisabled.has(name);
+  }
+
+  /** The owner-disabled names, in the order they were disabled. */
+  disabledNames(): readonly string[] {
+    return [...this.ownerDisabled];
   }
 
   /** Number of registered tools (enabled or not). */

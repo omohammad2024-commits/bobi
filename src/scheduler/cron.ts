@@ -377,3 +377,61 @@ function zonedToUtcMs(
   }
   return guess;
 }
+
+// ------------------------------------------------- shared slot helpers -----
+//
+// Moved here in platform Phase 10: the bench scheduler (Mini App) and the
+// digest scheduling service both validate owner-supplied crons and compute
+// the next slot after "now" — one implementation, in the scheduler domain
+// that already owns parseCron/nextAfterSchedule.
+
+const MAX_CUSTOM_CRON_LEN = 64;
+
+/** The next firing slot of `cron` strictly after the current instant. */
+export function nextSlotAfterNow(cron: string, tz: string = DEFAULT_CRON_TIMEZONE): number {
+  return nextAfterSchedule(parseCron(cron), Date.now(), tz);
+}
+
+export type CronValidation =
+  | { ok: true; source: string }
+  | { ok: false; reason: "invalid" | "too_frequent" };
+
+/**
+ * Validate an owner-supplied custom cron: it must parse, and its first
+ * three firings must respect a minimum gap (so a surface can refuse a
+ * schedule that would fire more often than its domain allows).
+ */
+export function validateCustomCron(
+  raw: unknown,
+  minGapMs: number,
+  tz: string = DEFAULT_CRON_TIMEZONE,
+): CronValidation {
+  if (typeof raw !== "string") return { ok: false, reason: "invalid" };
+  const expr = raw.trim();
+  if (expr.length === 0 || expr.length > MAX_CUSTOM_CRON_LEN) {
+    return { ok: false, reason: "invalid" };
+  }
+  let source: string;
+  let schedule: CronSchedule;
+  try {
+    schedule = parseCron(expr);
+    source = schedule.source;
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+  try {
+    let from = Date.now();
+    let prev: number | undefined;
+    for (let i = 0; i < 3; i++) {
+      const next = nextAfterSchedule(schedule, from, tz);
+      if (prev !== undefined && next - prev < minGapMs) {
+        return { ok: false, reason: "too_frequent" };
+      }
+      prev = next;
+      from = next;
+    }
+  } catch {
+    return { ok: false, reason: "invalid" };
+  }
+  return { ok: true, source };
+}

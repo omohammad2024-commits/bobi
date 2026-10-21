@@ -25,6 +25,11 @@ import {
   visibleCommandHelp,
   gateUser,
   handleHelpCommand,
+  handleVoiceCommand,
+  handleResetCommand,
+  handleStopCommand,
+  handlePersonalityCommand,
+  handleCompressCommand,
 } from "../src/bot/bot";
 import {
   PUBLIC_COMMANDS,
@@ -118,7 +123,19 @@ function fakeCbCtx(fromId: number, authed: boolean) {
       },
       answerCallbackQuery: async () => {},
     } as never,
-    env: { deps: deps as never, sysOpts: {} },
+    env: {
+      deps: deps as never,
+      sysOpts: {},
+      // PaletteEnv.handlers (Phase 5 B2): the real bot.ts handlers,
+      // injected exactly as createBot injects them.
+      handlers: {
+        voice: handleVoiceCommand,
+        reset: handleResetCommand,
+        stop: handleStopCommand,
+        personality: handlePersonalityCommand,
+        compress: handleCompressCommand,
+      },
+    },
   };
 }
 

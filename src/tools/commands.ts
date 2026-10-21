@@ -18,8 +18,8 @@
  * nothing about owner commands leaks through the listing.
  */
 import type { Tool, ToolActor, ToolContext } from "./types";
-import { visibleCommandHelp } from "../bot/command_help";
-import type { CommandHelpEntry } from "../bot/command_help";
+import { visibleCommandHelp } from "./command_help";
+import type { CommandHelpEntry } from "./command_help";
 import { defineManifest } from "./manifest";
 import type { ToolManifest } from "./manifest";
 
@@ -39,12 +39,12 @@ export interface CommandsToolDeps {
    * Catalog source: the command entries visible to an actor with the
    * given ownership (owner-only entries withheld for non-owners).
    *
-   * Plugin-architecture note: the catalog is the bot layer's data, so a
-   * fully-decoupled wiring injects it here instead of the tool reaching
-   * across layers. Optional for backward compatibility — when omitted
-   * the tool falls back to the bot layer's visibleCommandHelp() (the
-   * only remaining runtime cross-layer import in this module; see the
-   * dependency audit). New wiring should always pass it explicitly.
+   * Plugin-architecture note: the catalog lives in this layer
+   * (./command_help), and a decoupled wiring may still inject it here
+   * instead of the tool reading the shared module directly. Optional
+   * for backward compatibility — when omitted the tool falls back to
+   * this layer's visibleCommandHelp(). New wiring should always pass
+   * it explicitly.
    */
   listCommands?: (isOwner: boolean) => readonly CommandHelpEntry[];
 }

@@ -18,45 +18,11 @@
 import { ToolError, userMessageFor } from "./errors";
 import type { ToolErrorKind } from "./errors";
 import type { ToolRegistry } from "./registry";
-import type { ToolActor, ToolContext, ToolRunResult } from "./types";
+import type { ExecuteRequest, ToolActor, ToolContext, ToolRunResult } from "./types";
 import { validateInput } from "./validate";
 import type { ToolEndPayload } from "../hooks/events";
 
-export interface ExecuteRequest {
-  /** Tool name requested by the caller. Untrusted. */
-  tool: string;
-  /** Raw tool input. Untrusted and validated before execution. */
-  input: unknown;
-  /** Trusted caller identity + permissions, supplied by server code. */
-  actor: ToolActor;
-  /** Optional per-run timeout override, ms. */
-  timeoutMs?: number;
-  /**
-   * Caller cancellation, when the caller has one.
-   *
-   * Combined with this executor's own timeout signal, so a tool is torn down
-   * whether the run timed out or the user moved on. Without this, a tool started
-   * by the agent loop would keep running after the user sent a newer message.
-   */
-  signal?: AbortSignal;
-  /**
-   * The conversation this run belongs to, from server-side context.
-   * Never model-supplied; see ToolContext.
-   */
-  conversationId?: string;
-  /**
-   * Server-side only: suppress the `tool:end` lifecycle hook emission for
-   * this execution.
-   *
-   * Set by the hook runner for executions a hook itself triggered — without
-   * it, a hook on `tool:end` would emit another `tool:end` and recurse
-   * without bound. Has NO effect on validation, permissions, timeouts, or
-   * the concurrency bound; it only skips the observation callback. Never
-   * model-supplied: ExecuteRequest is built by server code (the agent loop,
-   * the schedulers, the hook runner), never from model output.
-   */
-  suppressHooks?: boolean;
-}
+export type { ExecuteRequest } from "./types";
 
 export interface ExecutorOptions {
   registry: ToolRegistry;
@@ -134,7 +100,7 @@ export class ToolExecutor {
       return this.result(req, started, "not_allowed", userMessageFor("not_allowed"));
     }
 
-    if (!tool.enabled) {
+    if (!this.registry.isEnabled(tool)) {
       return this.result(req, started, "disabled", userMessageFor("disabled"));
     }
 
@@ -243,7 +209,7 @@ export class ToolExecutor {
     // A disabled tool cannot run, so "may run right now" is false for it —
     // callers that gate UI on can() must not offer a tool execute() would
     // refuse. (Audit fix, Oct 2026.)
-    if (!tool.enabled) return false;
+    if (!this.registry.isEnabled(tool)) return false;
     return hasPermission(tool.permission.requires, actor.permissions);
   }
 

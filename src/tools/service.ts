@@ -23,8 +23,10 @@ import type {
   VisibleToolInfo,
 } from "./tool_search";
 import { ToolRegistry } from "./registry";
-import type { Tool, ToolActor, ToolRunResult } from "./types";
+import type { Tool, ToolActor, ToolDescriptor, ToolRunResult, ToolServicePort } from "./types";
 import type { ToolSpec } from "../ai/provider";
+
+export type { ToolDescriptor } from "./types";
 
 /**
  * Tools that always ship, in menu order — the statically constructible
@@ -50,17 +52,6 @@ export interface ToolServiceOptions {
   onToolEnd?: ExecutorOptions["onToolEnd"];
 }
 
-export interface ToolDescriptor {
-  name: string;
-  description: string;
-  enabled: boolean;
-  requires: readonly string[];
-  /** Desk-card short "what" (from the tool's manifest, when attached). */
-  purpose?: string;
-  /** Desk-card short "when to pick it up" (from the manifest, when attached). */
-  useWhen?: string;
-}
-
 /** One entry of the toolset taxonomy: a toolset name and its tool names. */
 export interface ToolsetInfo {
   name: string;
@@ -76,7 +67,7 @@ export interface ToolRunRequest {
   signal?: AbortSignal;
 }
 
-export class ToolService {
+export class ToolService implements ToolServicePort {
   readonly registry: ToolRegistry;
   readonly executor: ToolExecutor;
   /**
@@ -169,11 +160,11 @@ export class ToolService {
   listActive(): readonly ToolDescriptor[] {
     return this.registry
       .list()
-      .filter((t) => t.enabled)
+      .filter((t) => this.registry.isEnabled(t))
       .map((t) => ({
         name: t.name,
         description: t.description,
-        enabled: t.enabled,
+        enabled: this.registry.isEnabled(t),
         requires: t.permission.requires,
         // Desk-card short forms from the attached manifest, when present
         // (exactOptionalPropertyTypes: omit the keys when absent).
@@ -212,7 +203,8 @@ export class ToolService {
   toolSpecsFor(actor: ToolActor): ToolSpec[] {
     const specs: ToolSpec[] = [];
     for (const tool of this.registry.list()) {
-      if (!tool.enabled) continue;
+      if (!this.registry.isEnabled(tool)) continue;
+      if (tool.offDesk) continue;
       if (!this.can(tool.name, actor)) continue;
       if (!this.toolsetVisible(tool)) continue;
       specs.push({
@@ -227,8 +219,8 @@ export class ToolService {
   /**
    * Actor-visible tool metadata for dynamic discovery (tool_search).
    *
-   * Applies the EXACT same filter as `toolSpecsFor` — enabled, permitted for
-   * this actor, and within the active toolsets — but carries the toolset and
+   * Applies the EXACT same filter as `toolSpecsFor` — enabled, not offDesk,
+   * permitted for this actor, and within the active toolsets — but carries the toolset and
    * the declarative input fields instead of JSON Schema, which is what the
    * search needs to rank and describe.
    *
@@ -240,7 +232,8 @@ export class ToolService {
   searchableTools(actor: ToolActor): VisibleToolInfo[] {
     const out: VisibleToolInfo[] = [];
     for (const tool of this.registry.list()) {
-      if (!tool.enabled) continue;
+      if (!this.registry.isEnabled(tool)) continue;
+      if (tool.offDesk) continue;
       if (!this.can(tool.name, actor)) continue;
       if (!this.toolsetVisible(tool)) continue;
       out.push({

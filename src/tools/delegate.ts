@@ -41,8 +41,9 @@ import type { Lang } from "../i18n/types";
 import { DEFAULT_TOOLS, ToolService } from "./service";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
-import { defineManifest } from "./manifest";
-import type { ToolManifest } from "./manifest";
+import { delegateManifest } from "./delegate_manifest";
+
+export { delegateManifest } from "./delegate_manifest";
 
 export const DELEGATE_TOOL_NAME = "delegate";
 export const DELEGATE_PERMISSION = "tools:delegate";
@@ -120,26 +121,6 @@ export function createChildToolService(parent: ToolService): ToolService {
 }
 
 /** Build the delegate tool. Two-tier access: owner-only — the public chats, it never delegates. */
-/** Plugin discovery manifest for `delegate`. */
-export const delegateManifest: ToolManifest = defineManifest({
-  id: "delegate",
-  version: "1.0.0",
-  title: "Delegate Subtask",
-  description: "Hand an independent subtask to a child agent with limited tools and a time budget. Use it for side work that should not clutter the main conversation; returns a short summary.",
-  purpose: "subtask via child",
-  useWhen: "side subtask",
-  doNotUseWhen: "Main task or simple one-step work — do it directly; the child also has no delegate tool, so subtasks cannot nest.",
-  confusableWith: [
-    { tool: "consult_models", difference: "consult_models asks models one question and synthesizes; delegate runs a tool-using child agent on a subtask." },
-    { tool: "schedule_task", difference: "schedule_task runs work later on a schedule; delegate runs a child agent now." },
-  ],
-  latencyTier: "minutes",
-  outputSummary: "Returns the child agent's short summary, or an error on failure.",
-  category: "agents",
-  timeoutMs: 60000,
-  costTier: "heavy",
-});
-
 export function createDelegateTool(deps: DelegateToolDeps): Tool<DelegateInput, DelegateOutput> {
   return {
     name: DELEGATE_TOOL_NAME,

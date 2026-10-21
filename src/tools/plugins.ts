@@ -32,15 +32,20 @@ import { dateTimeTool } from "./date_time";
 import { fetchUrlTool } from "./fetch_url";
 import { textUtilitiesTool } from "./text_utilities";
 import { unitConverterTool } from "./unit_converter";
+import { weatherTool } from "./weather";
 
 import { calculatorManifest } from "./calculator";
+import { readCalendarManifest } from "./calendar";
 import { commandsManifest } from "./commands";
 import { consultModelsManifest } from "./consult_models";
+import { currencyRatesManifest } from "./currency";
 import { dateTimeManifest } from "./date_time";
-import { delegateManifest } from "./delegate";
+import { delegateManifest } from "./delegate_manifest";
 import { buildDigestManifest } from "./digest_tool";
 import { downloadMediaManifest } from "./downloader";
+import { extractDocumentManifest } from "./extract_document";
 import { fetchUrlManifest } from "./fetch_url";
+import { filesManifest } from "./files";
 import {
   addGoalManifest,
   completeGoalManifest,
@@ -54,16 +59,10 @@ import {
   rememberManifest,
 } from "./memory";
 import {
-  ackNudgeManifest,
-  listNudgesManifest,
-  noteFollowupManifest,
-  snoozeNudgeManifest,
-} from "./nudge_tool";
-import {
   cancelReminderManifest,
   listRemindersManifest,
   remindAtManifest,
-  remindNlManifest,
+  snoozeReminderManifest,
 } from "./reminders";
 import {
   cancelTaskManifest,
@@ -75,11 +74,19 @@ import {
   shortcutDeleteManifest,
   shortcutListManifest,
 } from "./shortcuts";
+import { moderateMemberManifest } from "./moderation";
+import { telegramActionManifest } from "./telegram_actions";
 import { textUtilitiesManifest } from "./text_utilities";
+import { todoListManifest } from "./todo";
 import { toolSearchManifest } from "./tool_search";
 import { unitConverterManifest } from "./unit_converter";
 import { usageReportManifest } from "./usage_report";
 import { generateVideoManifest } from "./video_gen";
+import {
+  textToSpeechManifest,
+  transcribeAudioManifest,
+} from "./voice_tools";
+import { weatherManifest } from "./weather";
 import { webSearchManifest } from "./web_search";
 
 import { runBenchManifest } from "../bench/tool";
@@ -88,7 +95,6 @@ import {
   curatorDecideManifest,
   listEventsManifest,
   noteEventManifest,
-  summarizeMemoriesManifest,
 } from "../curator/tools";
 import { groupDigestManifest } from "../groups/group_digest";
 import { skillsManifest } from "../skills/tool";
@@ -108,6 +114,7 @@ export const pluginTools: readonly Tool<unknown, unknown>[] = [
   textUtilitiesTool,
   unitConverterTool,
   fetchUrlTool,
+  weatherTool,
 ] as unknown as readonly Tool<unknown, unknown>[];
 
 interface CatalogEntry {
@@ -118,7 +125,6 @@ interface CatalogEntry {
 
 /** One line per built-in tool, sorted by plugin id. */
 const CATALOG_ENTRIES: readonly CatalogEntry[] = [
-  { manifest: ackNudgeManifest, source: "src/tools/nudge_tool.ts" },
   { manifest: addGoalManifest, source: "src/tools/goals.ts" },
   { manifest: buildDigestManifest, source: "src/tools/digest_tool.ts" },
   { manifest: calculatorManifest, source: "src/tools/calculator.ts" },
@@ -129,24 +135,26 @@ const CATALOG_ENTRIES: readonly CatalogEntry[] = [
   { manifest: consultModelsManifest, source: "src/tools/consult_models.ts" },
   { manifest: curateMemoriesManifest, source: "src/curator/tools.ts" },
   { manifest: curatorDecideManifest, source: "src/curator/tools.ts" },
+  { manifest: currencyRatesManifest, source: "src/tools/currency.ts" },
   { manifest: dateTimeManifest, source: "src/tools/date_time.ts" },
   { manifest: delegateManifest, source: "src/tools/delegate.ts" },
   { manifest: downloadMediaManifest, source: "src/tools/downloader.ts" },
+  { manifest: extractDocumentManifest, source: "src/tools/extract_document.ts" },
   { manifest: fetchUrlManifest, source: "src/tools/fetch_url.ts" },
+  { manifest: filesManifest, source: "src/tools/files.ts" },
   { manifest: forgetManifest, source: "src/tools/memory.ts" },
   { manifest: generateImageManifest, source: "src/tools/image_gen.ts" },
   { manifest: generateVideoManifest, source: "src/tools/video_gen.ts" },
   { manifest: groupDigestManifest, source: "src/groups/group_digest.ts" },
   { manifest: listEventsManifest, source: "src/curator/tools.ts" },
   { manifest: listGoalsManifest, source: "src/tools/goals.ts" },
-  { manifest: listNudgesManifest, source: "src/tools/nudge_tool.ts" },
   { manifest: listRemindersManifest, source: "src/tools/reminders.ts" },
   { manifest: listTasksManifest, source: "src/tools/scheduled_tasks.ts" },
+  { manifest: moderateMemberManifest, source: "src/tools/moderation.ts" },
   { manifest: noteEventManifest, source: "src/curator/tools.ts" },
-  { manifest: noteFollowupManifest, source: "src/tools/nudge_tool.ts" },
+  { manifest: readCalendarManifest, source: "src/tools/calendar.ts" },
   { manifest: recallManifest, source: "src/tools/memory.ts" },
   { manifest: remindAtManifest, source: "src/tools/reminders.ts" },
-  { manifest: remindNlManifest, source: "src/tools/reminders.ts" },
   { manifest: rememberManifest, source: "src/tools/memory.ts" },
   { manifest: runBenchManifest, source: "src/bench/tool.ts" },
   { manifest: scheduleTaskManifest, source: "src/tools/scheduled_tasks.ts" },
@@ -155,12 +163,16 @@ const CATALOG_ENTRIES: readonly CatalogEntry[] = [
   { manifest: shortcutDeleteManifest, source: "src/tools/shortcuts.ts" },
   { manifest: shortcutListManifest, source: "src/tools/shortcuts.ts" },
   { manifest: skillsManifest, source: "src/skills/tool.ts" },
-  { manifest: snoozeNudgeManifest, source: "src/tools/nudge_tool.ts" },
-  { manifest: summarizeMemoriesManifest, source: "src/curator/tools.ts" },
+  { manifest: snoozeReminderManifest, source: "src/tools/reminders.ts" },
+  { manifest: telegramActionManifest, source: "src/tools/telegram_actions.ts" },
+  { manifest: textToSpeechManifest, source: "src/tools/voice_tools.ts" },
   { manifest: textUtilitiesManifest, source: "src/tools/text_utilities.ts" },
+  { manifest: todoListManifest, source: "src/tools/todo.ts" },
   { manifest: toolSearchManifest, source: "src/tools/tool_search.ts" },
+  { manifest: transcribeAudioManifest, source: "src/tools/voice_tools.ts" },
   { manifest: unitConverterManifest, source: "src/tools/unit_converter.ts" },
   { manifest: usageReportManifest, source: "src/tools/usage_report.ts" },
+  { manifest: weatherManifest, source: "src/tools/weather.ts" },
   { manifest: webSearchManifest, source: "src/tools/web_search.ts" },
 ];
 

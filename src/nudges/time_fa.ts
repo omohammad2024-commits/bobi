@@ -3,9 +3,9 @@
  *
  * There was no existing Persian natural-language date parser in the codebase
  * (the model resolves "فردا" itself via the date_time tool and the prompt's
- * current-time block). `note_followup` takes natural Persian `when` values like
- * «فردا ساعت ۹» from the model, so it needs a deterministic server-side
- * parser here — the model's math is not trusted for scheduling.
+ * current-time block). The follow-up extractor (extract.ts) takes natural
+ * Persian `when` values like «فردا ساعت ۹», so it needs a deterministic
+ * server-side parser here — the model's math is not trusted for scheduling.
  *
  * This is deliberately rule-based, not model-based: it is testable,
  * deterministic, and cannot hallucinate a different instant than the one the

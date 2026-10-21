@@ -121,7 +121,7 @@ afterEach(() => {
 describe("parallelism heuristic", () => {
   test("write-like tools are sequential, read-only ones parallel", () => {
     expect(isWriteLikeTool({ name: "remember", description: "store a fact" })).toBe(true);
-    expect(isWriteLikeTool({ name: "remind_nl", description: "schedule a reminder" })).toBe(true);
+    expect(isWriteLikeTool({ name: "remind_at", description: "schedule a reminder" })).toBe(true);
     expect(isWriteLikeTool({ name: "generate_image", description: "generate an image" })).toBe(true);
     expect(isWriteLikeTool({ name: "shortcut_add", description: "add a shortcut" })).toBe(true);
     expect(isWriteLikeTool({ name: "calculator", description: "calculate" })).toBe(false);

@@ -52,8 +52,9 @@ export interface DetectIntentsOptions {
   timezone?: string;
 }
 
+import { processEnv } from "../config/env";
 /** Convenience env check, kept here so every consumer agrees. */
-export function intentRouterEnabled(env: Record<string, string | undefined> = process.env): boolean {
+export function intentRouterEnabled(env: Record<string, string | undefined> = processEnv()): boolean {
   return env["BOBI_INTENT_ROUTER"] !== "0";
 }
 
@@ -172,7 +173,9 @@ export function detectIntents(
   // Reminders: a parsed Persian date/time is the strongest signal that
   // free text is a reminder. Uses the tools' own parser so the router
   // and the tool can never disagree about what "فردا ساعت ۹" means.
-  const reminderManifest = catalog.find((m) => m.id === "remind_nl");
+  // (Phase 8: remind_nl folded into remind_at — one tool takes the
+  // phrase in `when` or the computed instant in `dueAt`.)
+  const reminderManifest = catalog.find((m) => m.id === "remind_at");
   if (reminderManifest !== undefined) {
     let due: Date | null = null;
     try {
@@ -181,9 +184,9 @@ export function detectIntents(
       due = null; // an unparseable zone/input just means "no date hint"
     }
     if (due !== null) {
-      const existing = byId.get("remind_nl");
+      const existing = byId.get("remind_at");
       offer({
-        toolId: "remind_nl",
+        toolId: "remind_at",
         confidence: existing !== undefined ? REMINDER_WITH_DATE : 0.7,
         extractedArgs: {
           when: text.trim(),

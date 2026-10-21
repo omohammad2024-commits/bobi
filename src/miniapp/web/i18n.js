@@ -58,6 +58,7 @@
       "sec.usage": "Usage",
       "sec.tasks": "Tasks",
       "sec.groups": "Groups",
+      "sec.desk": "Tool desk",
 
       "chat.placeholder": "Type anything… e.g. /model",
       "chat.send": "Send",

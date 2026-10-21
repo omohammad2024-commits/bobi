@@ -3,9 +3,19 @@
  * parallel, then synthesize their answers into one English reply with the
  * primary model.
  *
- * Pipeline: allowlist the requested models → runMixture fan-out (per-model
- * 30s deadline, failures recorded not fatal) → one synthesis call with
- * primaryModel → { ok: true, modelsUsed, answer }.
+ * Pipeline: resolve the live provider/primary for THIS run → allowlist the
+ * requested models → runMixture fan-out (per-model 30s deadline, failures
+ * recorded not fatal) → one synthesis call with that run's primaryModel →
+ * { ok: true, modelsUsed, answer }.
+ *
+ * LIVE SELECTION (Phase 8): the tool is registered unconditionally at
+ * boot — even before any provider is configured — and deps.resolveConsult
+ * is called fresh on EVERY run, so a provider added or a model switched
+ * after boot takes effect without a restart. When resolveConsult()
+ * returns undefined at run time there is no provider to consult: the
+ * tool throws an honest not_allowed error and makes zero provider calls
+ * — it never fakes an answer and never silently falls back to a model
+ * the owner did not select.
  *
  * SECURITY MODEL (read before touching this file):
  *
@@ -89,12 +99,21 @@ export interface ConsultModelsOutput {
 }
 
 export interface ConsultModelsDeps {
-  provider: AiProvider;
-  /** Model that performs the final synthesis. */
-  primaryModel: string;
+  /**
+   * Live resolver for the consultation provider + synthesis model.
+   * Called fresh on EVERY run — never cached at construction or boot —
+   * so the provider/model the owner has selected AT RUN TIME is used.
+   * Returns undefined when no AI provider is configured yet; the tool
+   * then throws an honest not-configured error (see module doc).
+   */
+  resolveConsult: () => { provider: AiProvider; primaryModel: string } | undefined;
   /** Fresh list of owner-configured model ids. Called per run, never cached. */
   listConfiguredModels: () => string[];
 }
+
+/** Message thrown when a run finds no configured provider. User-safe. */
+export const CONSULT_NOT_CONFIGURED_MESSAGE =
+  "No AI provider is configured yet. Consultation becomes available once a provider is set up.";
 
 /** Build the consult_models tool. Two-tier access: owner-only — multi-model consultation is an owner capability. */
 /** Plugin discovery manifest for `consult_models`. */
@@ -105,7 +124,7 @@ export const consultModelsManifest: ToolManifest = defineManifest({
   description: "Consult up to 3 configured models at once and combine their answers into one precise answer. Querying is expensive (one full call per model + one synthesis); use it for important questions worth multiple perspectives.",
   purpose: "multi-model answer",
   useWhen: "needs 2+ models",
-  doNotUseWhen: "Simple or quick questions — answer directly with one model; this costs about 4 calls and returns English synthesis only.",
+  doNotUseWhen: "Simple or quick questions — answer directly; costs ~4 calls, English synthesis only. Needs a configured provider.",
   confusableWith: [
     { tool: "delegate", difference: "delegate runs a child agent with tools on a subtask; consult_models asks models a question, no tools." },
   ],
@@ -158,6 +177,18 @@ export function createConsultModelsTool(
         throw new ToolError("invalid_input", "The question is empty.");
       }
 
+      // Live selection: resolved fresh for THIS run. Undefined means no
+      // AI provider is configured yet (e.g. the bot booted before the
+      // owner set one up and none has been added since) — fail honestly
+      // with zero provider calls, never a faked or fallback answer. The
+      // optional call also keeps a stub-built tool ({} deps in desk/diet
+      // tests) from crashing with a TypeError if it is ever run.
+      const resolved = deps.resolveConsult?.();
+      if (resolved === undefined) {
+        throw new ToolError("not_allowed", CONSULT_NOT_CONFIGURED_MESSAGE);
+      }
+      const { provider, primaryModel } = resolved;
+
       const configured = deps.listConfiguredModels();
       const requested = input.models ?? configured.slice(0, CONSULT_MODELS_MAX);
       if (requested.length === 0) {
@@ -183,7 +214,7 @@ export function createConsultModelsTool(
           runMixture(
             {
               complete: async (model, messages, signal) => {
-                const res = await deps.provider.complete({
+                const res = await provider.complete({
                   messages,
                   model,
                   timeoutMs: DEFAULT_MODEL_TIMEOUT_MS,
@@ -208,9 +239,9 @@ export function createConsultModelsTool(
 
         let answer: string;
         try {
-          const synthesis = await deps.provider.complete({
+          const synthesis = await provider.complete({
             messages: [{ role: "user", content: buildSynthesisPrompt(question, answers) }],
-            model: deps.primaryModel,
+            model: primaryModel,
             timeoutMs: SYNTHESIS_TIMEOUT_MS,
             signal: deadline.signal,
           });

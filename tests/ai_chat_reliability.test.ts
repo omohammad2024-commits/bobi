@@ -38,7 +38,7 @@ import { AiGateway } from "../src/ai/gateway";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderService, ModelService } from "../src/ai/provider_service";
 import { ProviderSecretStore } from "../src/ai/secret_store";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { Storage } from "../src/storage/storage";
 import { AgentLoop } from "../src/agent/loop";
 import { ToolService } from "../src/tools/service";
@@ -322,7 +322,7 @@ type StreamOutcome =
 interface GwHarness {
   storage: Storage;
   gateway: AiGateway;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
   calls: string[];
   seed: (tag: string) => { providerId: number; modelRowId: number };
   activate: (ids: { providerId: number; modelRowId: number }) => void;
@@ -382,7 +382,7 @@ function gwHarness(
   } as never);
   const providers = new ProviderService(storage, secrets, new AdapterRegistry());
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 1_000);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 1_000);
   const seed = (tag: string) => {
     const p = providers.create({
       label: tag,
@@ -624,7 +624,7 @@ function probeHarness(adapterImpl: unknown, captured: CapturedReq) {
   const adapters = { create: () => adapterImpl } as unknown as AdapterRegistry;
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 1_000);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 1_000);
   const p = providers.create({
     label: "p",
     adapter: "openai_compatible",

@@ -12,7 +12,7 @@ import { Storage } from "../src/storage/storage";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 import {
   CircuitBreakerRegistry,
@@ -479,7 +479,7 @@ function buildHealth(opts: { outcome: () => Outcome; calls: { n: number } }) {
     threshold: 3,
     baseCooldownMs: 30_000,
   });
-  const health = new ProviderHealthService(
+  const health = new ProviderProbeService(
     storage,
     providers,
     secrets,
@@ -552,7 +552,7 @@ describe("background health prober", () => {
       }),
     } as unknown as AdapterRegistry;
     const breakers = new CircuitBreakerRegistry({ threshold: 3, baseCooldownMs: 30_000 });
-    const health = new ProviderHealthService(storage, providers, secrets, gated, 300, breakers);
+    const health = new ProviderProbeService(storage, providers, secrets, gated, 300, breakers);
     const p = providers.create({
       label: "p",
       adapter: "openai_compatible",
@@ -647,14 +647,14 @@ describe("health probe connection field", () => {
     if (!m.ok) throw new Error("model failed");
     models.setDefault(m.data);
 
-    const withConn = new ProviderHealthService(
+    const withConn = new ProviderProbeService(
       storage, providers, secrets, okAdapters, 300, undefined, connections,
     );
     const probed = await withConn.probe(p.data);
     expect(probed.connection).toEqual({ reused: 3, lastLatencyMs: 12, state: "warm" });
     expect(withConn.last(p.data)?.connection?.state).toBe("warm");
 
-    const without = new ProviderHealthService(storage, providers, secrets, okAdapters, 300);
+    const without = new ProviderProbeService(storage, providers, secrets, okAdapters, 300);
     const plain = await without.probe(p.data);
     expect(plain.connection).toBeUndefined();
     storage.close();

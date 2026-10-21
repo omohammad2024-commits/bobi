@@ -178,6 +178,9 @@ describe("agent end to end", () => {
       "text_utilities",
       "unit_converter",
       "fetch_url",
+      // Phase 9: weather is a static (deps-free) plugin tool like the
+      // five above, so it joins this exact offered set.
+      "weather",
     ]);
     // Every offered tool declares a real argument schema.
     for (const spec of offered) {

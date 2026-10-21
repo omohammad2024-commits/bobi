@@ -26,7 +26,7 @@
  *    yields the default config (disabled). Corrupt state can never enable
  *    moderation by accident.
  */
-import type { Storage } from "../storage/storage";
+import type { MiscRepo } from "../storage/repos/misc";
 
 /** What the bot does when a link is detected in a moderated group. */
 export type LinkPolicy = "allow" | "warn" | "delete";
@@ -163,8 +163,8 @@ export function validateModConfig(
   return errors.length > 0 ? { ok: false, errors } : { ok: true, config: next };
 }
 
-/** Minimal pref-store surface this module needs; `Storage` satisfies it. */
-export type ModPrefStore = Pick<Storage, "getUserPref" | "setUserPref">;
+/** Minimal pref-store surface this module needs; the Misc repo satisfies it. */
+export type ModPrefStore = Pick<MiscRepo, "getUserPref" | "setUserPref">;
 
 /**
  * Read a group's moderation config.

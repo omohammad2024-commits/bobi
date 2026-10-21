@@ -11,7 +11,7 @@ import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { AiError } from "../src/ai/provider";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiAdminController } from "../src/groups/ai_controller";
 import { encode, decode } from "../src/groups/callbacks";
 
@@ -47,7 +47,7 @@ interface Harness {
   secrets: ProviderSecretStore;
   providers: ProviderService;
   models: ModelService;
-  health: ProviderHealthService;
+  health: ProviderProbeService;
 }
 
 function harness(opts: { withKey?: boolean; probeTimeoutMs?: number } = {}): Harness {
@@ -62,7 +62,7 @@ function harness(opts: { withKey?: boolean; probeTimeoutMs?: number } = {}): Har
   const models = new ModelService(storage);
   // A short probe timeout keeps the suite fast and offline: no test waits on a
   // real connection deadline.
-  const health = new ProviderHealthService(
+  const health = new ProviderProbeService(
     storage,
     providers,
     secrets,
@@ -466,7 +466,7 @@ describe("AI admin workflow", () => {
       const adapters = new AdapterRegistry();
       const providers = new ProviderService(first, secrets, adapters);
       const models = new ModelService(first);
-      const health = new ProviderHealthService(first, providers, secrets, adapters);
+      const health = new ProviderProbeService(first, providers, secrets, adapters);
       const ai = new AiAdminController({
         auth,
         admin: new AdminBoundary({ auth, audit }),
@@ -660,7 +660,7 @@ describe("provider health", () => {
         }) as unknown as ReturnType<AdapterRegistry["create"]>,
     } as unknown as AdapterRegistry;
 
-    const health = new ProviderHealthService(h.storage, h.providers, h.secrets, stalling, 200);
+    const health = new ProviderProbeService(h.storage, h.providers, h.secrets, stalling, 200);
     const probe = await health.probe(active.providerId);
     expect(probe.ok).toBe(false);
     expect(probe.message).toContain("No response arrived in time.");

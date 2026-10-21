@@ -28,7 +28,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
   ): void {
     // exactOptionalPropertyTypes: never pass an explicit undefined.
     const importance = opts?.importance;
-    this.storage.upsertMemory(
+    this.storage.memories.upsertMemory(
       importance === undefined
         ? { userId, key, content }
         : { userId, key, content, importance },
@@ -36,7 +36,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
   }
 
   get(userId: string, key: string): StoredMemory | undefined {
-    const m = this.storage.getMemory(userId, key);
+    const m = this.storage.memories.getMemory(userId, key);
     if (!m) return undefined;
     return {
       key: m.key,
@@ -53,7 +53,7 @@ export class SqliteMemoryProvider implements MemoryProvider {
   }
 
   list(userId: string, limit = 50): StoredMemory[] {
-    return this.storage.listMemories(userId, limit).map((m) => ({
+    return this.storage.memories.listMemories(userId, limit).map((m) => ({
       key: m.key,
       content: m.content,
       createdAt: m.createdAt,
@@ -65,11 +65,11 @@ export class SqliteMemoryProvider implements MemoryProvider {
   }
 
   delete(userId: string, key: string): boolean {
-    return this.storage.deleteMemory(userId, key);
+    return this.storage.memories.deleteMemory(userId, key);
   }
 
   count(userId: string): number {
-    return this.storage.countMemories(userId);
+    return this.storage.memories.countMemories(userId);
   }
 
   /** Worker-2: summarize-then-drop prune, delegated to Storage. */
@@ -77,11 +77,11 @@ export class SqliteMemoryProvider implements MemoryProvider {
     userId: string,
     drops: ReadonlyArray<MemoryPruneDrop>,
   ): number {
-    return this.storage.pruneMemories(userId, drops);
+    return this.storage.memories.pruneMemories(userId, drops);
   }
 
   /** Schema 22: recall telemetry, delegated to Storage. */
   bumpRecall(userId: string, keys: readonly string[]): number {
-    return this.storage.bumpMemoryRecall(userId, keys);
+    return this.storage.memories.bumpMemoryRecall(userId, keys);
   }
 }

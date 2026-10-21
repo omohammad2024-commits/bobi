@@ -33,6 +33,7 @@ import type { AIProviderAdapter } from "../ai/adapter";
 import type { Embedder, Embedding } from "./embeddings";
 
 /** Default embedding model when BOBI_EMBEDDING_MODEL is unset. */
+import { flagUnlessZero, processEnv } from "../config/env";
 export const DEFAULT_EMBEDDING_MODEL = "text-embedding-3-small";
 
 /** Hard timeout for one embedding request. Background work, not a chat turn. */
@@ -84,7 +85,7 @@ export class ProviderEmbedder implements Embedder {
     if (this.modelOverride !== undefined && this.modelOverride.trim() !== "") {
       return this.modelOverride.trim();
     }
-    const env = process.env.BOBI_EMBEDDING_MODEL;
+    const env = processEnv().BOBI_EMBEDDING_MODEL;
     if (env !== undefined && env.trim() !== "") return env.trim();
     return DEFAULT_EMBEDDING_MODEL;
   }
@@ -152,11 +153,11 @@ export class ProviderEmbedder implements Embedder {
   private resolveAdapter(): AIProviderAdapter | undefined {
     const providerId = this.activeProviderId();
     if (providerId === undefined) return undefined;
-    const provider = this.storage.getProvider(providerId);
+    const provider = this.storage.providers.getProvider(providerId);
     if (!provider || !provider.enabled) return undefined;
     if (!this.adapters.describes(provider.adapter).embeddings) return undefined;
 
-    const stored = this.storage.getCredential(providerId);
+    const stored = this.storage.providers.getCredential(providerId);
     if (!stored) return undefined;
     let apiKey: string;
     try {
@@ -178,12 +179,12 @@ export class ProviderEmbedder implements Embedder {
   }
 
   private activeProviderId(): number | undefined {
-    const id = this.storage.getRuntimeSettings().activeProviderId;
+    const id = this.storage.providers.getRuntimeSettings().activeProviderId;
     return id ?? undefined;
   }
 
   private semanticDisabled(): boolean {
     if (this.forceDisabled) return true;
-    return process.env.BOBI_SEMANTIC_MEMORY === "0";
+    return !flagUnlessZero(processEnv().BOBI_SEMANTIC_MEMORY);
   }
 }

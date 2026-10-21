@@ -27,14 +27,14 @@ export class SearchRegistry {
    * instance — it is never cached on the registry.
    */
   active(): SearchProvider {
-    const settings = this.storage.getSearchSettings();
+    const settings = this.storage.providers.getSearchSettings();
     return this.build(settings);
   }
 
   /** Whether a usable provider is configured, without building one. */
   isConfigured(): boolean {
     try {
-      const settings = this.storage.getSearchSettings();
+      const settings = this.storage.providers.getSearchSettings();
       return isSearchProviderType(settings.provider) &&
         (settings.provider === "duckduckgo" || this.hasKey());
     } catch {
@@ -59,7 +59,7 @@ export class SearchRegistry {
 
   /** The stored key, decrypted, or undefined when unset or unreadable. */
   private decryptedKey(): string | undefined {
-    const stored = this.storage.getSearchCredential();
+    const stored = this.storage.providers.getSearchCredential();
     if (!stored) return undefined;
     try {
       return this.secrets.decrypt(stored);

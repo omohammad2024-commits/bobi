@@ -127,7 +127,7 @@ export function createSearchHistoryTool(
       // nothing.
       const userId = ownerOf(ctx.actor);
       const limit = clampLimit(input.limit);
-      const hits = deps.storage.searchMessages(query, {
+      const hits = deps.storage.conversations.searchMessages(query, {
         userId,
         limit,
         ...(input.conversationId !== undefined

@@ -101,14 +101,14 @@ export function createAddGoalTool(deps: GoalToolDeps): Tool<AddGoalInput, AddGoa
         throw new ToolError("invalid_input", "Goal title is empty.");
       }
 
-      if (deps.storage.countGoals(userId) >= MAX_GOALS_PER_OWNER) {
+      if (deps.storage.scheduling.countGoals(userId) >= MAX_GOALS_PER_OWNER) {
         throw new ToolError(
           "invalid_input",
           "Too many goals; complete some first.",
         );
       }
 
-      const id = deps.storage.createGoal({
+      const id = deps.storage.scheduling.createGoal({
         title,
         // An absent description is the empty string, so the model always gets
         // a defined field rather than a missing one.
@@ -181,7 +181,7 @@ export function createListGoalsTool(deps: GoalToolDeps): Tool<ListGoalsInput, Li
     async run(input: ListGoalsInput, ctx: ToolContext): Promise<ListGoalsOutput> {
       const userId = ownerOf(ctx, deps);
       const status = parseStatus(input.status);
-      const rows = deps.storage.listGoals(userId, status, MAX_LIST);
+      const rows = deps.storage.scheduling.listGoals(userId, status, MAX_LIST);
 
       return {
         goals: rows.map((r) => ({
@@ -260,14 +260,14 @@ export function createCompleteGoalTool(
       const userId = ownerOf(ctx, deps);
       // Scoped to the creator by the storage layer, and only an active goal
       // may be completed — completing twice reports false, not a fresh stamp.
-      const completed = deps.storage.completeGoal(userId, input.id);
+      const completed = deps.storage.scheduling.completeGoal(userId, input.id);
       if (!completed) {
         throw new ToolError("not_found", "No active goal found with this id.");
       }
       return {
         id: input.id,
         completed: true,
-        remaining: deps.storage.countGoals(userId, "active"),
+        remaining: deps.storage.scheduling.countGoals(userId, "active"),
       };
     },
   };

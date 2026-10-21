@@ -122,9 +122,9 @@ export const rememberManifest: ToolManifest = defineManifest({
   purpose: "lasting user note",
   useWhen: "durable fact",
   doNotUseWhen:
-    "fleeting or one-off info; a dated follow-up — that is note_followup; a past-event log — that is note_event",
+    "fleeting or one-off info; a dated follow-up — that is remind_at with followUp; a past-event log — that is note_event",
   confusableWith: [
-    { tool: "note_followup", difference: "follow-ups resurface until closed; memories are passive stored facts" },
+    { tool: "remind_at", difference: "a follow-up reminder resurfaces until closed; memories are passive stored facts" },
     { tool: "note_event", difference: "note_event logs a past event; remember stores a standing fact" },
   ],
   latencyTier: "instant",
@@ -280,10 +280,10 @@ export const recallManifest: ToolManifest = defineManifest({
   purpose: "memories by query",
   useWhen: "memory asked",
   doNotUseWhen:
-    "past conversation history — that is search_history; a condensed overview of all memories — that is summarize_memories",
+    "past conversation history — that is search_history; condensing/archiving all memories — that is curate_memories",
   confusableWith: [
     { tool: "search_history", difference: "search_history scans past chats; recall searches stored long-term memories" },
-    { tool: "summarize_memories", difference: "summarize_memories condenses all memories; recall returns matching items" },
+    { tool: "curate_memories", difference: "curate_memories reviews and archives memories; recall returns matching items" },
   ],
   latencyTier: "seconds",
   outputSummary: "Matching memories (key, content, importance), best match first.",

@@ -45,6 +45,7 @@
 import { resolveTarget, type DnsResolver } from "../ai/dns_guard";
 import { pinnedFetch, MAX_RESPONSE_BYTES } from "../ai/pinned_transport";
 import { AiError, base64Bytes } from "../ai/provider";
+import { processEnv, readChained } from "../config/env";
 import { ToolError } from "./errors";
 import type { Tool, ToolContext } from "./types";
 import { defineManifest } from "./manifest";
@@ -147,17 +148,18 @@ export function videoGenConfigured(baseUrl: string): boolean {
 /**
  * Read this tool's config straight from the environment.
  *
- * config.ts is owned by another work package, so the video tool reads its own
- * keys here instead of adding new fields to the shared config: BOBI_VIDEO_*
- * with the same SOL_VIDEO_* fallback the shared config loader honours.
+ * The video tool reads its own keys instead of adding fields to the shared
+ * SolConfig: BOBI_VIDEO_* with the same SOL_VIDEO_* fallback the shared
+ * config loader honours — and NO bare-name step. Phase 7: the chain is the
+ * shared "prefixed" chain in src/config/env.ts.
  */
-export function videoGenDepsFromEnv(env: NodeJS.ProcessEnv = process.env): {
+export function videoGenDepsFromEnv(env: NodeJS.ProcessEnv = processEnv()): {
   baseUrl: string;
   apiKey?: string;
   model: string;
 } {
   const pick = (suffix: string): string | undefined =>
-    env[`BOBI_${suffix}`] ?? env[`SOL_${suffix}`];
+    readChained(env, suffix, "prefixed");
   const baseUrl = (pick("VIDEO_BASE_URL") ?? "").trim();
   const apiKey = pick("VIDEO_API_KEY")?.trim() || undefined;
   const model = (pick("VIDEO_MODEL") ?? "").trim();

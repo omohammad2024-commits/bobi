@@ -3,8 +3,9 @@
  *
  * When the user says something like «فردا یادم بنداز قسط رو بدم», that intent
  * usually dies in chat history. This module detects it with rules — no model
- * call — and proposes a { text, dueAtMs } pair the caller can store via
- * NudgeTracker.note().
+ * call — and proposes a { text, dueAtMs } pair the caller can store as a
+ * follow-up reminder in the unified reminders store (Phase 8:
+ * SchedulingRepo.createReminder with followup: true).
  *
  * A model-based extractor is a documented future upgrade (see
  * docs/phase-nudges.md): rules cover the common Persian phrasings cheaply and
@@ -21,7 +22,9 @@
  *   asked for.
  */
 import { DEFAULT_NUDGE_TIMEZONE, normalizeFa, parsePersianWhen } from "./time_fa";
-import { MAX_NUDGE_TEXT_LENGTH } from "./tracker";
+
+/** Max follow-up text length, mirroring the reminder tool's ceiling. */
+export const MAX_FOLLOWUP_TEXT_LENGTH = 500;
 
 /**
  * Dated-event extraction (birthdays, anniversaries, recurring commitments)
@@ -127,7 +130,7 @@ export function extractFollowup(
   // If stripping left nothing («فردا یادم بنداز» with no topic), keep the
   // original message so the reminder is still recognizable in context.
   if (text.length === 0) text = s;
-  if (text.length > MAX_NUDGE_TEXT_LENGTH) text = text.slice(0, MAX_NUDGE_TEXT_LENGTH);
+  if (text.length > MAX_FOLLOWUP_TEXT_LENGTH) text = text.slice(0, MAX_FOLLOWUP_TEXT_LENGTH);
 
   return { text, dueAtMs };
 }

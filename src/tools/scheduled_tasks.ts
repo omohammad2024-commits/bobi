@@ -166,10 +166,9 @@ export const scheduleTaskManifest: ToolManifest = defineManifest({
   purpose: "new recurring task",
   useWhen: "repeats on cron",
   doNotUseWhen:
-    "single future ping — that is remind_at or remind_nl; a follow-up nag — that is note_followup",
+    "single future ping or a follow-up that nags until closed — that is remind_at",
   confusableWith: [
-    { tool: "remind_at", difference: "remind_at fires one message once; schedule_task repeats actions on cron" },
-    { tool: "note_followup", difference: "follow-ups nag the user; tasks run tool, message or agent actions" },
+    { tool: "remind_at", difference: "remind_at fires one message once (or nags as a follow-up); schedule_task repeats actions on cron" },
   ],
   latencyTier: "instant",
   outputSummary: "Returns the scheduled-task id, normalized cron, timezone and next run time.",
@@ -251,7 +250,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
         throw new ToolError("invalid_input", `No tool named "${action.tool}" exists.`);
       }
 
-      if (deps.storage.countTasks(userId) >= MAX_TASKS_PER_OWNER) {
+      if (deps.storage.scheduling.countTasks(userId) >= MAX_TASKS_PER_OWNER) {
         throw new ToolError(
           "invalid_input",
           "Too many scheduled tasks; delete some first.",
@@ -269,7 +268,7 @@ export function createScheduleTaskTool(deps: ScheduledTaskToolDeps): Tool<Schedu
         );
       }
 
-      const id = deps.storage.createTask({
+      const id = deps.storage.scheduling.createTask({
         name,
         cronExpr: schedule.source,
         timezone,
@@ -316,10 +315,9 @@ export const listTasksManifest: ToolManifest = defineManifest({
   purpose: "cron task list",
   useWhen: "tasks asked",
   doNotUseWhen:
-    "pending reminders — that is list_reminders; open follow-ups — that is list_nudges",
+    "pending reminders and open follow-ups — that is list_reminders",
   confusableWith: [
-    { tool: "list_reminders", difference: "list_reminders shows one-shot reminders; this shows recurring cron tasks" },
-    { tool: "list_nudges", difference: "list_nudges shows follow-ups; this shows cron tasks" },
+    { tool: "list_reminders", difference: "list_reminders shows one-shot reminders and follow-ups; this shows recurring cron tasks" },
   ],
   latencyTier: "instant",
   outputSummary: "Returns the owner's scheduled tasks with id, cron, next run time and status.",
@@ -341,7 +339,7 @@ export function createListTasksTool(deps: ScheduledTaskToolDeps): Tool<Record<st
 
     async run(_input: Record<string, never>, ctx: ToolContext): Promise<ListTasksOutput> {
       const userId = ownerOf(ctx, deps);
-      const rows = deps.storage.listTasks(userId, MAX_TASKS_PER_OWNER);
+      const rows = deps.storage.scheduling.listTasks(userId, MAX_TASKS_PER_OWNER);
       return {
         tasks: rows.map((r) => ({
           id: r.id,
@@ -415,11 +413,11 @@ export function createCancelTaskTool(deps: ScheduledTaskToolDeps): Tool<CancelTa
     async run(input: CancelTaskInput, ctx: ToolContext): Promise<CancelTaskOutput> {
       const userId = ownerOf(ctx, deps);
       // Scoped to the creator by the storage layer.
-      const cancelled = deps.storage.deleteTask(userId, input.id);
+      const cancelled = deps.storage.scheduling.deleteTask(userId, input.id);
       return {
         id: input.id,
         cancelled,
-        remaining: deps.storage.countTasks(userId),
+        remaining: deps.storage.scheduling.countTasks(userId),
       };
     },
   };

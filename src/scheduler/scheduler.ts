@@ -137,7 +137,7 @@ export class ReminderScheduler {
     const now = this.now();
     let due: ReminderRecord[];
     try {
-      due = this.storage.dueReminders(now, MAX_PER_PASS);
+      due = this.storage.scheduling.dueReminders(now, MAX_PER_PASS);
     } catch (err) {
       this.report(`reminder scan failed: ${msg(err)}`);
       return { delivered: 0, missed: 0, skipped: 0 };
@@ -152,7 +152,7 @@ export class ReminderScheduler {
       // winner is already delivering it.
       let claimed: boolean;
       try {
-        claimed = this.storage.claimReminder(reminder.id, now);
+        claimed = this.storage.scheduling.claimReminder(reminder.id, now);
       } catch (err) {
         this.report(`reminder claim failed: ${msg(err)}`);
         skipped++;
@@ -160,6 +160,22 @@ export class ReminderScheduler {
       }
       if (!claimed) {
         skipped++;
+        continue;
+      }
+
+      // Phase 8: follow-ups are EXEMPT from the lateness rule below — a
+      // follow-up exists to resurface late; that is its whole job. The
+      // claim above already stamped reminded_at, so it fires exactly once
+      // for this due time and then waits for the owner to close or snooze
+      // it. Delivery failure leaves it reminded (the old nudge sweep's
+      // semantics): it is reported, not retried in a loop.
+      if (reminder.followup) {
+        const ok = await this.safeDeliver(reminder);
+        if (ok) {
+          delivered++;
+        } else {
+          this.report(`follow-up delivery failed: id=${reminder.id}`);
+        }
         continue;
       }
 
@@ -171,7 +187,12 @@ export class ReminderScheduler {
       // is re-armed to its next future occurrence and the missed one is only
       // counted. Suppressing the series entirely would silently end a daily
       // reminder the user asked for.
-      if (now - reminder.dueAt > this.maxLatenessMs) {
+      //
+      // Lateness is measured from the EFFECTIVE due time (the snooze
+      // override when one is set): a reminder the owner snoozed past an
+      // outage is on time, not stale.
+      const effectiveDueAt = reminder.snoozedUntil ?? reminder.dueAt;
+      if (now - effectiveDueAt > this.maxLatenessMs) {
         missed++;
         if (reminder.repeat === "none") continue;
         this.rearmIfRepeating(reminder, now);
@@ -218,7 +239,7 @@ export class ReminderScheduler {
     while (next <= now) next += step;
 
     try {
-      this.storage.rearmReminder(reminder.id, next);
+      this.storage.scheduling.rearmReminder(reminder.id, next);
     } catch (err) {
       this.report(`reminder re-arm failed: id=${reminder.id} ${msg(err)}`);
     }
@@ -229,7 +250,9 @@ export class ReminderScheduler {
       return await this.deliver({
         chatId: reminder.chatId,
         userId: reminder.userId,
-        text: `⏰ Reminder: ${reminder.text}`,
+        text: reminder.followup
+          ? formatFollowupMessage(reminder.text)
+          : `⏰ Reminder: ${reminder.text}`,
       });
     } catch (err) {
       this.report(`reminder delivery threw: id=${reminder.id} ${msg(err)}`);
@@ -240,6 +263,18 @@ export class ReminderScheduler {
   private report(message: string): void {
     this.onError?.(message);
   }
+}
+
+/**
+ * Render a follow-up delivery (Phase 8: the old nudge sweep's message,
+ * byte-identical — users know this wording). The text is the owner's own
+ * words, quoted as data inside "" — never interpreted.
+ */
+export function formatFollowupMessage(text: string): string {
+  return (
+    `🔔 Follow-up reminder:\n"${text}"\n` +
+    `You saved this for follow-up. When it's done, say "done" and I'll close it.`
+  );
 }
 
 /** The interval between occurrences of a repeating reminder. */
@@ -406,7 +441,7 @@ export class TaskScheduler {
     const now = this.now();
     let due: ScheduledTaskRecord[];
     try {
-      due = this.storage.dueTasks(now, MAX_PER_PASS);
+      due = this.storage.scheduling.dueTasks(now, MAX_PER_PASS);
     } catch (err) {
       this.report(`task scan failed: ${msg(err)}`);
       return { executed: 0, failed: 0, skipped: 0 };
@@ -445,7 +480,7 @@ export class TaskScheduler {
       // winner already re-armed the row and is running it.
       let claimed: boolean;
       try {
-        claimed = this.storage.claimTask(task.id, task.nextRunAtMs, newSlot);
+        claimed = this.storage.scheduling.claimTask(task.id, task.nextRunAtMs, newSlot);
       } catch (err) {
         this.report(`task claim failed: id=${task.id} ${msg(err)}`);
         skipped++;
@@ -500,7 +535,7 @@ export class TaskScheduler {
 
   private finish(id: number, ranAtMs: number, status: ScheduledTaskStatus): void {
     try {
-      this.storage.markTaskRun(id, { ranAtMs, status });
+      this.storage.scheduling.markTaskRun(id, { ranAtMs, status });
     } catch (err) {
       this.report(`task mark-run failed: id=${id} ${msg(err)}`);
     }

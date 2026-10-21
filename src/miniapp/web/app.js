@@ -23,26 +23,30 @@
     "providers",
     "users",
     "memory",
+    "profile",
     "benchmarks",
     "schedulers",
     "skills",
     "usage",
     "tasks",
     "groups",
+    "desk",
   ];
 
-  // Compact labels for the 10-tab bar (full title stays in aria-label).
+  // Compact labels for the tab bar (full title stays in aria-label).
   var TAB_SHORT = {
     chat: "Chat",
     providers: "AI",
     users: "Users",
     memory: "Memory",
+    profile: "Profile",
     benchmarks: "Bench",
     schedulers: "Sched",
     skills: "Skills",
     usage: "Usage",
     tasks: "Tasks",
     groups: "Groups",
+    desk: "Desk",
   };
 
   var SECTION_FILES = {
@@ -50,12 +54,14 @@
     providers: "sections/providers.js",
     users: "sections/users.js",
     memory: "sections/memory.js",
+    profile: "sections/profile.js",
     benchmarks: "sections/benchmarks.js",
     schedulers: "sections/schedulers.js",
     skills: "sections/skills.js",
     usage: "sections/usage.js",
     tasks: "sections/tasks.js",
     groups: "sections/groups.js",
+    desk: "sections/desk.js",
   };
 
   var sections = {}; // id -> { titleKey, icon, render }

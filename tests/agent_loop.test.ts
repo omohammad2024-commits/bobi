@@ -11,6 +11,7 @@ import type {
   AiProvider,
   CompletionRequest,
   CompletionResponse,
+  ContentPart,
   ToolCall,
 } from "../src/ai/provider";
 
@@ -434,7 +435,93 @@ describe("agent loop — untrusted tool output", () => {
 
     const toolMsg = provider.requests[1]!.messages.find((m) => m.role === "tool")!;
     expect(toolMsg.content.length).toBeLessThan(9_000);
-    expect(toolMsg.content).toContain("(truncated)");
+    // §4.7 pin update: the old mid-JSON slice suffix "…(truncated)" is gone.
+    // The body is now structurally truncated JSON that still parses, wrapped
+    // (a string root is not an object) with the truncation marker inside.
+    const inner = toolMsg.content.replace(/^<tool_result[^>]*>\n/, "").replace(/\n<\/tool_result>$/, "");
+    const parsed = JSON.parse(inner) as {
+      truncated_result: string;
+      truncated: { fields: string[]; originalChars: number };
+    };
+    expect(parsed.truncated.fields).toEqual(["$"]);
+    expect(parsed.truncated.originalChars).toBe(100_002);
+    expect(parsed.truncated_result).toContain("[truncated: 100000 chars total]");
+  });
+});
+
+// ---------- media feedback (§4.7) ----------
+
+/** A tool that produces one image for the user via extractMedia. */
+const PIC_PART = { type: "image", mediaType: "image/png", base64: "A".repeat(114_688) } as const;
+const picTool: Tool<Record<string, never>, { caption: string }> = {
+  name: "make_pic",
+  description: "makes a picture for the user",
+  enabled: true,
+  permission: { requires: [] },
+  input: { fields: {} },
+  async run(): Promise<{ caption: string }> {
+    return { caption: "a cat" };
+  },
+  extractMedia(): ContentPart[] {
+    return [PIC_PART];
+  },
+};
+
+const MEDIA_LINE = "[media delivered to the user: image (image/png, ~84 KB)]";
+const occurrences = (haystack: string, needle: string): number =>
+  haystack.split(needle).length - 1;
+
+describe("agent loop — media feedback", () => {
+  test("the feedback names the delivered media once; the media reaches the run result", async () => {
+    const tools = new ToolService({ extraTools: [picTool as Tool<unknown, unknown>] });
+    const provider = new ScriptedProvider([toolTurn(call("make_pic", {})), answer("done")]);
+    const result = await runOnce(makeLoop(provider, { tools }), { userId: "u", permissions: [] });
+
+    // The media still flows to the run result for user delivery, untouched.
+    expect(result.media).toEqual([PIC_PART]);
+
+    const toolMsg = provider.requests[1]!.messages.find((m) => m.role === "tool")!;
+    expect(occurrences(toolMsg.content, MEDIA_LINE)).toBe(1);
+    // The handle is a description only — no base64 bytes ride along.
+    expect(toolMsg.content).not.toContain("A".repeat(100));
+  });
+
+  test("a cached replay carries the media line exactly once, and media is not re-delivered", async () => {
+    const tools = new ToolService({ extraTools: [picTool as Tool<unknown, unknown>] });
+    const provider = new ScriptedProvider([
+      toolTurn(call("make_pic", {}, "c1")),
+      toolTurn(call("make_pic", {}, "c2")),
+      answer("done"),
+    ]);
+    const result = await runOnce(makeLoop(provider, { tools }), { userId: "u", permissions: [] });
+
+    // Executed once; the repeat was served from the per-run cache.
+    expect(result.toolCallsExecuted).toBe(1);
+    expect(result.media).toEqual([PIC_PART]);
+
+    const toolMsgs = provider.requests[2]!.messages.filter((m) => m.role === "tool");
+    expect(toolMsgs.length).toBe(2);
+    for (const m of toolMsgs) {
+      expect(occurrences(m.content, MEDIA_LINE)).toBe(1);
+    }
+  });
+
+  test("a same-turn duplicate (piggyback) carries the media line exactly once per message", async () => {
+    const tools = new ToolService({ extraTools: [picTool as Tool<unknown, unknown>] });
+    const provider = new ScriptedProvider([
+      toolTurn(call("make_pic", {}, "c1"), call("make_pic", {}, "c2")),
+      answer("done"),
+    ]);
+    const result = await runOnce(makeLoop(provider, { tools }), { userId: "u", permissions: [] });
+
+    expect(result.toolCallsExecuted).toBe(1);
+    expect(result.media).toEqual([PIC_PART]);
+
+    const toolMsgs = provider.requests[1]!.messages.filter((m) => m.role === "tool");
+    expect(toolMsgs.length).toBe(2);
+    for (const m of toolMsgs) {
+      expect(occurrences(m.content, MEDIA_LINE)).toBe(1);
+    }
   });
 });
 

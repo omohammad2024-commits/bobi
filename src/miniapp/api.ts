@@ -25,7 +25,13 @@ import {
   ProviderApiError,
   type ProviderApiDeps,
 } from "./api_providers";
-import { handleManageApi } from "./api_manage";
+import {
+  handleManageApi,
+  type BenchLiveSource,
+  type DeskControl,
+  type SemanticIndexSource,
+} from "./api_manage";
+import { handleProfileApi } from "./api_profile";
 
 /** The request body is rejected above this size (before JSON parsing). */
 export const MAX_BODY_BYTES = 64 * 1024;
@@ -55,6 +61,12 @@ export interface MiniAppDeps extends ProviderApiDeps {
   actorForOwner: () => unknown;
   /** Server-side owner Telegram id. */
   ownerId: string;
+  /** Live bench-worker progress for the manage API's `bench.live` action. */
+  benchWorker?: BenchLiveSource;
+  /** The owner's tool-desk control for `desk.list` / `desk.toggle`. */
+  desk?: DeskControl;
+  /** Semantic memory index for the manage API's memory `embedding` field. */
+  semantic?: SemanticIndexSource;
   /** Server-side bot token, for initData HMAC. Never logged or returned. */
   botToken: string;
   /** Absolute directory of the frontend static files. */
@@ -187,6 +199,13 @@ export function createMiniAppHandler(
       if (action.startsWith("providers.") || action.startsWith("models.")) {
         return json(200, await handleProviderApi(action, params, deps));
       }
+      // Owner-profile APIs (profile.get / profile.save). Checked BEFORE the
+      // management sub-router because that one answers 404 for every action
+      // it does not know instead of falling through. The sub-router
+      // re-validates initData itself (defense in depth) and returns
+      // undefined only for non-profile actions.
+      const profileRes = await handleProfileApi(`/miniapp/api/${action}`, params, deps);
+      if (profileRes !== undefined) return profileRes;
       // Management APIs (users, memory, benchmarks, schedulers, skills,
       // usage, tasks, groups). The sub-router re-validates initData itself
       // (defense in depth); it returns undefined only for unknown actions.

@@ -12,7 +12,7 @@ import { pinnedFetch, pinnedLookup, MAX_RESPONSE_BYTES } from "../src/ai/pinned_
 import { OpenAICompatibleAdapter } from "../src/ai/openai_compatible";
 import { GeminiAdapter } from "../src/ai/gemini";
 import { AnthropicAdapter } from "../src/ai/anthropic";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
@@ -527,7 +527,7 @@ describe("health checks and failover use the same policy", () => {
     const { storage, providers, providerId } = storageWithProvider(
       "http://169.254.169.254/latest",
     );
-    const health = new ProviderHealthService(
+    const health = new ProviderProbeService(
       storage,
       providers,
       new ProviderSecretStore("phase12-key"),
@@ -558,7 +558,7 @@ describe("health checks and failover use the same policy", () => {
       const { storage, providers, providerId } = storageWithProvider(
         `http://127.0.0.1:${port}/v1`,
       );
-      const health = new ProviderHealthService(
+      const health = new ProviderProbeService(
         storage,
         providers,
         new ProviderSecretStore("phase12-key"),

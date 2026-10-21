@@ -16,7 +16,7 @@
  *   call returns `{ needsConfirm: true }`;
  * - errors are generic English strings — never stack traces, never secrets.
  */
-import { Database } from "bun:sqlite";
+import { processEnv } from "../config/env";
 import { validateInitData } from "./auth";
 import type { Storage, ScheduledTaskRecord } from "../storage/storage";
 import { UserAccessService } from "../auth/user_service";
@@ -38,24 +38,21 @@ import {
 } from "../skills/install";
 import { fingerprintPublicKey, parsePublisherInput, shortKeyId } from "../skills/signing";
 import { BenchHistory } from "../bench/history";
-import { nextAfterSchedule, parseCron } from "../scheduler/cron";
-import { parseTaskAction, serializeTaskAction } from "../tools/scheduled_tasks";
+import { nextSlotAfterNow, parseCron, validateCustomCron } from "../scheduler/cron";
 import {
   assistantConfigKey,
   getAssistantConfig,
   setAssistantConfig,
 } from "../groups/assistant";
-import {
-  GROUP_DIGEST_TOOL_NAME,
-  cancelGroupDigestTask,
-  digestTaskName,
-  ensureGroupDigestTask,
-  validateDigestTime,
-  type DigestTaskCalls,
-} from "../groups/group_digest";
 import { getModConfig, modConfigKey, setModConfig } from "../moderation/config";
 import { buildDigest, formatDigest } from "../digest/builder";
+import { DigestSchedulingService } from "../digest/scheduling";
 import { UsageTracker, getByProvider, getDailyBreakdown, getLatencyStats } from "../ai/usage";
+import { readdir, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import type { WorkerSnapshot } from "../bench/worker";
+import type { MemoryIndexState } from "../memory/semantic";
+import type { ToolManifest } from "../tools/types";
 
 // ------------------------------------------------------------ deps ----------
 
@@ -67,7 +64,7 @@ export interface ManageApiDeps {
   storage: Storage;
   /** Skills directory. Default: SKILLS_DIR env or "./skills". */
   skillsDir?: string;
-  /** Database file for ProposalStore / BenchHistory / alert reads. Default: DB_PATH env or "data/bobi.db". */
+  /** Legacy field, kept for caller compatibility; stores now share deps.storage's handle (phase 6). */
   dbPath?: string;
   /** Test/env overrides; default to TELEGRAM_BOT_TOKEN / OWNER_TELEGRAM_ID. */
   botToken?: string;
@@ -75,6 +72,58 @@ export interface ManageApiDeps {
   /** Injectable stores so tests never touch the real database. */
   proposalStore?: ProposalStore;
   benchHistory?: BenchHistory;
+  /**
+   * Semantic memory index (platform Phase 10): memory.list/search add
+   * its health as `embedding` — the field the retired web dashboard's
+   * memory endpoint exposed. Optional; best-effort when present.
+   */
+  semantic?: SemanticIndexSource;
+  /**
+   * Live bench-worker progress source for `bench.live` (platform Phase 10 —
+   * the polling replacement for the retired web dashboard's SSE stream).
+   * Optional: without it the action answers 503.
+   */
+  benchWorker?: BenchLiveSource;
+  /**
+   * The owner's tool desk (platform Phase 10): the live registry view +
+   * enable/disable control behind `desk.list` / `desk.toggle`. Optional:
+   * without it both actions answer 503. Wired by bootstrap to the real
+   * ToolRegistry; the toggle persists through the wiring, not storage here.
+   */
+  desk?: DeskControl;
+}
+
+/** The semantic index's owner-visible health reader. */
+export interface SemanticIndexSource {
+  indexState(userId: string): Promise<MemoryIndexState>;
+}
+
+/** Minimal live-progress surface of the daemon BenchWorker. */
+export interface BenchLiveSource {
+  snapshot(): WorkerSnapshot;
+}
+
+/** One tool as the owner's desk view shows it: the card + live state. */
+export interface DeskToolView {
+  name: string;
+  description: string;
+  /** Effective enabled state (the tool's flag AND the owner's override). */
+  enabled: boolean;
+  ownerOnly: boolean;
+  offDesk: boolean;
+  toolset?: string;
+  /** The exact desk card the model sees, when the tool carries one. */
+  manifest?: ToolManifest;
+}
+
+/**
+ * The desk control surface the wiring supplies: reads and flips the LIVE
+ * registry, so a toggle takes effect on the very next turn.
+ */
+export interface DeskControl {
+  listTools(): DeskToolView[];
+  /** Returns false for an unknown tool name (nothing changed). */
+  setToolEnabled(name: string, enabled: boolean): boolean;
 }
 
 // ------------------------------------------------------------ plumbing ------
@@ -115,21 +164,14 @@ function clampLimit(v: unknown, def: number, max: number): number {
 
 const USER_ID_RE = /^[1-9][0-9]{0,19}$/;
 const CHAT_ID_RE = /^-?\d{1,20}$/;
-const DIGEST_TIME_RE = /^([01][0-9]|2[0-3]):([0-5][0-9])$/;
 const MODE_MODEL_RE = /^[A-Za-z0-9_.\-/]{1,64}$/;
 const BENCH_TASK_ID_RE = /^[a-z0-9][a-z0-9_]{0,63}$/;
 const SCHED_TZ = "Asia/Tehran";
 
 /** Task names owned by the bench scheduler and the /blueprint digest. */
 const BENCH_TASK_NAME = "bench: scheduled run";
-const DIGEST_TASK_NAME = "blueprint: morning_digest";
-/** Like /blueprint's default morning prompt (dashboard mirrors the same). */
-const DIGEST_PROMPT =
-  "Morning briefing: briefly summarize today's most important tasks, upcoming reminders, and active goals.";
 
 const MIN_BENCH_CRON_GAP_MS = 60 * 60 * 1000;
-const MIN_DIGEST_CRON_GAP_MS = 15 * 60 * 1000;
-const MAX_CRON_LEN = 64;
 
 const BENCH_CADENCES: Readonly<Record<string, string>> = {
   daily: "0 3 * * *",
@@ -142,8 +184,8 @@ const BENCH_CADENCES: Readonly<Record<string, string>> = {
 /** Owner id from initData, or undefined on any auth failure (reason hidden). */
 function authOwner(deps: ManageApiDeps, body: Record<string, unknown>): string | undefined {
   const initData = asString(body["initData"]) ?? "";
-  const botToken = (deps.botToken ?? process.env.TELEGRAM_BOT_TOKEN ?? "").trim();
-  const ownerId = (deps.ownerId ?? process.env.OWNER_TELEGRAM_ID ?? "").trim();
+  const botToken = (deps.botToken ?? processEnv().TELEGRAM_BOT_TOKEN ?? "").trim();
+  const ownerId = (deps.ownerId ?? processEnv().OWNER_TELEGRAM_ID ?? "").trim();
   if (initData === "" || botToken === "" || ownerId === "") return undefined;
   const v = validateInitData(initData, botToken, ownerId);
   return v.ok ? v.userId : undefined;
@@ -151,21 +193,19 @@ function authOwner(deps: ManageApiDeps, body: Record<string, unknown>): string |
 
 // ------------------------------------------------------------ stores --------
 
-function dbPathFor(deps: ManageApiDeps): string {
-  return (deps.dbPath ?? process.env.DB_PATH ?? "").trim() || "data/bobi.db";
-}
-
 function proposalStoreFor(deps: ManageApiDeps): ProposalStore {
-  return deps.proposalStore ?? new ProposalStore(new Database(dbPathFor(deps)));
+  // Phase 6: satellite stores share the platform's one Database handle
+  // (via deps.storage) instead of opening a parallel connection.
+  return deps.proposalStore ?? new ProposalStore(deps.storage.database);
 }
 
 function benchHistoryFor(deps: ManageApiDeps): BenchHistory {
   if (deps.benchHistory !== undefined) return deps.benchHistory;
-  return new BenchHistory(new Database(dbPathFor(deps)));
+  return new BenchHistory(deps.storage.database);
 }
 
 function skillsDirFor(deps: ManageApiDeps): string {
-  return (deps.skillsDir ?? process.env.SKILLS_DIR ?? "").trim() || "./skills";
+  return (deps.skillsDir ?? processEnv().SKILLS_DIR ?? "").trim() || "./skills";
 }
 
 function memoryProviderFor(storage: Storage): MemoryProvider | undefined {
@@ -185,48 +225,14 @@ function audit(
   detail: string,
 ): void {
   try {
-    storage.appendAudit({ operation, outcome, actorId, detail });
+    storage.access.appendAudit({ operation, outcome, actorId, detail });
   } catch {
     // ignore
   }
 }
 
 function ownerTask(storage: Storage, ownerId: string, name: string): ScheduledTaskRecord | undefined {
-  return storage.listTasks(ownerId, 200).find((t) => t.name === name);
-}
-
-function nextSlotAfterNow(cron: string): number {
-  return nextAfterSchedule(parseCron(cron), Date.now(), SCHED_TZ);
-}
-
-type CronValidation = { ok: true; source: string } | { ok: false; reason: "invalid" | "too_frequent" };
-
-/** Same posture as the dashboard: parses + enforces a minimum firing gap. */
-function validateCustomCron(raw: unknown, minGapMs: number): CronValidation {
-  if (typeof raw !== "string") return { ok: false, reason: "invalid" };
-  const expr = raw.trim();
-  if (expr.length === 0 || expr.length > MAX_CRON_LEN) return { ok: false, reason: "invalid" };
-  let source: string;
-  let schedule: ReturnType<typeof parseCron>;
-  try {
-    schedule = parseCron(expr);
-    source = schedule.source;
-  } catch {
-    return { ok: false, reason: "invalid" };
-  }
-  try {
-    let from = Date.now();
-    let prev: number | undefined;
-    for (let i = 0; i < 3; i++) {
-      const next = nextAfterSchedule(schedule, from, SCHED_TZ);
-      if (prev !== undefined && next - prev < minGapMs) return { ok: false, reason: "too_frequent" };
-      prev = next;
-      from = next;
-    }
-  } catch {
-    return { ok: false, reason: "invalid" };
-  }
-  return { ok: true, source };
+  return storage.scheduling.listTasks(ownerId, 200).find((t) => t.name === name);
 }
 
 // ------------------------------------------------------------ router --------
@@ -270,11 +276,15 @@ async function route(
         return handleUserBan(storage, ownerId, body);
       case "users.unban":
         return handleUserUnban(storage, ownerId, body);
+      case "users.mute":
+        return handleUserMute(storage, ownerId, body);
+      case "users.unmute":
+        return handleUserUnmute(storage, ownerId, body);
       // memory + curator + events
       case "memory.search":
-        return handleMemorySearch(storage, ownerId, body);
+        return handleMemorySearch(deps, ownerId, body);
       case "memory.list":
-        return handleMemoryList(storage, ownerId, body);
+        return handleMemoryList(deps, ownerId, body);
       case "curator.proposals":
         return handleCuratorProposals(deps, ownerId);
       case "curator.decide":
@@ -290,6 +300,10 @@ async function route(
         return handleBenchSchedule(storage, ownerId, body);
       case "bench.alerts":
         return handleBenchAlerts(deps);
+      case "bench.live":
+        return handleBenchLive(deps);
+      case "bench.report":
+        return handleBenchReport(body);
       // schedulers + digest
       case "schedulers.list":
         return handleSchedulersList(storage, ownerId);
@@ -349,6 +363,11 @@ async function route(
         return handleModerationGet(storage, ownerId, body);
       case "moderation.set":
         return handleModerationSet(storage, ownerId, body);
+      // tool desk (owner's view of the model's desk + enable/disable)
+      case "desk.list":
+        return handleDeskList(deps);
+      case "desk.toggle":
+        return handleDeskToggle(deps, ownerId, body);
       default:
         return fail(404, "Not found.");
     }
@@ -367,7 +386,7 @@ function handleUsersList(storage: Storage, body: Record<string, unknown>): Respo
   const q = (asString(body["q"]) ?? "").slice(0, 64).toLowerCase();
   const users: Array<Record<string, unknown>> = [];
   for (const state of USER_STATES) {
-    for (const r of storage.listUsersByState(state, USER_SCAN_CAP, 0)) {
+    for (const r of storage.access.listUsersByState(state, USER_SCAN_CAP, 0)) {
       const u: Record<string, unknown> = {
         id: r.userId,
         state,
@@ -430,6 +449,36 @@ function handleUserUnban(storage: Storage, ownerId: string, body: Record<string,
   return ok({ userId: id, state: "approved" });
 }
 
+function handleUserMute(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
+  const id = validTargetId(body["id"], ownerId);
+  if (id === undefined) {
+    audit(storage, "miniapp.users.mute", ownerId, "denied", "bad id");
+    return fail(400, "Invalid user id.");
+  }
+  const r = new UserAccessService(storage).mute(id, ownerId);
+  if (!r.ok) {
+    audit(storage, "miniapp.users.mute", ownerId, "error", `failed id=${id}`);
+    return fail(500, "An internal error occurred.");
+  }
+  audit(storage, "miniapp.users.mute", ownerId, "success", `id=${id} prev=${r.previous ?? "?"}`);
+  return ok({ userId: id, state: "revoked" });
+}
+
+function handleUserUnmute(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
+  const id = validTargetId(body["id"], ownerId);
+  if (id === undefined) {
+    audit(storage, "miniapp.users.unmute", ownerId, "denied", "bad id");
+    return fail(400, "Invalid user id.");
+  }
+  const r = new UserAccessService(storage).unmute(id, ownerId);
+  if (!r.ok) {
+    audit(storage, "miniapp.users.unmute", ownerId, "error", `failed id=${id}`);
+    return fail(500, "An internal error occurred.");
+  }
+  audit(storage, "miniapp.users.unmute", ownerId, "success", `id=${id} prev=${r.previous ?? "?"}`);
+  return ok({ userId: id, state: "approved" });
+}
+
 // ------------------------------------------------ memory / curator / events
 
 const MAX_MEMORY_LIST = 200;
@@ -438,21 +487,21 @@ function memoryJson(m: StoredMemory): Record<string, unknown> {
   return { key: m.key, content: m.content, createdAt: m.createdAt, updatedAt: m.updatedAt };
 }
 
-async function handleMemorySearch(storage: Storage, ownerId: string, body: Record<string, unknown>): Promise<Response> {
-  const provider = memoryProviderFor(storage);
+async function handleMemorySearch(deps: ManageApiDeps, ownerId: string, body: Record<string, unknown>): Promise<Response> {
+  const provider = memoryProviderFor(deps.storage);
   if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const limit = clampLimit(body["limit"], 50, MAX_MEMORY_LIST);
   const q = (asString(body["q"]) ?? "").slice(0, 64).toLowerCase();
-  return memoryQuery(provider, ownerId, q, limit, 0);
+  return memoryQuery(provider, ownerId, q, limit, 0, deps.semantic);
 }
 
-async function handleMemoryList(storage: Storage, ownerId: string, body: Record<string, unknown>): Promise<Response> {
-  const provider = memoryProviderFor(storage);
+async function handleMemoryList(deps: ManageApiDeps, ownerId: string, body: Record<string, unknown>): Promise<Response> {
+  const provider = memoryProviderFor(deps.storage);
   if (provider === undefined) return fail(503, "Memory service is unavailable.");
   const limit = clampLimit(body["limit"], 50, MAX_MEMORY_LIST);
   const offsetRaw = asInt(body["offset"]);
   const offset = offsetRaw === undefined ? 0 : Math.max(offsetRaw, 0);
-  return memoryQuery(provider, ownerId, "", limit, offset);
+  return memoryQuery(provider, ownerId, "", limit, offset, deps.semantic);
 }
 
 async function memoryQuery(
@@ -461,6 +510,7 @@ async function memoryQuery(
   q: string,
   limit: number,
   offset: number,
+  semantic?: SemanticIndexSource,
 ): Promise<Response> {
   const all = await provider.list(ownerId, MAX_MEMORY_LIST);
   const total = await provider.count(ownerId);
@@ -471,7 +521,25 @@ async function memoryQuery(
           (m) => m.key.toLowerCase().includes(q) || m.content.toLowerCase().includes(q),
         )
   ).slice(offset, offset + limit);
-  return ok({ mems: mems.map(memoryJson), total, offset, limit });
+  // Owner-visible vector-index health (counts + live model id, never
+  // memory content). Best-effort: a failing index must never break the
+  // listing itself. (The retired web dashboard exposed this as
+  // `embedding`; platform Phase 10 keeps the field on this surface.)
+  let embedding: MemoryIndexState | undefined;
+  if (semantic !== undefined) {
+    try {
+      embedding = await semantic.indexState(ownerId);
+    } catch {
+      embedding = undefined;
+    }
+  }
+  return ok({
+    mems: mems.map(memoryJson),
+    total,
+    offset,
+    limit,
+    ...(embedding !== undefined ? { embedding } : {}),
+  });
 }
 
 function handleCuratorProposals(deps: ManageApiDeps, ownerId: string): Response {
@@ -685,7 +753,7 @@ function handleBenchSchedule(
       audit(storage, "miniapp.bench.schedule", ownerId, "denied", "disable missing");
       return fail(400, "No benchmark schedule.");
     }
-    if (existing.enabled) storage.updateTask(ownerId, existing.id, { enabled: false });
+    if (existing.enabled) storage.scheduling.updateTask(ownerId, existing.id, { enabled: false });
     audit(storage, "miniapp.bench.schedule", ownerId, "success", `disabled id=${existing.id}`);
     return ok({ id: existing.id, enabled: false });
   }
@@ -728,7 +796,7 @@ function handleBenchSchedule(
   const MAX_TASKS_PER_OWNER = 200;
   if (existing !== undefined) {
     if (
-      !storage.updateTask(ownerId, existing.id, {
+      !storage.scheduling.updateTask(ownerId, existing.id, {
         cronExpr: source,
         enabled: true,
         nextRunAtMs: slot,
@@ -741,11 +809,11 @@ function handleBenchSchedule(
     return ok({ id: existing.id, enabled: true, cron: source, ...(cadence !== undefined ? { cadence } : {}) });
   }
 
-  if (storage.countTasks(ownerId) >= MAX_TASKS_PER_OWNER) {
+  if (storage.scheduling.countTasks(ownerId) >= MAX_TASKS_PER_OWNER) {
     audit(storage, "miniapp.bench.schedule", ownerId, "denied", "task cap");
     return fail(400, "Scheduled task limit reached.");
   }
-  const id = storage.createTask({
+  const id = storage.scheduling.createTask({
     name: BENCH_TASK_NAME,
     cronExpr: source,
     timezone: SCHED_TZ,
@@ -771,30 +839,115 @@ function alertLabel(key: string): string {
  * surfaces the alert keys with friendly labels and timestamps.
  */
 function handleBenchAlerts(deps: ManageApiDeps): Response {
-  let rows: Array<{ key: string; last_sent_ms: number }> = [];
+  let rows: Array<{ key: string; lastSentMs: number }> = [];
   try {
-    const db = new Database(dbPathFor(deps), { readonly: true });
-    try {
-      rows = db
-        .query<{ key: string; last_sent_ms: number }, []>(
-          `SELECT key, last_sent_ms FROM bench_alerts ORDER BY last_sent_ms DESC LIMIT 20`,
-        )
-        .all();
-    } finally {
-      db.close();
-    }
+    rows = benchHistoryFor(deps).recentAlerts(20);
   } catch {
     rows = [];
   }
   return ok({
-    alerts: rows.map((r) => ({ key: r.key, label: alertLabel(r.key), lastSentMs: r.last_sent_ms })),
+    alerts: rows.map((r) => ({ key: r.key, label: alertLabel(r.key), lastSentMs: r.lastSentMs })),
   });
+}
+
+/**
+ * bench.live — the bench worker's current progress snapshot (platform
+ * Phase 10). This is the polling replacement for the retired web
+ * dashboard's SSE stream: the Mini App re-calls it while a run is active
+ * instead of holding a stream open.
+ */
+function handleBenchLive(deps: ManageApiDeps): Response {
+  if (deps.benchWorker === undefined) {
+    return fail(503, "Live bench progress is not available.");
+  }
+  return ok({ snapshot: deps.benchWorker.snapshot() });
+}
+
+const BENCH_REPORT_NAME_RE = /^[A-Za-z0-9_][A-Za-z0-9_.-]{0,120}$/;
+
+/** Where bench run reports live; BOBI_BENCH_RESULTS_DIR overrides (as the retired dashboard had it). */
+function benchResultsDir(): string {
+  const override = (processEnv().BOBI_BENCH_RESULTS_DIR ?? "").trim();
+  if (override !== "") return override;
+  return resolve(import.meta.dir, "../../bench/results");
+}
+
+/**
+ * bench.report — the markdown report of one bench run, served with the
+ * retired dashboard's allowlist discipline: the name must match a strict
+ * regex AND name a real run in the live directory listing (its `.json`
+ * sibling must exist), and the resolved path must stay inside the
+ * results directory. User input is never joined into a path unchecked.
+ */
+async function handleBenchReport(body: Record<string, unknown>): Promise<Response> {
+  const name = asString(body["name"]) ?? "";
+  if (!BENCH_REPORT_NAME_RE.test(name)) {
+    return fail(400, "Invalid report name.");
+  }
+  const dir = benchResultsDir();
+  let files: string[];
+  try {
+    files = await readdir(dir);
+  } catch {
+    return fail(404, "Report not found.");
+  }
+  if (!files.includes(`${name}.json`)) {
+    return fail(404, "Report not found.");
+  }
+  const mdPath = resolve(dir, `${name}.md`);
+  if (!mdPath.startsWith(resolve(dir) + "/")) {
+    return fail(400, "Invalid report name.");
+  }
+  try {
+    const markdown = await readFile(mdPath, "utf8");
+    return ok({ name, markdown });
+  } catch {
+    return fail(404, "Report not found.");
+  }
+}
+
+// ------------------------------------------------------------ desk ---------
+
+/**
+ * desk.list — the owner's view of the tool desk: EVERY registered tool
+ * with the exact desk card the model sees (its manifest) and its live
+ * effective enabled state. Disabled tools stay listed here — this view
+ * is how the owner turns them back on.
+ */
+function handleDeskList(deps: ManageApiDeps): Response {
+  if (deps.desk === undefined) {
+    return fail(503, "The tool desk is not available.");
+  }
+  return ok({ tools: deps.desk.listTools() });
+}
+
+/**
+ * desk.toggle — enable/disable one tool, effective on the next turn and
+ * persisted by the wiring. Unknown names answer 404; this handler runs
+ * only after the router's initData owner check, so the desk can never be
+ * toggled by anyone but the owner.
+ */
+function handleDeskToggle(deps: ManageApiDeps, ownerId: string, body: Record<string, unknown>): Response {
+  if (deps.desk === undefined) {
+    return fail(503, "The tool desk is not available.");
+  }
+  const name = asString(body["name"]);
+  const enabled = asBool(body["enabled"]);
+  if (name === undefined || name === "" || enabled === undefined) {
+    return fail(400, "Invalid input.");
+  }
+  if (!deps.desk.setToolEnabled(name, enabled)) {
+    audit(deps.storage, "miniapp.desk.toggle", ownerId, "denied", `unknown tool ${name}`);
+    return fail(404, "Tool not found.");
+  }
+  audit(deps.storage, "miniapp.desk.toggle", ownerId, "success", `name=${name} enabled=${enabled}`);
+  return ok({ name, enabled });
 }
 
 // ----------------------------------------------- schedulers + digest -------
 
 function handleSchedulersList(storage: Storage, ownerId: string): Response {
-  const schedulers = storage.listTasks(ownerId, 200).map((t) => {
+  const schedulers = storage.scheduling.listTasks(ownerId, 200).map((t) => {
     const s: Record<string, unknown> = {
       id: t.id,
       name: t.name,
@@ -821,11 +974,11 @@ function handleSchedulersToggle(
   if (id === undefined || id < 1 || enabled === undefined) {
     return fail(400, "Invalid input.");
   }
-  const task = storage.listTasks(ownerId, 200).find((t) => t.id === id);
+  const task = storage.scheduling.listTasks(ownerId, 200).find((t) => t.id === id);
   if (task === undefined) {
     return fail(404, "Scheduler not found.");
   }
-  if (!storage.updateTask(ownerId, id, { enabled })) {
+  if (!storage.scheduling.updateTask(ownerId, id, { enabled })) {
     audit(storage, "miniapp.schedulers.toggle", ownerId, "error", `toggle failed id=${id}`);
     return fail(500, "An internal error occurred.");
   }
@@ -847,30 +1000,15 @@ async function handleDigestPreview(deps: ManageApiDeps, ownerId: string): Promis
   }
 }
 
-function digestTimeOf(cron: string): string | null {
-  const m = /^([0-9]|[1-5][0-9]) ([0-9]|1[0-9]|2[0-3]) \* \* \*$/u.exec(cron);
-  if (m === null) return null;
-  return `${m[2]!.padStart(2, "0")}:${m[1]!.padStart(2, "0")}`;
-}
+// ----------------------------------------------- digest scheduling ---------
+//
+// Platform Phase 10: ALL digest scheduling lives in DigestSchedulingService
+// (src/digest/scheduling.ts), exposed on the platform as
+// scheduling.digests. These handlers are thin adapters: they bind the
+// Mini App's audit operation names and hand the service the raw body.
 
-function readDigestAgentAction(
-  task: ScheduledTaskRecord,
-): { chatId: string; prompt: string } | null {
-  try {
-    const a = JSON.parse(task.actionJson) as Record<string, unknown>;
-    if (
-      a !== null &&
-      typeof a === "object" &&
-      a["type"] === "agent" &&
-      typeof a["chatId"] === "string" &&
-      typeof a["prompt"] === "string"
-    ) {
-      return { chatId: a["chatId"], prompt: a["prompt"] };
-    }
-  } catch {
-    // not JSON or wrong shape
-  }
-  return null;
+function digestScheduling(storage: Storage): DigestSchedulingService {
+  return new DigestSchedulingService(storage);
 }
 
 function handleDigestConfig(
@@ -878,244 +1016,15 @@ function handleDigestConfig(
   ownerId: string,
   body: Record<string, unknown>,
 ): Response {
-  const hasPrompt = body["prompt"] !== undefined;
-  const hasChatId = body["chatId"] !== undefined;
-  const hasEnabled = body["enabled"] !== undefined;
-  const hasTime = body["time"] !== undefined || body["cron"] !== undefined;
-  if (!hasPrompt && !hasChatId && !hasEnabled && !hasTime) {
-    return digestConfigGet(storage, ownerId);
-  }
-  return digestConfigSet(storage, ownerId, body, { hasPrompt, hasChatId, hasEnabled, hasTime });
-}
-
-/**
- * GET view: the row is OWNED by Telegram's /blueprint (fixed task name);
- * the Mini App surfaces that ownership and edits only the row's content
- * through the same storage store /blueprint writes.
- */
-function digestConfigGet(storage: Storage, ownerId: string): Response {
-  const task = ownerTask(storage, ownerId, DIGEST_TASK_NAME);
-  if (task === undefined) {
-    return ok({ exists: false, enabled: false, blueprint: "morning_digest", ownedBy: "blueprint" });
-  }
-  const action = readDigestAgentAction(task);
-  const time = digestTimeOf(task.cronExpr);
-  const out: Record<string, unknown> = {
-    exists: true,
-    enabled: task.enabled,
-    blueprint: "morning_digest",
-    ownedBy: "blueprint",
-    cron: task.cronExpr,
-    time,
-    custom: time === null,
-    timezone: task.timezone,
-    nextRunAtMs: task.nextRunAtMs,
-    actionIsAgent: action !== null,
-    prompt: action?.prompt ?? null,
-    defaultPrompt: DIGEST_PROMPT,
-    isCustomPrompt: action !== null && action.prompt !== DIGEST_PROMPT,
-    chatId: action?.chatId ?? null,
-    defaultChatId: ownerId,
-    isDefaultDestination: action !== null && action.chatId === ownerId,
-  };
-  if (task.lastRunAtMs !== undefined) out["lastRunAtMs"] = task.lastRunAtMs;
-  if (task.lastStatus !== undefined) out["lastStatus"] = task.lastStatus;
-  return ok(out);
-}
-
-function digestConfigSet(
-  storage: Storage,
-  ownerId: string,
-  body: Record<string, unknown>,
-  which: { hasPrompt: boolean; hasChatId: boolean; hasEnabled: boolean; hasTime: boolean },
-): Response {
-  const task = ownerTask(storage, ownerId, DIGEST_TASK_NAME);
-  if (task === undefined) {
-    audit(storage, "miniapp.digest.config", ownerId, "denied", "no digest task");
-    return fail(400, "No scheduled morning digest.");
-  }
-  const out: Record<string, unknown> = { id: task.id };
-
-  if (which.hasEnabled || which.hasTime) {
-    const r = setDigestScheduler(storage, ownerId, task, body);
-    if (r instanceof Response) return r;
-    Object.assign(out, r);
-  }
-
-  if (which.hasPrompt || which.hasChatId) {
-    const action = readDigestAgentAction(task);
-    if (action === null) {
-      audit(storage, "miniapp.digest.config", ownerId, "denied", "non-agent action");
-      return fail(400, "This task has no agent action; check via Telegram.");
-    }
-    let prompt = action.prompt;
-    let chatId = action.chatId;
-    if (which.hasPrompt) {
-      const p = body["prompt"];
-      if (typeof p !== "string" || p.trim().length === 0 || p.length > 4000) {
-        audit(storage, "miniapp.digest.config", ownerId, "denied", "bad prompt");
-        return fail(400, "Prompt must be 1–4000 characters.");
-      }
-      prompt = p;
-    }
-    if (which.hasChatId) {
-      const c = body["chatId"];
-      if (typeof c !== "string" || !CHAT_ID_RE.test(c.trim())) {
-        audit(storage, "miniapp.digest.config", ownerId, "denied", "bad chatId");
-        return fail(400, "Invalid chat id.");
-      }
-      chatId = c.trim();
-    }
-    let actionJson: string;
-    try {
-      actionJson = serializeTaskAction(parseTaskAction({ type: "agent", chatId, prompt }));
-    } catch {
-      audit(storage, "miniapp.digest.config", ownerId, "denied", "action validation failed");
-      return fail(400, "Invalid input.");
-    }
-    if (!storage.updateTask(ownerId, task.id, { actionJson })) {
-      audit(storage, "miniapp.digest.config", ownerId, "error", `update failed id=${task.id}`);
-      return fail(500, "An internal error occurred.");
-    }
-    audit(storage, "miniapp.digest.config", ownerId, "success", `content updated id=${task.id}`);
-    out["prompt"] = prompt;
-    out["chatId"] = chatId;
-    out["isCustomPrompt"] = prompt !== DIGEST_PROMPT;
-    out["isDefaultDestination"] = chatId === ownerId;
-  }
-
-  return ok(out);
-}
-
-/** Digest on/off/time: mirrors the dashboard's digest scheduler semantics. */
-function setDigestScheduler(
-  storage: Storage,
-  ownerId: string,
-  task: ScheduledTaskRecord,
-  body: Record<string, unknown>,
-): Record<string, unknown> | Response {
-  const enabled = asBool(body["enabled"]);
-  if (enabled === false) {
-    if (task.enabled) storage.updateTask(ownerId, task.id, { enabled: false });
-    audit(storage, "miniapp.digest.config", ownerId, "success", `disabled id=${task.id}`);
-    return { enabled: false };
-  }
-
-  const customCronRaw = body["cron"];
-  const hasCustomCron = typeof customCronRaw === "string" && customCronRaw.trim() !== "";
-  let cron: string;
-  let custom = false;
-  if (hasCustomCron) {
-    const v = validateCustomCron(customCronRaw, MIN_DIGEST_CRON_GAP_MS);
-    if (!v.ok) {
-      audit(storage, "miniapp.digest.config", ownerId, "denied", `bad cron (${v.reason})`);
-      return fail(
-        400,
-        v.reason === "too_frequent"
-          ? "Schedule too frequent; digest at most every 15 minutes."
-          : "Invalid cron expression.",
-      );
-    }
-    cron = v.source;
-    custom = true;
-  } else {
-    const timeRaw = body["time"];
-    const timeValid =
-      typeof timeRaw === "string" && DIGEST_TIME_RE.test(timeRaw) ? timeRaw : undefined;
-    if (timeRaw !== undefined && timeValid === undefined) {
-      audit(storage, "miniapp.digest.config", ownerId, "denied", "bad time");
-      return fail(400, "Invalid time (HH:MM format).");
-    }
-    cron =
-      timeValid === undefined
-        ? task.cronExpr
-        : `${Number(timeValid.slice(3, 5))} ${Number(timeValid.slice(0, 2))} * * *`;
-  }
-
-  let source: string;
-  let slot: number;
-  try {
-    source = parseCron(cron).source;
-    slot = nextSlotAfterNow(cron);
-  } catch {
-    audit(storage, "miniapp.digest.config", ownerId, "denied", "bad cron");
-    return fail(400, "Invalid cron expression.");
-  }
-  if (!storage.updateTask(ownerId, task.id, { cronExpr: source, enabled: true, nextRunAtMs: slot })) {
-    audit(storage, "miniapp.digest.config", ownerId, "error", `update failed id=${task.id}`);
-    return fail(500, "An internal error occurred.");
-  }
-  const timeOut = digestTimeOf(source);
-  audit(storage, "miniapp.digest.config", ownerId, "success", `updated id=${task.id} cron=${source}`);
-  return { enabled: true, time: timeOut, ...(custom ? { custom: true, cron: source } : {}) };
+  return digestScheduling(storage).morningConfig(ownerId, body, (outcome, detail) =>
+    audit(storage, "miniapp.digest.config", ownerId, outcome, detail),
+  );
 }
 
 // ------------------------------------------------- group digests -----------
 
-function digestTaskCalls(storage: Storage, ownerId: string): DigestTaskCalls {
-  return {
-    list: async () =>
-      storage.listTasks(ownerId, 200).map((t) => ({ id: t.id, name: t.name })),
-    create: async (args) => {
-      if (storage.countTasks(ownerId) >= 200) {
-        throw new Error("per-owner task cap reached");
-      }
-      return storage.createTask({
-        name: args.name,
-        cronExpr: args.cron,
-        timezone: args.timezone,
-        actionJson: JSON.stringify({
-          type: "tool",
-          tool: GROUP_DIGEST_TOOL_NAME,
-          input: { chatId: args.chatId },
-        }),
-        createdByUserId: ownerId,
-        nextRunAtMs: nextSlotAfterNow(args.cron),
-        enabled: true,
-      });
-    },
-    cancel: async (id) => {
-      storage.deleteTask(ownerId, id);
-    },
-  };
-}
-
-const GROUP_CFG_PREFIX = assistantConfigKey("");
-const MOD_CFG_PREFIX = modConfigKey("");
-
-function groupDigestView(
-  storage: Storage,
-  ownerId: string,
-  chatId: string,
-): Record<string, unknown> {
-  const cfg = getAssistantConfig(storage, ownerId, chatId);
-  const tasks = storage.listTasks(ownerId, 200);
-  const task = tasks.find((t) => t.name === digestTaskName(chatId));
-  const taskOut: Record<string, unknown> = { exists: task !== undefined, enabled: false };
-  if (task !== undefined) {
-    taskOut["enabled"] = task.enabled;
-    taskOut["cron"] = task.cronExpr;
-    taskOut["nextRunAtMs"] = task.nextRunAtMs;
-    if (task.lastRunAtMs !== undefined) taskOut["lastRunAtMs"] = task.lastRunAtMs;
-    if (task.lastStatus !== undefined) taskOut["lastStatus"] = task.lastStatus;
-  }
-  return {
-    chatId,
-    assistantEnabled: cfg.enabled,
-    digestEnabled: cfg.digestEnabled,
-    digestTime: cfg.digestTime,
-    task: taskOut,
-  };
-}
-
 function handleGroupDigestsList(storage: Storage, ownerId: string): Response {
-  const groups: Array<Record<string, unknown>> = [];
-  for (const key of storage.listUserPrefKeys(ownerId, GROUP_CFG_PREFIX)) {
-    const chatId = key.slice(GROUP_CFG_PREFIX.length);
-    if (!CHAT_ID_RE.test(chatId)) continue;
-    groups.push(groupDigestView(storage, ownerId, chatId));
-  }
-  return ok({ groups });
+  return ok({ groups: digestScheduling(storage).listGroups(ownerId) });
 }
 
 async function handleGroupDigestSet(
@@ -1123,72 +1032,9 @@ async function handleGroupDigestSet(
   ownerId: string,
   body: Record<string, unknown>,
 ): Promise<Response> {
-  const chatRaw = body["chatId"];
-  if (typeof chatRaw !== "string" || !CHAT_ID_RE.test(chatRaw.trim())) {
-    audit(storage, "miniapp.group_digest", ownerId, "denied", "bad chatId");
-    return fail(400, "Invalid group id.");
-  }
-  const chatId = chatRaw.trim();
-  const enabled = asBool(body["digestEnabled"]);
-  if (enabled === undefined) {
-    audit(storage, "miniapp.group_digest", ownerId, "denied", "bad digestEnabled");
-    return fail(400, "Invalid input.");
-  }
-  const timeRaw = body["time"];
-  const time = timeRaw === undefined ? undefined : validateDigestTime(timeRaw);
-  if (time !== undefined && !time.ok) {
-    audit(storage, "miniapp.group_digest", ownerId, "denied", "bad time");
-    return fail(400, "Invalid time (HH:MM format).");
-  }
-  const cfg = getAssistantConfig(storage, ownerId, chatId);
-  const calls = digestTaskCalls(storage, ownerId);
-
-  if (!enabled) {
-    const res = setAssistantConfig(storage, ownerId, chatId, { digestEnabled: false });
-    if (!res.ok) {
-      audit(storage, "miniapp.group_digest", ownerId, "error", `off config failed chat=${chatId}`);
-      return fail(400, "Invalid input.");
-    }
-    await cancelGroupDigestTask(calls, chatId);
-    audit(storage, "miniapp.group_digest", ownerId, "success", `off chat=${chatId}`);
-    return ok({ chatId, digestEnabled: false });
-  }
-
-  if (!cfg.enabled) {
-    audit(storage, "miniapp.group_digest", ownerId, "denied", `on without mode chat=${chatId}`);
-    return fail(400, "Enable group assistant mode first.");
-  }
-  let finalTime = cfg.digestTime;
-  if (time !== undefined) {
-    const res = setAssistantConfig(storage, ownerId, chatId, { digestTime: time.time });
-    if (!res.ok) {
-      audit(storage, "miniapp.group_digest", ownerId, "error", `time config failed chat=${chatId}`);
-      return fail(400, "Invalid input.");
-    }
-    finalTime = res.config.digestTime;
-  }
-  // Create the task BEFORE flipping the config: a failed schedule must not
-  // leave the config claiming a digest that will never fire.
-  let id: number | undefined;
-  try {
-    id = await ensureGroupDigestTask(calls, chatId, finalTime);
-  } catch {
-    id = undefined;
-  }
-  if (id === undefined) {
-    audit(storage, "miniapp.group_digest", ownerId, "error", `schedule failed chat=${chatId}`);
-    return fail(500, "Failed to create the schedule.");
-  }
-  if (!cfg.digestEnabled) {
-    const res = setAssistantConfig(storage, ownerId, chatId, { digestEnabled: true });
-    if (!res.ok) {
-      await cancelGroupDigestTask(calls, chatId);
-      audit(storage, "miniapp.group_digest", ownerId, "error", `on config failed chat=${chatId}`);
-      return fail(500, "An internal error occurred.");
-    }
-  }
-  audit(storage, "miniapp.group_digest", ownerId, "success", `on chat=${chatId} time=${finalTime} id=${id}`);
-  return ok({ chatId, digestEnabled: true, time: finalTime, taskId: id });
+  return digestScheduling(storage).setGroup(ownerId, body, (outcome, detail) =>
+    audit(storage, "miniapp.group_digest", ownerId, outcome, detail),
+  );
 }
 
 // ------------------------------------------------------------ skills -------
@@ -1196,9 +1042,9 @@ async function handleGroupDigestSet(
 const SKILL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
 function skillTrusted(storage: Storage, name: string): boolean {
-  const prov = storage.getSkillInstallProvenance(name);
+  const prov = storage.misc.getSkillInstallProvenance(name);
   const keyId = prov?.keyId;
-  return keyId != null && storage.getTrustedSkillPublisher(keyId) !== undefined;
+  return keyId != null && storage.misc.getTrustedSkillPublisher(keyId) !== undefined;
 }
 
 function handleSkillsList(deps: ManageApiDeps, storage: Storage): Response {
@@ -1326,7 +1172,7 @@ function handleSkillUninstall(deps: ManageApiDeps, ownerId: string, body: Record
 // ------------------------------------------------------------ trust --------
 
 function handleTrustList(storage: Storage): Response {
-  const publishers = storage.listTrustedSkillPublishers().map((r) => ({
+  const publishers = storage.misc.listTrustedSkillPublishers().map((r) => ({
     keyId: r.keyId,
     shortKeyId: shortKeyId(r.keyId),
     label: r.label,
@@ -1355,7 +1201,7 @@ function handleTrustAdd(storage: Storage, body: Record<string, unknown>): Respon
   }
   const labelRaw = asString(body["label"]);
   const label = labelRaw !== undefined && labelRaw.trim() !== "" ? labelRaw.trim().slice(0, 64) : shortKeyId(parsed.keyId);
-  const { added } = storage.trustSkillPublisher({
+  const { added } = storage.misc.trustSkillPublisher({
     keyId: parsed.keyId,
     label,
     publicKey: parsed.publicKeyB64,
@@ -1371,7 +1217,7 @@ function handleTrustRemove(storage: Storage, body: Record<string, unknown>): Res
   if (asBool(body["confirm"]) !== true) {
     return json(200, { needsConfirm: true, keyId: parsed.keyId });
   }
-  const removed = storage.untrustSkillPublisher(parsed.keyId);
+  const removed = storage.misc.untrustSkillPublisher(parsed.keyId);
   if (!removed) return fail(404, "Publisher is not in the trust list.");
   return ok({ keyId: parsed.keyId, removed: true });
 }
@@ -1461,7 +1307,7 @@ function handleUsageLatency(storage: Storage, body: Record<string, unknown>): Re
 // ------------------------------------------------ reminders/tasks/goals ----
 
 function handleTasksList(storage: Storage, ownerId: string): Response {
-  const reminders = storage.listReminders(ownerId, 50).map((r) => ({
+  const reminders = storage.scheduling.listReminders(ownerId, 50).map((r) => ({
     id: r.id,
     kind: "reminder",
     text: r.text,
@@ -1469,7 +1315,7 @@ function handleTasksList(storage: Storage, ownerId: string): Response {
     repeat: r.repeat,
     state: r.state,
   }));
-  const tasks = storage.listTasks(ownerId, 100).map((t) => ({
+  const tasks = storage.scheduling.listTasks(ownerId, 100).map((t) => ({
     id: t.id,
     kind: "task",
     name: t.name,
@@ -1477,7 +1323,7 @@ function handleTasksList(storage: Storage, ownerId: string): Response {
     cron: t.cronExpr,
     nextRunAtMs: t.nextRunAtMs,
   }));
-  const goals = storage.listGoals(ownerId, "active", 50).map((g) => ({
+  const goals = storage.scheduling.listGoals(ownerId, "active", 50).map((g) => ({
     id: g.id,
     kind: "goal",
     title: g.title,
@@ -1500,14 +1346,14 @@ function handleTasksComplete(
     return fail(400, "Invalid input.");
   }
   if (kind === "goal") {
-    if (!storage.completeGoal(ownerId, id)) return fail(404, "Goal not found.");
+    if (!storage.scheduling.completeGoal(ownerId, id)) return fail(404, "Goal not found.");
     audit(storage, "miniapp.tasks.complete", ownerId, "success", `goal id=${id}`);
     return ok({ kind, id });
   }
   if (kind === "reminder") {
     // A reminder has no "done" state; the owner-facing completion is
     // dismissing it (the same transition the cancel tool performs).
-    if (!storage.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
+    if (!storage.scheduling.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
     audit(storage, "miniapp.tasks.complete", ownerId, "success", `reminder id=${id}`);
     return ok({ kind, id });
   }
@@ -1525,17 +1371,17 @@ function handleTasksCancel(
     return fail(400, "Invalid input.");
   }
   if (kind === "reminder") {
-    if (!storage.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
+    if (!storage.scheduling.cancelReminder(ownerId, id)) return fail(404, "Reminder not found.");
     audit(storage, "miniapp.tasks.cancel", ownerId, "success", `reminder id=${id}`);
     return ok({ kind, id });
   }
   if (kind === "task") {
-    const task = storage.listTasks(ownerId, 200).find((t) => t.id === id);
+    const task = storage.scheduling.listTasks(ownerId, 200).find((t) => t.id === id);
     if (task === undefined) return fail(404, "Task not found.");
     if (asBool(body["confirm"]) !== true) {
       return json(200, { needsConfirm: true, kind, id, name: task.name });
     }
-    if (!storage.deleteTask(ownerId, id)) return fail(500, "An internal error occurred.");
+    if (!storage.scheduling.deleteTask(ownerId, id)) return fail(500, "An internal error occurred.");
     audit(storage, "miniapp.tasks.cancel", ownerId, "success", `task id=${id} name=${task.name}`);
     return ok({ kind, id });
   }
@@ -1545,10 +1391,13 @@ function handleTasksCancel(
 
 // ------------------------------------------------------------ groups -------
 
+const GROUP_CFG_PREFIX = assistantConfigKey("");
+const MOD_CFG_PREFIX = modConfigKey("");
+
 function knownGroupChatIds(storage: Storage, ownerId: string): string[] {
   const ids = new Set<string>();
   for (const prefix of [GROUP_CFG_PREFIX, MOD_CFG_PREFIX]) {
-    for (const key of storage.listUserPrefKeys(ownerId, prefix)) {
+    for (const key of storage.misc.listUserPrefKeys(ownerId, prefix)) {
       const chatId = key.slice(prefix.length);
       if (CHAT_ID_RE.test(chatId)) ids.add(chatId);
     }
@@ -1563,8 +1412,8 @@ function handleGroupsList(storage: Storage, ownerId: string, body: Record<string
     .filter((id) => q === "" || id.includes(q))
     .slice(0, limit)
     .map((chatId) => {
-      const assistant = getAssistantConfig(storage, ownerId, chatId);
-      const moderation = getModConfig(storage, ownerId, chatId);
+      const assistant = getAssistantConfig(storage.misc, ownerId, chatId);
+      const moderation = getModConfig(storage.misc, ownerId, chatId);
       return {
         chatId,
         assistantEnabled: assistant.enabled,
@@ -1584,7 +1433,7 @@ function validGroupId(raw: unknown): string | undefined {
 function handleGroupAssistantGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
   if (groupId === undefined) return fail(400, "Invalid group id.");
-  const config = getAssistantConfig(storage, ownerId, groupId);
+  const config = getAssistantConfig(storage.misc, ownerId, groupId);
   return ok({ groupId, config });
 }
 
@@ -1605,7 +1454,7 @@ function handleGroupAssistantSet(
   const patch: Record<string, unknown> = { enabled };
   const smart = asBool(body["smart"]);
   if (smart !== undefined) patch["smartSummary"] = smart;
-  const res = setAssistantConfig(storage, ownerId, groupId, patch);
+  const res = setAssistantConfig(storage.misc, ownerId, groupId, patch);
   if (!res.ok) {
     audit(storage, "miniapp.groups.assistant", ownerId, "denied", `chat=${groupId} ${res.errors[0] ?? ""}`);
     return fail(400, "Invalid input.");
@@ -1617,7 +1466,7 @@ function handleGroupAssistantSet(
 function handleGroupDigestGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
   if (groupId === undefined) return fail(400, "Invalid group id.");
-  return ok(groupDigestView(storage, ownerId, groupId));
+  return ok(digestScheduling(storage).groupView(ownerId, groupId));
 }
 
 // --------------------------------------------------------- moderation ------
@@ -1625,7 +1474,7 @@ function handleGroupDigestGet(storage: Storage, ownerId: string, body: Record<st
 function handleModerationGet(storage: Storage, ownerId: string, body: Record<string, unknown>): Response {
   const groupId = validGroupId(body["groupId"]);
   if (groupId === undefined) return fail(400, "Invalid group id.");
-  return ok({ groupId, config: getModConfig(storage, ownerId, groupId) });
+  return ok({ groupId, config: getModConfig(storage.misc, ownerId, groupId) });
 }
 
 /**
@@ -1648,7 +1497,7 @@ function handleModerationSet(
   if (Object.keys(patch).length === 0) {
     return fail(400, "No fields specified to change.");
   }
-  const res = setModConfig(storage, ownerId, groupId, patch);
+  const res = setModConfig(storage.misc, ownerId, groupId, patch);
   if (!res.ok) {
     audit(storage, "miniapp.moderation.set", ownerId, "denied", `chat=${groupId}`);
     return fail(400, "Invalid input.");

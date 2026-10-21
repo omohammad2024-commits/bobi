@@ -1,6 +1,6 @@
 /**
  * Web-search settings UI for the `/ai` panel — text and keyboards rendered
- * from the panel string table (`../groups/panel_strings.ts`).
+ * from the panel string table (`../i18n/strings/panel_strings.ts`).
  *
  * Rendering only: no authorization and no state change. Every button here is
  * re-checked by AdminBoundary when the callback arrives.
@@ -14,7 +14,7 @@
 import { InlineKeyboard } from "grammy";
 import { encode } from "../groups/callbacks";
 import { SEARCH_TEMPLATES } from "./provider";
-import { tr, type PanelLang } from "../groups/panel_strings";
+import { tr, type PanelLang } from "../i18n/strings/panel_strings";
 
 export interface SearchSettingsView {
   /** The provider slug currently selected. */

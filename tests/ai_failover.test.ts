@@ -9,7 +9,7 @@ import { AuditLogger } from "../src/auth/audit";
 import { AdapterRegistry } from "../src/ai/adapter_registry";
 import { ProviderSecretStore } from "../src/ai/secret_store";
 import { ModelService, ProviderService } from "../src/ai/provider_service";
-import { ProviderHealthService } from "../src/ai/health";
+import { ProviderProbeService } from "../src/ai/provider_probe";
 import { AiGateway } from "../src/ai/gateway";
 import { AiAdminController } from "../src/groups/ai_controller";
 import { encode } from "../src/groups/callbacks";
@@ -497,7 +497,7 @@ function panel() {
   const adapters = new AdapterRegistry();
   const providers = new ProviderService(storage, secrets, adapters);
   const models = new ModelService(storage);
-  const health = new ProviderHealthService(storage, providers, secrets, adapters, 300);
+  const health = new ProviderProbeService(storage, providers, secrets, adapters, 300);
   const ai = new AiAdminController({
     auth,
     admin: new AdminBoundary({ auth, audit }),

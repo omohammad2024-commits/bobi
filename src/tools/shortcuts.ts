@@ -9,7 +9,7 @@
  * — NOT in this file and NOT in registry.ts):
  *
  *   1. On an incoming "/name" command, bot.ts checks built-in handlers
- *      first. If none matches, it calls storage.getShortcut(name) with the
+ *      first. If none matches, it calls storage.misc.getShortcut(name) with the
  *      name normalized the same way as here: strip leading "/", lowercase.
  *   2. No shortcut → the normal "unknown command" reply.
  *   3. Shortcut found:
@@ -278,12 +278,12 @@ function createShortcutAddTool(deps: ShortcutToolDeps): Tool<ShortcutAddInput, S
         }
       }
 
-      if (deps.storage.listShortcuts().length >= MAX_SHORTCUTS && deps.storage.getShortcut(name) === undefined) {
+      if (deps.storage.misc.listShortcuts().length >= MAX_SHORTCUTS && deps.storage.misc.getShortcut(name) === undefined) {
         throw new ToolError("invalid_input", `Too many shortcuts (max ${MAX_SHORTCUTS}); delete some first.`);
       }
 
-      const updated = deps.storage.getShortcut(name) !== undefined;
-      deps.storage.upsertShortcut(
+      const updated = deps.storage.misc.getShortcut(name) !== undefined;
+      deps.storage.misc.upsertShortcut(
         toolArgs === undefined
           ? { name, kind, action }
           : { name, kind, action, toolArgs },
@@ -347,7 +347,7 @@ function createShortcutListTool(
 
     async run(_input: Record<string, never>, ctx: ToolContext): Promise<ShortcutListOutput> {
       requireOwner(ctx, deps.isOwner);
-      const shortcuts: CustomShortcut[] = deps.storage.listShortcuts();
+      const shortcuts: CustomShortcut[] = deps.storage.misc.listShortcuts();
       return {
         shortcuts: shortcuts.map((s) => ({
           name: s.name,
@@ -429,7 +429,7 @@ function createShortcutDeleteTool(
       if (name.length === 0 || !NAME_PATTERN.test(name)) {
         throw new ToolError("invalid_input", "Shortcut name is invalid.");
       }
-      const deleted = deps.storage.deleteShortcut(name);
+      const deleted = deps.storage.misc.deleteShortcut(name);
       return { name, deleted };
     },
   };

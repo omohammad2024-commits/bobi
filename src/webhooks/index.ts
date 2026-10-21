@@ -1,11 +1,14 @@
 /**
  * Outbound webhooks — public surface.
  *
- * The engine calls `webhooksEnabled()` on the turn's hot path: it is a single
- * cached boolean check, so an unconfigured bot pays essentially nothing.
- * When enabled, `emitWebhookEvent` enqueues fire-and-forget and NEVER throws
- * — a webhook problem must never become a turn problem.
+ * The engine emits built event envelopes through its injected `onEvent`
+ * sink; production wires `webhookEventSink()` (below), which calls
+ * `webhooksEnabled()` per event — a single cached boolean check, so an
+ * unconfigured bot pays essentially nothing. When enabled,
+ * `emitWebhookEvent` enqueues fire-and-forget and NEVER throws — a webhook
+ * problem must never become a turn problem.
  */
+import { processEnv } from "../config/env";
 import { loadWebhookConfig, type WebhookConfig } from "./config";
 import { WebhookQueue, type DeliverFn } from "./queue";
 import type { WebhookEvent } from "./events";
@@ -39,7 +42,7 @@ let queue: WebhookQueue | undefined;
 let testDeliver: DeliverFn | undefined;
 
 /** (Re)read the environment and rebuild the queue. Idempotent. */
-export function initWebhooks(env: Record<string, string | undefined> = process.env): WebhookConfig {
+export function initWebhooks(env: Record<string, string | undefined> = processEnv()): WebhookConfig {
   cached = loadWebhookConfig(env);
   queue = undefined;
   return cached;
@@ -72,6 +75,25 @@ export function emitWebhookEvent(event: WebhookEvent): void {
     // The queue never throws by contract; this is belt and suspenders so a
     // future change cannot turn webhook observation into a turn failure.
   }
+}
+
+/**
+ * Engine event sink (platform Phase 5): the ConversationEngine builds event
+ * envelopes and hands them to its injected `onEvent`; production wiring
+ * passes this adapter. Per event it re-checks the enabled flag and forwards
+ * to `emitWebhookEvent`, swallowing errors — the "emission never breaks a
+ * turn" contract holds end to end.
+ */
+export function webhookEventSink(): (event: WebhookEvent) => void {
+  return (event) => {
+    try {
+      if (!webhooksEnabled()) return;
+      emitWebhookEvent(event);
+    } catch {
+      // emitWebhookEvent never throws by contract; belt and suspenders so a
+      // future change cannot turn webhook observation into a turn failure.
+    }
+  };
 }
 
 /** Stop the background worker. Used on shutdown. */

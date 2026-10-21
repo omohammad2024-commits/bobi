@@ -29,8 +29,8 @@ export class SearchSettingsService {
 
   /** The settings as the panel shows them. Never includes the key. */
   view(): SearchSettingsView {
-    const provider = this.storage.getSearchSettings().provider;
-    const hasKey = this.storage.hasSearchCredential();
+    const provider = this.storage.providers.getSearchSettings().provider;
+    const hasKey = this.storage.providers.hasSearchCredential();
     const template = SEARCH_TEMPLATES.find((t) => t.type === provider);
 
     return {
@@ -49,7 +49,7 @@ export class SearchSettingsService {
 
   /** Persian label for the selected provider. */
   label(): string {
-    const provider = this.storage.getSearchSettings().provider;
+    const provider = this.storage.providers.getSearchSettings().provider;
     return SEARCH_TEMPLATES.find((t) => t.type === provider)?.label ?? provider;
   }
 
@@ -64,7 +64,7 @@ export class SearchSettingsService {
     if (!isSearchProviderType(provider)) {
       return fail("The selected search service is invalid.");
     }
-    this.storage.setSearchProvider(provider);
+    this.storage.providers.setSearchProvider(provider);
     return { ok: true, data: true };
   }
 
@@ -81,7 +81,7 @@ export class SearchSettingsService {
 
     try {
       const envelope = this.secrets.encrypt(trimmed);
-      this.storage.upsertSearchCredential(envelope);
+      this.storage.providers.upsertSearchCredential(envelope);
       return { ok: true, data: true };
     } catch (err) {
       if (err instanceof SecretStoreError && err.kind === "missing_key") {
@@ -93,17 +93,17 @@ export class SearchSettingsService {
 
   /** Remove the stored key. Returns whether one was present. */
   clearKey(): boolean {
-    return this.storage.deleteSearchCredential();
+    return this.storage.providers.deleteSearchCredential();
   }
 
   /** Whether a key is stored. Never returns the key itself. */
   hasKey(): boolean {
-    return this.storage.hasSearchCredential();
+    return this.storage.providers.hasSearchCredential();
   }
 
   /** Whether the selected provider requires a key. */
   selectedNeedsKey(): boolean {
-    const provider = this.storage.getSearchSettings().provider;
+    const provider = this.storage.providers.getSearchSettings().provider;
     return SEARCH_TEMPLATES.find((t) => t.type === provider)?.needsKey === true;
   }
 }
